@@ -118,10 +118,10 @@ def main(args=None):
         time.sleep(5.0)
 
         node.get_logger().info("force off")
-        force.force_off
+        force.force_off()
 
         node.get_logger().info("compliance_off")
-        force.compliance_off
+        force.compliance_off()
 
     except Exception as e:
         node.get_logger().error(
