@@ -808,3 +808,23 @@ HTML / JS
 다음 한 문장이 실제 시스템에서 동작하면 된다.
 
 > **관리자가 웹에서 Work Order를 생성하고 실행하면, Flask Backend가 DB에 작업을 기록하고 ROS2 Bridge를 통해 Robot Control에 작업을 전달하며, 로봇 실행 결과가 다시 DB에 기록되고 Dashboard에서 확인된다.**
+
+
+---
+1. grants.sql
+   ↓
+2. setup_db.sh에 grants 적용 추가
+   ↓
+3. setup_db.sh --seed 옵션 추가
+   ↓
+4. reset_db.sh 작성
+   ↓
+5. DB 재현 테스트
+   ↓
+6. SQLAlchemy 연결
+   ↓
+7. WorkOrder Model 하나 작성
+   ↓
+8. SELECT 테스트
+   ↓
+9. CRUD API
