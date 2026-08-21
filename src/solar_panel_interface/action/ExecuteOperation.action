@@ -1,0 +1,15 @@
+# 작업 관리 노드 -> Controller(M0609)
+# IF-14: 작업 관리 노드 -> Controller, Work Order ID / Operation ID / 작업 Parameter
+string work_order_id
+string operation_id
+solar_panel_interface/Parameter[] parameters
+---
+# IF-16: Controller -> 작업 관리 노드, 완료/실패 + Error Code
+bool success
+string error_code
+string message
+---
+# IF-15: Controller -> 작업 관리 노드, 현재 Operation + 진행 상태
+string current_operation
+string status
+float32 progress
