@@ -811,14 +811,8 @@ HTML / JS
 
 
 ---
-1. grants.sql
-   ↓
-2. setup_db.sh에 grants 적용 추가
-   ↓
 3. setup_db.sh --seed 옵션 추가
-   ↓
-4. reset_db.sh 작성
-   ↓
+
 5. DB 재현 테스트
    ↓
 6. SQLAlchemy 연결
