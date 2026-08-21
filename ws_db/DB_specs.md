@@ -1,22 +1,22 @@
-# 로봇 작업 공정 관리 시스템 - DB 설계 명세 (v4)
+# 로봇 작업 공정 관리 시스템 - DB 설계 명세 (v5)
 
 > 기반 문서: DB 요구사항
 > 설계일 : 2026-08-21
 > 목적: Work Order → ROS2 작업 실행 → 결과/로그/센서 데이터까지 관리
-> 구조: 16개 테이블, 4개 그룹 (A~D)
+> 구조: 13개 테이블, 4개 그룹 (A~D)
 
 ---
 
 ## 1. DB 설계 고려 항목
+
 - 기준정보와 작업 실행 데이터를 분리한다.
-- `Project → Site → Installation Target → Product → Recipe → Operation`으로 연결되는 구조
-- `Product`는 설치되는 제품의 종류/모델(포스트, 거더, 판넬 등)을 의미한다.
+- `Project → Site → Installation Target → Operation → Component` 구조이다.
 - `Installation Target`은 특정 Site에서 실제 작업 대상이 되는 설비를 의미한다.
-- `Component`는 작업에 사용되는 부품/자재를 의미한다.
-- `Recipe`는 제품을 어떤 절차로 작업할지 정의한다.
-- `Operation`은 Recipe를 구성하는 개별 작업 단계이며, 로봇 작업 파라미터(TCP, tool weigth, coordinate 등)는 `parameter` JSONB로 관리한다.
-- `Work Order`는 `Installation Target`과 `Recipe`를 기준으로 생성한다.
-- `work_order → installation_target → site → project` 경로로 조회한다.
+- `Operation`은 `Installation Target`을 구성하는 개별 작업 단계이다.
+- `Component`는 `Operation`에 사용되는 부품/자재이며, `operation_id` FK로 소속되고 자재의 현재 위치와 조립 위치를 함께 관리한다.
+- 로봇 작업 파라미터(TCP, tool weight, coordinate 등)는 `operation.parameter` JSONB로 관리한다.
+- `Work Order`는 `Installation Target`을 기준으로 생성한다.
+- `work_order → installation_target → site → project` 경로로 상위 정보를 조회한다.
 - ROS2에서 실제 실행된 작업은 `Work Execution → Operation Execution`으로 기록한다.
 - TCP, Position, Coordinate System, Fixture, Robot State Log 등은 확장 시 별도 테이블로 분리한다.
 
@@ -30,12 +30,8 @@
 project
    └── site
          └── installation_target
-                └── product
-                       │
-                       └── recipe
-                              ├── operation
-                              └── recipe_component
-                                      └── component                     
+                  └── operation
+                        └── component
 ```
 
 ### B. 로봇/센서 기준정보
@@ -65,34 +61,30 @@ operation_execution
         └── force_torque_data
                 └── sensor_id
 ```
----
 
-## 3. 테이블 목록
+### 테이블 목록
 
 | # | 그룹 | 테이블 | 역할 |
 |---|---|---|---|
-| 1 | 기준정보 | project | 프로젝트 정보 |
-| 2 | 기준정보 | site | 작업 현장 정보 |
-| 3 | 기준정보 | installation_target | 실제 작업 대상 |
-| 4 | 기준정보 | product | 설치 제품 Master |
-| 5 | 기준정보 | recipe | 제품 작업 기준 |
-| 6 | 기준정보 | operation | Recipe의 개별 작업 단계 |
-| 7 | 기준정보 | component | 부품/자재 Master |
-| 8 | 기준정보 | recipe_component | Recipe-Component 연결 |
-| 9 | 로봇/센서 | robot | 작업 로봇 정보 |
-| 10 | 로봇/센서 | sensor | 센서 Master |
-| 11 | 작업 | work_order | 작업 지시 |
-| 12 | 작업 | work_execution | Work Order 실제 실행 |
-| 13 | 작업 | operation_execution | 개별 Operation 실행 |
-| 14 | 로그 | work_event | 작업 이벤트 |
-| 15 | 로그 | error_log | 작업 오류 |
-| 16 | 측정 | force_torque_data | Force/Torque 측정 데이터 |
+| 1 | A | project | 프로젝트 정보 |
+| 2 | A | site | 작업 현장 정보 |
+| 3 | A | installation_target | 실제 작업 대상 |
+| 4 | A | operation | Installation Target의 개별 작업 단계 |
+| 5 | A | component | Operation에 사용되는 부품/자재 |
+| 6 | B | robot | 작업 로봇 정보 |
+| 7 | B | sensor | 센서 정보 |
+| 8 | C | work_order | 작업 지시 |
+| 9 | C | work_execution | Work Order 실제 실행 |
+| 10 | C | operation_execution | 개별 Operation 실행 |
+| 11 | D | work_event | 작업 이벤트 |
+| 12 | D | error_log | 작업 오류 |
+| 13 | D | force_torque_data | Force/Torque 측정 데이터 |
 
 ---
 
-## 4. 기준정보
+## 3. 그룹 A. 생산/작업 기준정보
 
-### 4.1 project
+### 3.1 project
 
 | 컬럼 | 타입 | 설명 |
 |---|---|---|
@@ -104,7 +96,7 @@ operation_execution
 | `created_at` | TIMESTAMP | 생성 시각 |
 | `updated_at` | TIMESTAMP | 수정 시각 |
 
-### 4.2 site
+### 3.2 site
 
 | 컬럼 | 타입 | 설명 |
 |---|---|---|
@@ -118,7 +110,7 @@ operation_execution
 | `created_at` | TIMESTAMP | 생성 시각 |
 | `updated_at` | TIMESTAMP | 수정 시각 |
 
-### 4.3 installation_target
+### 3.3 installation_target
 
 특정 Site에서 실제 작업 대상이 되는 설비를 관리한다.
 
@@ -126,7 +118,6 @@ operation_execution
 |---|---|---|
 | `installation_target_id` | BIGSERIAL PK | 작업 대상 ID |
 | `site_id` | BIGINT FK → site | 작업 현장 |
-| `product_id` | BIGINT FK → product | 대상 제품 |
 | `target_code` | VARCHAR(50) UNIQUE | 작업 대상 코드 |
 | `name` | VARCHAR(200) | 대상명 |
 | `type` | VARCHAR(50) | 대상 유형 |
@@ -135,47 +126,14 @@ operation_execution
 | `created_at` | TIMESTAMP | 생성 시각 |
 | `updated_at` | TIMESTAMP | 수정 시각 |
 
-### 4.4 product
+### 3.4 operation
 
-설치되는 제품의 종류 또는 모델 정보를 관리한다.
-
-| 컬럼 | 타입 | 설명 |
-|---|---|---|
-| `product_id` | BIGSERIAL PK | 제품 ID |
-| `code` | VARCHAR(50) UNIQUE | 제품 코드 |
-| `name` | VARCHAR(200) | 제품명 (포스트, 거더, 판넬 등) |
-| `description` | TEXT | 제품 설명 |
-| `category` | VARCHAR(100) | 제품 카테고리 |
-| `specification` | JSONB | 제품 사양 |
-| `created_at` | TIMESTAMP | 생성 시각 |
-| `updated_at` | TIMESTAMP | 수정 시각 |
-
-### 4.5 recipe
-
-특정 Product를 작업하기 위한 기준 공정을 관리한다.
-
-| 컬럼 | 타입 | 설명 |
-|---|---|---|
-| `recipe_id` | BIGSERIAL PK | Recipe ID |
-| `product_id` | BIGINT FK → product | 대상 제품 |
-| `code` | VARCHAR(50) | Recipe 코드 |
-| `name` | VARCHAR(200) | Recipe명 |
-| `description` | TEXT | 작업 기준 설명 |
-| `is_active` | BOOLEAN | 활성 여부 |
-| `created_by` | VARCHAR(100) | 생성자 |
-| `created_at` | TIMESTAMP | 생성 시각 |
-| `updated_at` | TIMESTAMP | 수정 시각 |
-
-> `product_id + code` 조합은 UNIQUE 권장
-
-### 4.6 operation
-
-Recipe를 구성하는 개별 작업 단계를 관리한다.
+Installation Target을 구성하는 개별 작업 단계를 관리한다.
 
 | 컬럼 | 타입 | 설명 |
 |---|---|---|
 | `operation_id` | BIGSERIAL PK | Operation ID |
-| `recipe_id` | BIGINT FK → recipe | 소속 Recipe |
+| `installation_target_id` | BIGINT FK → installation_target | 소속 작업 대상 |
 | `code` | VARCHAR(50) | 작업 코드 |
 | `name` | VARCHAR(200) | 작업명 |
 | `sequence` | INT | 실행 순서 |
@@ -185,6 +143,8 @@ Recipe를 구성하는 개별 작업 단계를 관리한다.
 | `parameter` | JSONB | 로봇 작업 파라미터 |
 | `created_at` | TIMESTAMP | 생성 시각 |
 | `updated_at` | TIMESTAMP | 수정 시각 |
+
+> `installation_target_id + code` 조합은 UNIQUE 권장
 
 > parameter JSONB 예시:
 > ```json
@@ -199,41 +159,43 @@ Recipe를 구성하는 개별 작업 단계를 관리한다.
 > }
 > ```
 
-### 4.7 component
+### 3.5 component
 
-작업에 사용되는 부품 및 자재의 Master 정보를 관리한다.
+Operation에 사용되는 부품 및 자재를 관리한다.
 
 | 컬럼 | 타입 | 설명 |
 |---|---|---|
 | `component_id` | BIGSERIAL PK | 부품 ID |
-| `code` | VARCHAR(50) UNIQUE | 부품 코드 |
+| `operation_id` | BIGINT FK → operation | 소속 Operation |
+| `code` | VARCHAR(50) | 부품 코드 |
 | `name` | VARCHAR(200) | 부품명 |
 | `category` | VARCHAR(100) | 부품 카테고리 |
 | `specification` | TEXT | 부품 사양 |
-| `unit` | VARCHAR(30) | 단위 |
+| `quantity` | INT | 필요 수량 |
+| `current_position` | JSONB | 자재의 현재 위치 (픽업 좌표) |
+| `assembly_position` | JSONB | 조립시킬 목표 위치 |
 | `created_at` | TIMESTAMP | 생성 시각 |
 | `updated_at` | TIMESTAMP | 수정 시각 |
 
-### 4.8 recipe_component
+> `operation_id + code` 조합은 UNIQUE 권장
 
-Recipe에서 사용하는 Component와 수량을 관리한다.
+> current_position / assembly_position JSONB 예시:
+> ```json
+> {
+>   "x": 1200.0, "y": 350.0, "z": 50.0,
+>   "orientation": {"rx": 0.0, "ry": 0.0, "rz": 90.0},
+>   "frame": "BASE"
+> }
+> ```
 
-| 컬럼 | 타입 | 설명 |
-|---|---|---|
-| `recipe_component_id` | BIGSERIAL PK | 연결 ID |
-| `recipe_id` | BIGINT FK → recipe | Recipe |
-| `component_id` | BIGINT FK → component | Component |
-| `quantity` | INT | 필요 수량 |
-| `remark` | TEXT | 비고 |
-| `created_at` | TIMESTAMP | 생성 시각 |
-
-> `recipe_id + component_id`는 UNIQUE 권장
+> 역할 구분: `component.current_position` / `assembly_position`은 자재 단위 Pick/Place 좌표를,
+> `operation.parameter`는 로봇 작업 파라미터(TCP, tool, speed 등)를 관리한다.
 
 ---
 
-## 5. 로봇/센서
+## 4. 그룹 B. 로봇/센서 기준정보
 
-### 5.1 robot
+### 4.1 robot
 
 | 컬럼 | 타입 | 설명 |
 |---|---|---|
@@ -249,7 +211,7 @@ Recipe에서 사용하는 Component와 수량을 관리한다.
 | `created_at` | TIMESTAMP | 생성 시각 |
 | `updated_at` | TIMESTAMP | 수정 시각 |
 
-### 5.2 sensor
+### 4.2 sensor
 
 | 컬럼 | 타입 | 설명 |
 |---|---|---|
@@ -269,11 +231,11 @@ Recipe에서 사용하는 Component와 수량을 관리한다.
 
 ---
 
-## 6. 작업
+## 5. 그룹 C. 작업
 
-### 6.1 work_order
+### 5.1 work_order
 
-특정 Installation Target에 특정 Recipe를 적용하는 작업 지시이다.
+특정 Installation Target에 대한 작업 지시이다.
 
 | 컬럼 | 타입 | 설명 |
 |---|---|---|
@@ -281,7 +243,6 @@ Recipe에서 사용하는 Component와 수량을 관리한다.
 | `order_number` | VARCHAR(50) UNIQUE | 작업 지시 번호 |
 | `title` | VARCHAR(300) | 작업 제목 |
 | `installation_target_id` | BIGINT FK → installation_target | 작업 대상 |
-| `recipe_id` | BIGINT FK → recipe | 적용 Recipe |
 | `priority` | INT | 우선순위 |
 | `status` | VARCHAR(30) | CREATED / WAITING / RUNNING / COMPLETED / FAILED |
 | `planned_start_date` | TIMESTAMP | 계획 시작 |
@@ -294,7 +255,7 @@ Recipe에서 사용하는 Component와 수량을 관리한다.
 > `project_id`, `site_id`는 Work Order에 직접 저장하지 않는다.
 > `work_order → installation_target → site → project`를 통해 상위 정보를 조회한다.
 
-### 6.2 work_execution
+### 5.2 work_execution
 
 | 컬럼 | 타입 | 설명 |
 |---|---|---|
@@ -311,7 +272,7 @@ Recipe에서 사용하는 Component와 수량을 관리한다.
 | `created_at` | TIMESTAMP | 생성 시각 |
 | `updated_at` | TIMESTAMP | 수정 시각 |
 
-### 6.3 operation_execution
+### 5.3 operation_execution
 
 | 컬럼 | 타입 | 설명 |
 |---|---|---|
@@ -322,16 +283,15 @@ Recipe에서 사용하는 Component와 수량을 관리한다.
 | `status` | VARCHAR(30) | PENDING / RUNNING / SUCCESS / FAILED / SKIPPED |
 | `start_time` | TIMESTAMP | 시작 시간 |
 | `end_time` | TIMESTAMP | 종료 시간 |
-| `result` | VARCHAR(30) | SUCCESS / FAIL |
 | `error_message` | TEXT | 오류 메시지 |
 | `retry_count` | INT | 재시도 횟수 |
 | `created_at` | TIMESTAMP | 생성 시각 |
 
 ---
 
-## 7. 로그 및 측정
+## 6. 그룹 D. 로그 및 측정
 
-### 7.1 work_event
+### 6.1 work_event
 
 | 컬럼 | 타입 | 설명 |
 |---|---|---|
@@ -344,7 +304,7 @@ Recipe에서 사용하는 Component와 수량을 관리한다.
 | `timestamp` | TIMESTAMP | 발생 시간 |
 | `created_at` | TIMESTAMP | 생성 시각 |
 
-### 7.2 error_log
+### 6.2 error_log
 
 | 컬럼 | 타입 | 설명 |
 |---|---|---|
@@ -362,7 +322,7 @@ Recipe에서 사용하는 Component와 수량을 관리한다.
 | `timestamp` | TIMESTAMP | 발생 시간 |
 | `created_at` | TIMESTAMP | 생성 시각 |
 
-### 7.3 force_torque_data
+### 6.3 force_torque_data
 
 | 컬럼 | 타입 | 설명 |
 |---|---|---|
@@ -382,39 +342,7 @@ Recipe에서 사용하는 Component와 수량을 관리한다.
 
 ---
 
-## 8. FK 관계 요약
-
-```
-project
-  └── site.project_id
-        └── installation_target.site_id
-              │
-              ├── installation_target.product_id ──▶ product
-              │
-              └── work_order.installation_target_id
-                    │
-                    └── work_order.recipe_id ──▶ recipe.product_id ──▶ product
-                          │
-                          ├── recipe → operation
-                          │
-                          └── recipe → recipe_component → component
-
-work_order
-  └── work_execution.work_order_id
-        ├── work_execution.robot_id ──▶ robot
-        └── operation_execution.work_execution_id
-              ├── operation_execution.operation_id ──▶ operation
-              ├── work_event.operation_execution_id
-              ├── error_log.operation_execution_id
-              │     └── error_log.robot_id ──▶ robot
-              └── force_torque_data.operation_execution_id
-                    └── force_torque_data.sensor_id ──▶ sensor
-                          └── sensor.robot_id ──▶ robot
-```
-
----
-
-## 9. 데이터 흐름 예시
+## 7. 데이터 흐름 예시
 
 ```
 Project
@@ -424,25 +352,17 @@ Project
           └── 대륭포스트타워8차 옥상
                │
                └── Installation Target
-                    ├── Product: 포스트
-                    │    └── Recipe: 포스트 설치
-                    │         ├── Operation 1: 기초 고정
-                    │         └── Operation 2: 포스트 삽입
-                    │
-                    ├── Product: 거더
-                    │    └── Recipe: 거더 설치
-                    │         ├── Operation 1: 거더 Pick
-                    │         └── Operation 2: 거더 Place
-                    │
-                    └── Product: 판넬
-                         └── Recipe: 판넬 설치
-                              ├── Operation 1: 판넬 Pick
-                              ├── Operation 2: 판넬 Place
-                              └── Operation 3: 체결
+                    └── 옥상 태양광 발전 설비 A
+                         ├── Operation 1: 판넬 Pick
+                         │    └── Component: 태양광 패널 × 20
+                         ├── Operation 2: 판넬 Place
+                         └── Operation 3: 체결
+                              ├── Component: 브라켓 × 40
+                              └── Component: 볼트 × 160
 
 실제 실행:
 Work Order
-└── WO-001 (설치 대상: 옥상 태양광 발전 설비 A, Recipe: 판넬 설치)
+└── WO-001 (설치 대상: 옥상 태양광 발전 설비 A)
      └── Work Execution
           ├── Robot: ROBOT-01
           └── Operation Execution
@@ -451,17 +371,9 @@ Work Order
                └── 체결 → SUCCESS
 ```
 
-Recipe Component:
-```
-판넬 설치
-├── 태양광 패널 × 20
-├── 브라켓 × 40
-└── 볼트 × 160
-```
-
 ---
 
-## 10. 요구사항 매핑
+## 8. 요구사항 매핑
 
 | ID | 요구사항 | 테이블/컬럼 |
 |---|---|---|
@@ -471,14 +383,14 @@ Recipe Component:
 | DB-FR-04 | Installation Target | `work_order → installation_target` |
 | DB-FR-05 | Priority | `work_order.priority` |
 | DB-FR-06 | Work Order Status | `work_order.status` |
-| DB-FR-07 | Recipe | `work_order.recipe_id` |
-| DB-FR-08 | Product | `product` |
-| DB-FR-09 | Recipe | `recipe` |
+| DB-FR-07 | Installation Target 기준 Work Order | `work_order.installation_target_id` |
+| DB-FR-08 | Installation Target 사양 | `installation_target` |
+| DB-FR-09 | Operation 등록 | `operation` |
 | DB-FR-10 | Operation | `operation` |
 | DB-FR-11 | Operation Sequence | `operation.sequence` |
 | DB-FR-12 | Operation Parameter | `operation.parameter` JSONB |
 | DB-FR-13 | Assembly Dimension | `operation.parameter` JSONB |
-| DB-FR-14 | Component | `component`, `recipe_component` |
+| DB-FR-14 | Component | `component` |
 | DB-FR-15 | Robot | `robot` |
 | DB-FR-16 | Tool / Gripper | `operation.parameter` JSONB |
 | DB-FR-17 | TCP | `operation.parameter` JSONB |
@@ -489,7 +401,7 @@ Recipe Component:
 | DB-FR-22 | Operation Execution | `operation_execution` |
 | DB-FR-23 | Execution Status | `work_execution.status`, `operation_execution.status` |
 | DB-FR-24 | Start/End Time | `work_execution`, `operation_execution` |
-| DB-FR-25 | Execution Result | `operation_execution.result` |
+| DB-FR-25 | Execution Result | `operation_execution.status` |
 | DB-FR-26 | Retry Count | `work_execution.retry_count`, `operation_execution.retry_count` |
 | DB-FR-27 | Work Event Log | `work_event` |
 | DB-FR-28 | Robot State Log | 확장 시 별도 테이블 추가 |
@@ -501,15 +413,16 @@ Recipe Component:
 | DB-FR-34 | Sensor Timestamp | `force_torque_data.timestamp` |
 | DB-FR-35 | Execution Link | `force_torque_data.operation_execution_id` |
 | DB-FR-36 | Sensor Result | 확장 시 별도 테이블 추가 |
-| DB-FR-37 | Recipe Version | `recipe.version` |
+| DB-FR-37 | Recipe Version | 확장 시 별도 관리 |
 | DB-FR-38 | Operation 이력 | `operation_execution → work_execution → work_order` |
 | DB-FR-39 | 결과/이벤트/오류 연결 | `operation_execution`, `work_event`, `error_log` |
 | DB-FR-40 | 측정 데이터 연결 | `force_torque_data → operation_execution` |
 | DB-FR-41 | 작업 이력 조회 | `work_order`, `work_execution`, `operation_execution` |
+| DB-FR-42 | Component Position | `component.current_position`, `component.assembly_position` |
 
 ---
 
-## 11. 확장 계획
+## 9. 확장 계획
 
 MVP 이후 실제 필요성이 확인되면 다음 테이블을 독립적으로 추가한다.
 
@@ -522,4 +435,5 @@ coordinate_system
 robot_state_log (robot_id FK, work_execution_id FK)
 sensor_result (sensor_id FK, operation_execution_id FK)
 ```
+
 초기에는 `operation.parameter` JSONB로 관리하고, 데이터 구조가 복잡해지거나 독립적인 CRUD가 필요해질 경우 별도 Master Table로 분리한다.

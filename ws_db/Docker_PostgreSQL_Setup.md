@@ -1,8 +1,8 @@
 # Docker PostgreSQL 설정 및 DB 구축 가이드
 
 > 프로젝트: 로봇 작업 공정 관리 시스템
-> 작성일: 2026-08-20
-> 참조: DB_DDL.sql, DB_스펙.md
+> 작성일: 2026-08-21
+> 참조: DB_DDL.sql, DB_specs.md
 
 ---
 
@@ -18,8 +18,8 @@ docker compose version
 ### 프로젝트 파일 구조
 
 ```
-DB_DDL.sql          # DDL 스크립트
-DB_스펙.md          # 테이블 명세
+DB_DDL.sql          # DDL 스크립트 (v5, 13개 테이블)
+DB_specs.md         # 테이블 명세
 docker-compose.yml  # Docker Compose 설정 (선택)
 ```
 
@@ -37,7 +37,7 @@ docker run -d \
   -e POSTGRES_DB=robot_workorder_db \
   -p 5432:5432 \
   -v robot_pgdata:/var/lib/postgresql/data \
-  postgres:15
+  postgres:16
 ```
 
 | 옵션 | 설명 |
@@ -47,7 +47,7 @@ docker run -d \
 | `-e` | 환경변수 (사용자/비밀번호/DB명) |
 | `-p 5432:5432` | 포트 바인딩 (호스트:컨테이너) |
 | `-v` | 데이터 볼륨 영구 저장 |
-| `postgres:15` | 이미지 버전 |
+| `postgres:16` | 이미지 버전 |
 
 ### 2.2 docker-compose.yml 사용
 
@@ -56,7 +56,7 @@ version: "3.9"
 
 services:
   postgres:
-    image: postgres:15
+    image: postgres:16
     container_name: robot-postgres
     environment:
       POSTGRES_USER: postgres
@@ -86,7 +86,7 @@ docker compose up -d
 
 ```bash
 # 호스트에서 컨테이너로 파일 복사
-docker cp /home/shbong/Downloads/DB_DDL.sql robot-postgres:/tmp/DB_DDL.sql
+docker cp /home/shbong/workspace/assembly-cobot/ws_db/DB_DDL.sql robot-postgres:/tmp/DB_DDL.sql
 
 # psql로 DDL 실행
 docker exec -it robot-postgres psql -U postgres -d robot_workorder_db -f /tmp/DB_DDL.sql
@@ -95,7 +95,7 @@ docker exec -it robot-postgres psql -U postgres -d robot_workorder_db -f /tmp/DB
 ### 3.2 stdin으로 직접 전달
 
 ```bash
-cat /home/shbong/Downloads/DB_DDL.sql | \
+cat /home/shbong/workspace/assembly-cobot/ws_db/DB_DDL.sql | \
   docker exec -i robot-postgres psql -U postgres -d robot_workorder_db
 ```
 
@@ -116,7 +116,7 @@ docker exec -it robot-postgres psql -U postgres -d robot_workorder_db
 ```bash
 docker run -it --rm \
   --network host \
-  postgres:15 psql -h localhost -U postgres -d robot_workorder_db
+  postgres:16 psql -h localhost -U postgres -d robot_workorder_db
 ```
 
 ---
@@ -145,7 +145,7 @@ docker exec -it robot-postgres psql -U postgres -d robot_workorder_db
 -- 버전 확인
 SELECT version();
 
--- 테이블 목록 확인 (23개 예상)
+-- 테이블 목록 확인 (13개 예상)
 SELECT table_name
 FROM information_schema.tables
 WHERE table_schema = 'public'
@@ -182,13 +182,12 @@ DBeaver, pgAdmin 등에서 연결:
 
 ```sql
 DROP TABLE IF EXISTS
-  force_torque_data, sensor,
-  error_log, robot_state_log, work_event_log,
+  force_torque_data, work_event, error_log,
   operation_execution, work_execution,
-  work_order, position, fixture, tcp, tool,
-  coordinate_system, robot,
-  component, assembly_dimension, operation_parameter, operation,
-  recipe, product, installation_target, site, project
+  work_order,
+  component, operation,
+  sensor, robot,
+  installation_target, site, project
 CASCADE;
 
 DROP FUNCTION IF EXISTS update_timestamp();
