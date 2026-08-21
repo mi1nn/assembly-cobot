@@ -27,7 +27,7 @@ setup(
     },
     entry_points={
         'console_scripts': [
-            "pose_test = solar_panel_robot.pose_test:main"
+            "main = solar_panel_robot.main:main"
         ],
     },
-)
+)   
