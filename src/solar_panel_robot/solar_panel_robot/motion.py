@@ -3,8 +3,12 @@ from .gripper import Gripper
 
 from DSR_ROBOT2 import (
     movel,
+    movesx,
     posx,
+    trans,
+    DR_BASE,
 )
+
 
 
 class RobotMotion:
@@ -50,11 +54,11 @@ class RobotMotion:
         print("[PICK] ready :", ready, flush=True)
         print("[PICK] target:", target, flush=True)
 
-        movel(
-            ready,
-            vel=self.velocity,
-            acc=self.acc
-        )
+        # movel(
+        #     ready,
+        #     vel=self.velocity,
+        #     acc=self.acc
+        # ) # pick 장소로 이동
 
         movel(
             target,
@@ -85,11 +89,11 @@ class RobotMotion:
         print("[PLACE] ready :", ready, flush=True)
         print("[PLACE] target:", target, flush=True)
 
-        movel(
-            ready,
-            vel=self.velocity,
-            acc=self.acc
-        )
+        # movel(
+        #     ready,
+        #     vel=self.velocity,
+        #     acc=self.acc
+        # ) # place 장소로 이동
 
         movel(
             target,
@@ -104,3 +108,42 @@ class RobotMotion:
             vel=self.velocity,
             acc=self.acc
         )
+
+    def move_arc(start, end, height=100, steps=6):
+
+        points = []
+
+        for i in range(1, steps + 1):
+
+            t = float(i) / steps
+
+            # X, Y는 시작점 -> 끝점 선형 이동
+            x = start[0] + (end[0] - start[0]) * t
+            y = start[1] + (end[1] - start[1]) * t
+
+            # 기본 Z 선형 이동
+            z_linear = start[2] + (end[2] - start[2]) * t
+
+            # 포물선 높이 추가
+            z_arc = 4 * height * t * (1 - t)
+
+            z = z_linear + z_arc
+
+            # 자세도 시작 -> 끝으로 서서히 변경
+            a = start[3] + (end[3] - start[3]) * t
+            b = start[4] + (end[4] - start[4]) * t
+            c = start[5] + (end[5] - start[5]) * t
+
+            point = posx(x, y, z, a, b, c)
+
+            points.append(point)
+
+        # 스플라인 곡선 이동
+        movesx(
+            points,
+            v=500,
+            a=500,
+            ref=DR_BASE
+            )
+
+    
