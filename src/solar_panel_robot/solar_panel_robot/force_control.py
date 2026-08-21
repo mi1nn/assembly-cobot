@@ -16,13 +16,29 @@ class ForceController:
     def compliance_on(
         self,
         stiffness=(3000, 3000, 3000, 200, 200, 200),
-        time=0.0
+        time=0.0,
+        reference="base"
     ):
         print(
             f"[COMPLIANCE] ON "
             f"stiffness={stiffness}, "
             f"time={time}",
             flush=True
+        )
+
+        reference_map = {
+        "base": DR_BASE,
+        "tool": DR_TOOL,
+        }
+
+        if reference not in reference_map:
+            raise ValueError(
+                f"Invalid reference: {reference}"
+            )
+
+    # Compliance 시작 전에 기준 좌표계 설정
+        set_ref_coord(
+            reference_map[reference]
         )
 
         result = task_compliance_ctrl(
