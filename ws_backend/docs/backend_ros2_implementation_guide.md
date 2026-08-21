@@ -185,7 +185,7 @@ Work Order
 ### 구조
 
 ```text
-backend/
+ws_backend/
 ├── app/
 │   ├── __init__.py
 │   ├── routes/
@@ -811,8 +811,6 @@ HTML / JS
 
 
 ---
-3. setup_db.sh --seed 옵션 추가
-
 5. DB 재현 테스트
    ↓
 6. SQLAlchemy 연결
