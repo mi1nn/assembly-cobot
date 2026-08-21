@@ -18,7 +18,6 @@ class ForceController:
         stiffness=(3000, 3000, 3000, 200, 200, 200),
         time=0.0
     ):
-
         print(
             f"[COMPLIANCE] ON "
             f"stiffness={stiffness}, "
@@ -26,17 +25,33 @@ class ForceController:
             flush=True
         )
 
-        task_compliance_ctrl(
+        result = task_compliance_ctrl(
             stx=list(stiffness),
             time=time
         )
 
+        print(
+            f"[COMPLIANCE] result={result}",
+            flush=True
+        )
+
+        return result
+
 
     def compliance_off(self):
+        print(
+            "[COMPLIANCE] OFF",
+            flush=True
+        )
 
-        print("[COMPLIANCE] OFF", flush=True)
+        result = release_compliance_ctrl()
 
-        release_compliance_ctrl()
+        print(
+            f"[COMPLIANCE] OFF result={result}",
+            flush=True
+        )
+
+        return result
 
 
     def force_on(
@@ -47,7 +62,6 @@ class ForceController:
         mode="relative",
         reference="base"
     ):
-
         mode_map = {
             "relative": DR_FC_MOD_REL,
             "absolute": DR_FC_MOD_ABS,
@@ -77,28 +91,60 @@ class ForceController:
             flush=True
         )
 
-        set_ref_coord(
+        # Force 기준 좌표계 설정
+        ref_result = set_ref_coord(
             reference_map[reference]
         )
 
-        set_desired_force(
+        print(
+            f"[FORCE] set_ref_coord result={ref_result}",
+            flush=True
+        )
+
+        # 목표 힘 설정
+        force_result = set_desired_force(
             fd=list(desired_force),
             dir=list(direction),
             time=time,
             mod=mode_map[mode]
         )
 
+        print(
+            f"[FORCE] set_desired_force result={force_result}",
+            flush=True
+        )
+
+        return force_result
+
 
     def force_off(self):
+        print(
+            "[FORCE] OFF",
+            flush=True
+        )
 
-        print("[FORCE] OFF", flush=True)
+        result = release_force()
 
-        release_force()
+        print(
+            f"[FORCE] OFF result={result}",
+            flush=True
+        )
+
+        return result
 
 
     def all_off(self):
+        print(
+            "[FORCE CONTROL] ALL OFF",
+            flush=True
+        )
 
-        print("[FORCE CONTROL] ALL OFF", flush=True)
+        force_result = release_force()
+        compliance_result = release_compliance_ctrl()
 
-        release_force()
-        release_compliance_ctrl()
+        print(
+            f"[FORCE CONTROL] "
+            f"force_off={force_result}, "
+            f"compliance_off={compliance_result}",
+            flush=True
+        )

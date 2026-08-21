@@ -19,13 +19,12 @@ class PoseLoader:
         self.motion = data["motion"]
         self.gripper = data["gripper"]
 
-    
+
     def get(self, name):
         if name not in self.poses:
             raise KeyError(f"Pose '{name}' not found")
 
         return self.poses[name]
-
     
     def get_velocity(self):
         return self.motion["velocity"]

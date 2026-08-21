@@ -36,6 +36,7 @@ def main(args=None):
         )
 
         from .motion import RobotMotion
+        from .force_control import ForceController
 
         # =========================================================
         # Robot 초기 설정
@@ -86,6 +87,7 @@ def main(args=None):
         # =========================================================
 
         motion = RobotMotion()
+        force = ForceController()
 
         node.get_logger().info("전체 작업 시작")
 
@@ -95,22 +97,31 @@ def main(args=None):
         motion.move_home()
 
         node.get_logger().info("Home 이동 완료")
+        time.sleep(1.0)
 
         # 6. Pick
-        node.get_logger().info("Pick 시작")
+        node.get_logger().info("Compliance 시작")
 
-        motion.pick("pick")
+        force.compliance_on()
 
-        node.get_logger().info("Pick 완료")
+        node.get_logger().info("Compliance 완료")
 
         # 7. Place
-        node.get_logger().info("Place 시작")
+        node.get_logger().info("force 시작")
 
-        motion.place("place")
+        force.force_on(
+            desired_force=(0, 0, 10, 0, 0, 0),
+            direction=(0, 0, 1, 0, 0, 0),
+            reference='base'
+        )
 
-        node.get_logger().info("Place 완료")
+        time.sleep(5.0)
 
-        node.get_logger().info("전체 작업 완료")
+        node.get_logger().info("force off")
+        force.force_off
+
+        node.get_logger().info("compliance_off")
+        force.compliance_off
 
     except Exception as e:
         node.get_logger().error(
