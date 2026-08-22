@@ -1,3 +1,5 @@
+from sqlalchemy import func
+
 from app.extensions import db
 
 
@@ -22,7 +24,7 @@ class WorkOrder(db.Model):
 
     installation_target_id = db.Column(
         db.BigInteger,
-        db.ForeignKey("installation_target.installation_target_id"),
+        # db.ForeignKey("installation_target.installation_target_id"),
         nullable=False,
     )
 
@@ -46,11 +48,13 @@ class WorkOrder(db.Model):
     created_at = db.Column(
         db.DateTime,
         nullable=False,
+        server_default=func.now(),
     )
 
     updated_at = db.Column(
         db.DateTime,
         nullable=False,
+        server_default=func.now(),
     )
 
     # WorkOder 객체를 jsonify() 형태로 변경하기 위해 딕셔너리로 바꾸는 메서드
