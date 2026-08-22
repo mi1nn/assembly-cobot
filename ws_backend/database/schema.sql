@@ -1,5 +1,5 @@
 -- ============================================================
--- 로봇 작업 공정 관리 시스템 - DB DDL (v6)
+-- 로봇 작업 공정 관리 시스템 - DB DDL (FINAL)
 -- 구조: 9개 테이블 / PostgreSQL 16
 -- ============================================================
 
@@ -14,7 +14,14 @@ CREATE TABLE IF NOT EXISTS installation (
     target_code VARCHAR(50) NOT NULL UNIQUE,
     target_name VARCHAR(200) NOT NULL,
     specification TEXT,
-    status VARCHAR(30) NOT NULL DEFAULT 'ACTIVE',
+    status VARCHAR(30) NOT NULL DEFAULT 'ACTIVE'
+    CONSTRAINT chk_installation_status
+    CHECK (status IN (
+        'ACTIVE',
+        'INACTIVE',
+        'MAINTENANCE',
+        'ARCHIVED'
+    )),
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
@@ -45,7 +52,15 @@ CREATE TABLE IF NOT EXISTS robot (
     name VARCHAR(200) NOT NULL,
     manufacturer VARCHAR(100),
     model VARCHAR(100),
-    status VARCHAR(30) NOT NULL DEFAULT 'IDLE',
+    status VARCHAR(30) NOT NULL DEFAULT 'IDLE'
+    CONSTRAINT chk_robot_status
+    CHECK (status IN (
+        'IDLE',
+        'RUNNING',
+        'ERROR',
+        'OFFLINE',
+        'MAINTENANCE'
+    )),
     dofs INT,
     payload_kg DECIMAL(8,2),
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
@@ -73,12 +88,15 @@ CREATE TABLE IF NOT EXISTS work_order (
     installation_id BIGINT NOT NULL REFERENCES installation(installation_id),
     priority INT NOT NULL DEFAULT 3,
     status VARCHAR(30) NOT NULL DEFAULT 'CREATED'
-    CHECK (status IN(
-        "CREATED",
-        "READY",
-        "RUNNING",
-        "COMPLETED",
-        "FAILED"
+    CONSTRAINT chk_work_order_status
+    CHECK (
+        status IN(
+            'CREATED',
+            'READY',
+            'RUNNING',
+            'COMPLETED',
+            'FAILED',
+            'CANCELLED'
     )),
     planned_start_date TIMESTAMP,
     planned_end_date TIMESTAMP,
@@ -97,6 +115,7 @@ CREATE TABLE IF NOT EXISTS work_execution (
     robot_id BIGINT NOT NULL REFERENCES robot(robot_id),
     execution_number VARCHAR(50) NOT NULL UNIQUE,
     status VARCHAR(30) NOT NULL DEFAULT 'PENDING'
+    CONSTRAINT chk_work_execution_status
     CHECK (status IN (
         'PENDING',
         'RUNNING',
@@ -118,7 +137,15 @@ CREATE TABLE IF NOT EXISTS operation_execution (
     work_execution_id BIGINT NOT NULL REFERENCES work_execution(work_execution_id),
     operation_id BIGINT NOT NULL REFERENCES operation(operation_id),
     sequence INT NOT NULL,
-    status VARCHAR(30) NOT NULL DEFAULT 'PENDING',
+    status VARCHAR(30) NOT NULL DEFAULT 'PENDING'
+    CONSTRAINT chk_operation_execution_status
+    CHECK (status IN (
+        'PENDING',
+        'RUNNING',
+        'COMPLETED',
+        'FAILED',
+        'CANCELLED'
+    )),
     start_time TIMESTAMP,
     end_time TIMESTAMP,
     retry_count INT NOT NULL DEFAULT 0,
@@ -135,7 +162,8 @@ CREATE TABLE IF NOT EXISTS log (
     operation_execution_id BIGINT REFERENCES operation_execution(operation_execution_id),
     robot_id BIGINT REFERENCES robot(robot_id),
     log_type VARCHAR(50) NOT NULL
-    CHECK (log_type IN(
+    CONSTRAINT chk_log_type
+    CHECK (log_type IN (
         'EVENT',
         'ERROR',
         'SYSTEM',
@@ -143,6 +171,7 @@ CREATE TABLE IF NOT EXISTS log (
     )),
     code VARCHAR(50),
     severity VARCHAR(20) NOT NULL DEFAULT 'INFO'
+    CONSTRAINT chk_log_severity
     CHECK (severity IN (
         'DEBUG',
         'INFO',

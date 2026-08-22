@@ -25,6 +25,7 @@ WORK_ORDER_STATUSES = {
     "RUNNING",
     "COMPLETED",
     "FAILED",
+    "CANCELLED",
 }
 
 
@@ -133,7 +134,7 @@ def add_work_order():
                 "code": "WORK_ORDER_CONFLICT",
                 "message": (
                     "The order number already exists or the "
-                    "installation target is invalid."
+                    "installation is invalid."
                 ),
             },
         }), 409
