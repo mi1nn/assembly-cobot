@@ -89,7 +89,7 @@ def add_work_order():
     required_fields = (
           "order_number",
           "title",
-          "installation_target_id",
+          "installation_id",
     )
 
     missing_fields = [
@@ -115,8 +115,8 @@ def add_work_order():
         work_order = create_work_order(
             order_number=request_data["order_number"],
             title=request_data["title"],
-            installation_target_id=request_data[
-                "installation_target_id"
+            installation_id=request_data[
+                "installation_id"
             ],
             priority=request_data.get("priority", 3),
             remark=request_data.get("remark"),

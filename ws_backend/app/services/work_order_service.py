@@ -24,7 +24,7 @@ def get_work_order_by_id(work_order_id: int,) -> WorkOrder | None:
 def create_work_order(
     order_number: str,
     title: str,
-    installation_target_id: int,
+    installation_id: int,
     priority: int = 3,
     remark: str | None = None,
     created_by: str | None = None,
@@ -33,7 +33,7 @@ def create_work_order(
     work_order = WorkOrder(
         order_number=order_number,
         title=title,
-        installation_target_id=installation_target_id,
+        installation_id=installation_id,
         priority=priority,
         status="CREATED",
         remark=remark,
