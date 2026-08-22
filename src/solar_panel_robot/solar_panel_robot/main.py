@@ -1,137 +1,291 @@
 import rclpy
+from rclpy.node import Node
+
+from std_msgs.msg import String
+
 import DR_init
-import time
 
 
 ROBOT_ID = "dsr01"
 ROBOT_MODEL = "m0609"
 
-TOOL_NAME = "ToolWeight"
-TCP_NAME = "GripperDA_v1"
 
-MANUAL_MODE = 0
-AUTO_MODE = 1
+class SolarPanelNode(Node):
+
+    def __init__(self):
+
+        super().__init__(
+            "solar_panel_robot",
+            namespace=ROBOT_ID
+        )
+
+        self.robot = None
+        self.solar = None
+
+        # ==========================================
+        # 현재 상태
+        # ==========================================
+
+        self.current_status = "STARTING"
 
 
-DR_init.__dsr__id = ROBOT_ID
-DR_init.__dsr__model = ROBOT_MODEL
+        # ==========================================
+        # Status Publisher
+        # 실제 Topic: /dsr01/status
+        # ==========================================
+
+        self.status_publisher = self.create_publisher(
+            String,
+            "status",
+            10
+        )
+
+
+        # ==========================================
+        # 현재 상태를 1초마다 Publish
+        # ==========================================
+
+        self.status_timer = self.create_timer(
+            1.0,
+            self.publish_current_status
+        )
+
+
+        self.get_logger().info(
+            "Solar Panel Robot Node 생성 완료"
+        )
+
+        self.set_status("STARTING")
+
+
+    # ==============================================
+    # 상태 변경
+    # ==============================================
+
+    def set_status(self, status):
+
+        self.current_status = status
+
+        self.get_logger().info(
+            f"[STATUS] {status}"
+        )
+
+        # 상태 변경 즉시 한 번 Publish
+        self.publish_current_status()
+
+
+    # ==============================================
+    # 현재 상태 Publish
+    # ==============================================
+
+    def publish_current_status(self):
+
+        msg = String()
+
+        msg.data = self.current_status
+
+        self.status_publisher.publish(msg)
+
+
+    # ==============================================
+    # Robot / Motion 준비
+    # ==============================================
+
+    def setup_components(self):
+
+        from .robot_controller import RobotController
+        from .solar_motion import SolarMotion
+
+
+        # ==========================================
+        # Robot 초기화 시작
+        # ==========================================
+
+        self.set_status(
+            "INITIALIZING"
+        )
+
+
+        # ==========================================
+        # Robot Controller 생성
+        # ==========================================
+
+        self.robot = RobotController(
+            self
+        )
+
+
+        # ==========================================
+        # Manual
+        # Tool
+        # TCP
+        # Auto
+        # ==========================================
+
+        self.robot.initialize()
+
+
+        # ==========================================
+        # Solar Motion 생성
+        # ==========================================
+
+        self.solar = SolarMotion(
+            self
+        )
+
+
+        self.get_logger().info(
+            "Robot 및 Solar Motion 준비 완료"
+        )
+
+
+        # ==========================================
+        # 작업 준비 완료
+        # ==========================================
+
+        self.set_status(
+            "READY"
+        )
+
+
+    # ==============================================
+    # Solar Motion 실행
+    # ==============================================
+
+    def run_solar_motion(self):
+
+        # SolarMotion 준비 확인
+        if self.solar is None:
+
+            raise RuntimeError(
+                "SolarMotion이 준비되지 않았습니다."
+            )
+
+
+        try:
+
+            # ======================================
+            # 작업 시작
+            # ======================================
+
+            self.set_status(
+                "RUNNING"
+            )
+
+
+            # ======================================
+            # 실제 작업
+            # ======================================
+
+            self.solar.run()
+
+
+            # ======================================
+            # 작업 정상 완료
+            # ======================================
+
+            self.set_status(
+                "READY"
+            )
+
+
+        except Exception:
+
+            # ======================================
+            # 작업 오류
+            # ======================================
+
+            self.set_status(
+                "ERROR"
+            )
+
+            # main()까지 오류 전달
+            raise
 
 
 def main(args=None):
+
+    # ==============================================
+    # ROS2 초기화
+    # ==============================================
+
     rclpy.init(args=args)
 
-    node = rclpy.create_node(
-        "solar_panel_robot",
-        namespace=ROBOT_ID
-    )
+
+    # ==============================================
+    # Doosan 기본 설정
+    # ==============================================
+
+    DR_init.__dsr__id = ROBOT_ID
+    DR_init.__dsr__model = ROBOT_MODEL
+
+
+    # ==============================================
+    # Node 생성
+    # ==============================================
+
+    node = SolarPanelNode()
+
+
+    # ==============================================
+    # Doosan Node 등록
+    # ==============================================
 
     DR_init.__dsr__node = node
 
+
     try:
-        # DSR node 설정 이후 import
-        from DSR_ROBOT2 import (
-            set_robot_mode,
-            set_tool,
-            set_tcp,
+
+        # ==========================================
+        # Robot 초기화
+        # ==========================================
+
+        node.setup_components()
+
+
+        # ==========================================
+        # 현재 테스트용
+        #
+        # 추후에는 ROS Action/Service가
+        # 이 함수를 호출하게 만들 예정
+        # ==========================================
+
+        node.run_solar_motion()
+
+
+        # ==========================================
+        # ROS 통신 대기
+        # ==========================================
+
+        rclpy.spin(
+            node
         )
 
-        from .motion import RobotMotion
-        from .force_control import ForceController
 
-        # =========================================================
-        # Robot 초기 설정
-        # =========================================================
-
-        # 1. Manual Mode
-        node.get_logger().info("Manual Mode 전환 시작")
-
-        set_robot_mode(MANUAL_MODE)
-
-        time.sleep(0.5)
-
-        node.get_logger().info("Manual Mode 전환 완료")
-
-        # 2. Tool 설정
-        node.get_logger().info(
-            f"Tool 설정 시작: {TOOL_NAME}"
-        )
-
-        set_tool(TOOL_NAME)
-
-        node.get_logger().info(
-            f"Tool 설정 완료: {TOOL_NAME}"
-        )
-
-        # 3. TCP 설정
-        node.get_logger().info(
-            f"TCP 설정 시작: {TCP_NAME}"
-        )
-
-        set_tcp(TCP_NAME)
+    except KeyboardInterrupt:
 
         node.get_logger().info(
-            f"TCP 설정 완료: {TCP_NAME}"
+            "사용자에 의해 종료되었습니다."
         )
 
-        # 4. Auto Mode
-        node.get_logger().info("Auto Mode 전환 시작")
-
-        set_robot_mode(AUTO_MODE)
-
-        time.sleep(0.5)
-
-        node.get_logger().info("Auto Mode 전환 완료")
-
-        # =========================================================
-        # Motion
-        # =========================================================
-
-        motion = RobotMotion()
-        force = ForceController()
-
-        node.get_logger().info("전체 작업 시작")
-
-        # 5. Home
-        node.get_logger().info("Home 이동 시작")
-
-        motion.move_home()
-
-        node.get_logger().info("Home 이동 완료")
-        time.sleep(1.0)
-
-        # 6. Pick
-        node.get_logger().info("Compliance 시작")
-
-        force.compliance_on()
-
-        node.get_logger().info("Compliance 완료")
-
-        # 7. Place
-        node.get_logger().info("force 시작")
-
-        force.force_on(
-            desired_force=(0, 0, 10, 0, 0, 0),
-            direction=(0, 0, 1, 0, 0, 0),
-            reference='base'
-        )
-
-        time.sleep(5.0)
-
-        node.get_logger().info("force off")
-        force.force_off()
-
-        node.get_logger().info("compliance_off")
-        force.compliance_off()
 
     except Exception as e:
+
         node.get_logger().error(
-            f"작업 중 오류 발생: {e}"
+            f"프로그램 오류: {e}"
         )
 
+        node.set_status(
+            "ERROR"
+        )
+
+
     finally:
+
         node.destroy_node()
 
         if rclpy.ok():
+
             rclpy.shutdown()
 
 

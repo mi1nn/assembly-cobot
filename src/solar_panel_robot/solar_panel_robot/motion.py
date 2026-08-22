@@ -7,7 +7,6 @@ from DSR_ROBOT2 import (
     movesx,
     posj,
     posx,
-    trans,
     DR_BASE,
     DR_MV_MOD_REL,
 )
@@ -17,12 +16,35 @@ class RobotMotion:
 
     def __init__(self):
         self.config = PoseLoader()
-
         self.velocity = self.config.get_velocity()
         self.acc = self.config.get_acc()
-
         self.gripper = Gripper()
 
+
+    # Basic
+    def move_home(self):
+        pose = self.config.get("home")
+
+        if pose["type"] != "joint":
+            raise ValueError(
+                "Pose 'home' must be joint type"
+            )
+
+        print("[HOME] 이동 시작", flush=True)
+
+        home = posj(pose["position"])
+        self.gripper.release()
+
+        movej(
+            home,
+            vel=self.velocity,
+            acc=self.acc
+        )
+
+        print("[HOME] 이동 완료", flush=True)
+
+
+    # Move    
     def make_target_ready(self, pose_name, approach_height):
         pose = self.config.get(pose_name)
 
@@ -41,33 +63,6 @@ class RobotMotion:
         ready = posx(ready_position)
 
         return target, ready
-
-    def move_home(self):
-        pose = self.config.get("home")
-
-        if pose["type"] != "joint":
-            raise ValueError(
-                "Pose 'home' must be joint type"
-            )
-
-        home = posj(pose["position"])
-
-        print("[HOME] home:", home, flush=True)
-
-        # Gripper Open
-        print("[HOME] Gripper Open", flush=True)
-        self.gripper.release()
-
-        # Home 이동
-        print("[HOME] 이동 시작", flush=True)
-
-        movej(
-            home,
-            vel=self.velocity,
-            acc=self.acc
-        )
-
-        print("[HOME] 이동 완료", flush=True)
 
     def move_z(self, distance):
         # BASE 좌표계 기준 Z축 상대 이동
@@ -115,6 +110,7 @@ class RobotMotion:
         # 3. BASE Z 방향으로 상승
         self.move_z(distance)
 
+    @staticmethod
     def move_arc(start, end, height=100, steps=6):
 
         points = []

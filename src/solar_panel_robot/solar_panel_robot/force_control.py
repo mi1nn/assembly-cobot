@@ -36,7 +36,6 @@ class ForceController:
                 f"Invalid reference: {reference}"
             )
 
-    # Compliance 시작 전에 기준 좌표계 설정
         set_ref_coord(
             reference_map[reference]
         )
@@ -104,16 +103,6 @@ class ForceController:
             f"direction={direction}, "
             f"mode={mode}, "
             f"reference={reference}",
-            flush=True
-        )
-
-        # Force 기준 좌표계 설정
-        ref_result = set_ref_coord(
-            reference_map[reference]
-        )
-
-        print(
-            f"[FORCE] set_ref_coord result={ref_result}",
             flush=True
         )
 
