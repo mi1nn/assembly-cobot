@@ -32,3 +32,14 @@ class Config:
     # 불필요한 객체 변경 추적 기능 OFF
     SQLALCHEMY_TRACK_MODIFICATIONS = False
 
+    BRIDGE_BASE_URL = os.getenv(
+        "BRIDGE_BASE_URL",
+        "http://127.0.0.1:8001",
+    ).rstrip("/")
+
+    BRIDGE_TIMEOUT_SECONDS = float(
+        os.getenv(
+            "BRIDGE_TIMEOUT_SECONDS",
+            "3",
+        )
+    )

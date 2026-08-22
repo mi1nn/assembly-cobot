@@ -154,17 +154,462 @@ Route → Service → Model → PostgreSQL
 WorkOrder 객체 목록 → to_dict() → JSON + HTTP 200
 ```
 
-Step 5에서 앞으로 구현할 내용:
+### Step 5 최종 진행 상태
 
-- `GET /api/v1/work-orders/{id}`: 단일 조회
-- `POST /api/v1/work-orders`: 생성
-- `PATCH /api/v1/work-orders/{id}`: 수정
-- 요청값 검증과 공통 예외 처리
+이후 단일 조회, 생성, 부분 수정까지 구현하여 가이드의 Work Order CRUD 범위를 완료했다.
 
+```text
+GET    /api/v1/work-orders
+GET    /api/v1/work-orders/{id}
+POST   /api/v1/work-orders
+PATCH  /api/v1/work-orders/{id}
+```
+
+DB 구조 변경에 따라 이전의 `installation_target_id`는 `installation_id`로 변경했다. DB, SQLAlchemy 모델, Service 함수 인자, Route 요청 JSON의 필드 이름이 모두 같아야 한다.
+
+---
 --- 
-## Step6. 
 
-index.html 화면 구조 정의 - 무엇을 표시할지
-styles.css 화면 디자인 정의 - 어떻게 보일지
-app.js 사용자 동작과 API 호출 처리 - 어떻게 동작할지
+## Step 6. HTML/JavaScript Dashboard 연결
 
+### Frontend 파일의 역할
+
+```text
+frontend/
+├── index.html   화면에 무엇을 표시할지 정의
+├── styles.css   화면을 어떻게 표시할지 정의
+└── app.js       사용자 동작과 API 호출을 정의
+```
+
+### Flask에서 정적 파일 제공
+
+`create_app()`에서 Flask의 정적 파일 위치를 `frontend`로 지정했다.
+
+```python
+app = Flask(
+    __name__,
+    static_folder="../frontend",
+    static_url_path="/static",
+)
+```
+
+두 설정의 차이:
+
+```text
+static_folder     서버 파일시스템의 실제 디렉터리
+static_url_path   브라우저가 요청하는 URL Prefix
+```
+
+따라서 브라우저 요청과 실제 파일이 다음처럼 연결된다.
+
+```text
+/static/styles.css → frontend/styles.css
+/static/app.js      → frontend/app.js
+```
+
+`pages_bp`는 API가 아닌 HTML 페이지 Route를 담당한다.
+
+```python
+@pages_bp.get("/")
+def index():
+    return current_app.send_static_file("index.html")
+```
+
+`current_app`은 Application Factory가 만든 현재 Flask 앱을 가리킨다. `pages_bp`도 다른 Blueprint와 마찬가지로 `create_app()`에서 등록해야 활성화된다.
+
+```text
+GET /
+  ↓
+pages.index()
+  ↓
+frontend/index.html
+```
+
+Frontend와 API를 같은 Flask 서버에서 제공했기 때문에 현재 단계에서는 별도 CORS 설정이 필요하지 않다.
+
+### HTML 구조
+
+Dashboard에는 다음 요소를 구성했다.
+
+- Work Order 생성 Form
+- Work Order 목록 영역
+- 목록 새로고침 버튼
+- Robot 상태 표시 영역
+
+JavaScript가 HTML 요소를 찾을 수 있도록 고유한 `id`를 지정했다.
+
+```text
+work-order-form    Work Order 생성 Form
+work-order-list    Work Order 목록이 들어갈 영역
+refresh-button     목록을 다시 조회하는 버튼
+robot-status       Robot 상태 표시 영역
+form-message       생성 성공/실패 메시지 영역
+```
+
+Form 입력의 `name`은 `FormData`와 Backend 요청 JSON의 Key로 사용된다.
+
+```html
+<input name="installation_id">
+```
+
+```javascript
+formData.get("installation_id");
+```
+
+### CSS에서 배운 점
+
+- `box-sizing: border-box`는 width 계산에 padding과 border를 포함한다.
+- `display: flex`는 제목과 버튼처럼 한 줄에 배치할 요소에 사용한다.
+- `display: grid`는 Form과 Work Order 카드 목록처럼 반복적인 레이아웃에 사용한다.
+- `data-status` 속성을 이용해 Work Order 상태별 Badge 색상을 지정했다.
+- `:disabled`, `:hover`, `:focus`로 버튼과 입력 요소의 상태별 스타일을 표현했다.
+
+예:
+
+```css
+.status-badge[data-status="COMPLETED"] {
+    background-color: #d1fae5;
+    color: #047857;
+}
+```
+
+### DOMContentLoaded와 이벤트 등록
+
+```javascript
+document.addEventListener("DOMContentLoaded", () => {
+    // 버튼과 Form 이벤트 등록
+    // 최초 Work Order 조회
+});
+```
+
+`DOMContentLoaded`는 브라우저가 HTML 구조를 모두 만든 뒤 발생한다. HTML 요소가 만들어지기 전에 `getElementById()`를 호출하는 문제를 피할 수 있다.
+
+`"use strict"`는 JavaScript 엄격 모드 지시문이며 파일의 첫 실행문보다 앞에 있어야 한다. 현재 코드에서도 상수 선언보다 위로 배치하는 것이 올바르다.
+
+### Work Order 목록 조회
+
+`loadWorkOrders()`에서 Fetch API로 Backend를 호출했다.
+
+```javascript
+const response = await fetch(
+    "/api/v1/work-orders",
+    {
+        method: "GET",
+        headers: {
+            "Accept": "application/json",
+        },
+    },
+);
+```
+
+`fetch()`는 Promise를 반환한다. `async/await`를 사용하면 비동기 요청을 순차 코드처럼 읽기 쉽게 작성할 수 있다.
+
+fetch 요청 → HTTP 응답 대기 → response.json() → success 및 상태 코드 확인 → renderWorkOrders()
+
+HTTP 요청이 성공했는지는 두 가지를 함께 확인했다.
+
+```javascript
+if (!response.ok || !responseData.success) {
+    throw new Error(...);
+}
+```
+
+- `response.ok`: HTTP 상태 코드가 200번대인지 확인
+- `responseData.success`: Backend 공통 응답의 업무 처리 성공 여부 확인
+
+`try/catch/finally`의 역할:
+
+- try      정상 API 호출과 렌더링
+- catch    네트워크/API 오류 처리
+- finally  성공 여부와 관계없이 버튼 상태 복구
+
+### DOM으로 Work Order 렌더링
+
+API로 받은 배열을 순회하며 `document.createElement()`로 Work Order 카드를 만들었다.
+
+```text
+renderWorkOrders()
+  ↓
+createWorkOrderCard()
+  ↓
+createDetail()
+```
+
+`replaceChildren()`은 이전 목록이나 로딩 메시지를 제거한다. 데이터가 빈 배열이면 오류가 아니라 "등록된 Work Order가 없습니다"를 표시한다.
+
+DB에서 받은 문자열은 `innerHTML` 대신 `textContent`로 표시했다.
+
+```javascript
+title.textContent = workOrder.title;
+```
+
+`textContent`는 데이터 안에 HTML이나 JavaScript가 있어도 실행하지 않고 글자로 표시하므로 XSS 위험을 줄인다.
+
+### Work Order 생성
+
+Form의 기본 제출은 페이지를 새로고침하므로 이를 막았다.
+
+```javascript
+event.preventDefault();
+```
+
+`FormData`로 입력값을 읽고 Backend 요청 객체로 변환했다. HTML의 number 입력도 JavaScript에서는 문자열이므로 `Number()` 변환이 필요하다.
+
+```javascript
+const requestData = {
+    order_number: formData.get("order_number").trim(),
+    installation_id: Number(formData.get("installation_id")),
+    priority: Number(formData.get("priority")),
+};
+```
+
+JavaScript 객체는 `JSON.stringify()`로 JSON 문자열로 변환하여 전송한다.
+
+```javascript
+fetch("/api/v1/work-orders", {
+    method: "POST",
+    headers: {
+        "Content-Type": "application/json",
+    },
+    body: JSON.stringify(requestData),
+});
+```
+
+생성 성공 시 Form을 초기화하고 `loadWorkOrders()`를 다시 호출하여 새 데이터를 화면에 반영했다.
+
+### Work Order 상태 수정
+
+카드에 상태 Select와 저장 버튼을 만들고 PATCH API와 연결했다.
+
+```javascript
+fetch(`/api/v1/work-orders/${workOrderId}`, {
+    method: "PATCH",
+    headers: {
+        "Content-Type": "application/json",
+    },
+    body: JSON.stringify({status}),
+});
+```
+
+현재 상태 수정 UI는 CRUD와 API 통신 검증용이다. 최종 시스템에서는 사용자가 모든 상태를 임의로 선택하지 않도록 변경해야 한다.
+
+```text
+사용자/관리자: CREATED → READY 또는 CANCELLED
+실행 시스템:   READY → RUNNING → COMPLETED 또는 FAILED
+```
+
+상태 전이 검증은 Frontend뿐 아니라 Backend Service에서도 수행해야 한다. API는 브라우저 외부에서도 직접 호출할 수 있기 때문이다.
+
+### Step 6 완료 내용
+
+- Flask가 `index.html`, CSS, JavaScript를 제공
+- Dashboard에서 Work Order 목록 조회
+- 로딩, 빈 목록, 오류 상태 표시
+- Dashboard에서 Work Order 생성
+- Dashboard에서 Work Order 상태 수정
+- 생성·수정 후 목록 자동 갱신
+
+Dashboard 디자인과 최종 상태 변경 UI는 실행 데이터가 확정되는 Step 11 이후 다시 개선할 예정이다.
+
+---
+
+## Step 7. ROS2 Bridge Node 구축
+
+### Bridge의 역할
+
+ROS2 Bridge는 HTTP 기반 Backend와 ROS2 기반 Robot Control 사이에서 인터페이스를 변환한다.
+
+```text
+Flask Backend
+    ↓ HTTP/REST
+ROS2 Bridge
+    ↓ ROS2 Action/Topic
+Robot Control
+```
+
+현재 Step 7에서는 Robot Control Action을 호출하지 않고 다음 기능까지만 구현했다.
+
+- ROS2 Node 실행
+- Bridge HTTP 서버 실행
+- Bridge 상태 조회
+- 작업 요청 형식 검증
+- HTTP Thread에서 ROS2 Main Thread로 요청 전달
+
+### ROS2 Node와 Flask HTTP Server 동시 실행
+
+`rclpy.spin(node)`와 `Flask.run()`은 모두 실행 흐름을 계속 점유하는 Blocking 함수다. 같은 Thread에서 순서대로 실행하면 먼저 실행한 함수 때문에 나머지 함수가 시작되지 않는다.
+
+따라서 다음 구조로 분리했다.
+
+```text
+Main Thread
+└── rclpy.spin(node)
+
+Daemon Thread
+└── Flask HTTP Server (:8001)
+```
+
+```python
+http_thread = Thread(
+    target=run_http_server,
+    args=(http_app,),
+    daemon=True,
+)
+```
+
+`daemon=True`이면 Main Thread가 종료될 때 HTTP Thread도 함께 종료된다. Flask의 reloader는 별도 프로세스를 만들 수 있으므로 ROS2와 함께 실행할 때는 `use_reloader=False`로 설정했다.
+
+### Queue를 사용한 Thread 간 데이터 전달
+
+Flask Route는 HTTP Thread에서 실행되고 ROS2 Timer Callback은 Main Thread에서 실행된다. 서로 다른 Thread가 공유 데이터를 직접 변경하면 Race Condition이 발생할 수 있다.
+
+`Queue`를 사용하여 HTTP 요청을 ROS2 Thread로 전달했다.
+
+```text
+POST /jobs
+  ↓ Flask Thread
+job_queue.put(job)
+  ↓ Thread-safe Queue
+ROS2 Timer (0.1초)
+  ↓
+job_queue.get_nowait()
+```
+
+```python
+self.create_timer(
+    0.1,
+    self.process_job_queue,
+)
+```
+
+Timer는 0.1초마다 Queue를 확인한다. Queue가 비어 있으면 `Empty` 예외를 처리하고 종료하며, 작업이 있으면 Bridge 상태와 마지막 작업을 갱신하고 ROS2 로그를 출력한다.
+
+`task_done()`은 Queue에서 가져온 작업 처리가 끝났음을 표시한다.
+
+### Lock을 사용한 공유 상태 보호
+
+Bridge의 `_status`와 `_last_job`은 Flask Thread와 ROS2 Thread가 함께 접근한다. `Lock`으로 읽기와 쓰기를 보호했다.
+
+```python
+with self._state_lock:
+    self._status = "JOB_RECEIVED"
+    self._last_job = job
+```
+
+Lock이 없으면 한 Thread가 값을 변경하는 도중 다른 Thread가 불완전한 상태를 읽을 수 있다.
+
+### Bridge HTTP API
+
+```text
+GET  /health  Bridge와 ROS2 Node 생존 확인
+GET  /status  Queue와 마지막 작업 상태 조회
+POST /jobs    작업 요청 접수
+```
+
+`GET /health`는 Bridge 서비스명과 ROS2 Node 이름을 반환한다.
+
+`GET /status`는 다음 정보를 반환한다.
+
+```text
+status        현재 Bridge 상태
+pending_jobs  Queue에 남아 있는 작업 수
+last_job      가장 최근 처리한 작업
+```
+
+`POST /jobs`의 요청 형식:
+
+```json
+{
+  "work_order_id": 1,
+  "operation_id": 1
+}
+```
+
+검증 내용:
+
+- 요청 Body가 JSON 객체인지 확인
+- `work_order_id`, `operation_id` 필수값 확인
+- ID가 Boolean이 아닌 양의 정수인지 확인
+
+Python에서 `bool`은 `int`의 하위 타입이므로 별도로 제외했다.
+
+```python
+return (
+    isinstance(value, int)
+    and not isinstance(value, bool)
+    and value > 0
+)
+```
+
+### 비동기 접수와 HTTP 202
+
+Bridge는 작업을 Queue에 넣은 직후 Robot 실행 결과를 기다리지 않고 응답한다.
+
+```text
+202 Accepted
+```
+
+`202`는 작업이 완료됐다는 뜻이 아니라 요청을 접수했다는 뜻이다. 각 요청에는 `uuid4()`로 `bridge_job_id`를 발급하고, UTC 기준 `received_at`을 기록한다.
+
+```python
+job = {
+    "bridge_job_id": str(uuid4()),
+    "received_at": datetime.now(timezone.utc).isoformat(),
+}
+```
+
+### Backend와 Bridge의 책임 구분
+
+현재 Bridge는 요청 ID가 양의 정수인지 확인하지만 실제 DB에 존재하는지는 확인하지 않는다.
+
+```text
+Backend
+- Work Order와 Operation 존재 여부 확인
+- 현재 상태와 실행 가능 여부 확인
+- DB Transaction 관리
+
+Bridge
+- HTTP 요청 형식 확인
+- ROS2 명령으로 변환
+- Action Feedback/Result를 HTTP Callback으로 변환
+```
+
+### 실행 및 확인
+
+```bash
+source /opt/ros/jazzy/setup.bash
+cd ros2_ws
+colcon build --symlink-install --packages-select ros2_bridge
+source install/setup.bash
+ros2 run ros2_bridge bridge_node
+```
+
+ROS2 Node 확인:
+
+```bash
+ros2 node list
+```
+
+HTTP 확인:
+
+```bash
+curl http://localhost:8001/health
+curl http://localhost:8001/status
+curl -X POST http://localhost:8001/jobs \
+  -H "Content-Type: application/json" \
+  -d '{"work_order_id":1,"operation_id":1}'
+```
+
+### Step 7 완료 내용
+
+- `ament_python` 기반 `ros2_bridge` 패키지 생성
+- `ros2 run` Entry Point 구성
+- `/ros2_bridge` Node 실행
+- Flask HTTP 서버를 별도 Daemon Thread로 실행
+- `/health`, `/status`, `/jobs` API 구현
+- Queue로 HTTP 요청을 ROS2 Main Thread에 전달
+- Lock으로 Bridge 공유 상태 보호
+- 유효한 작업 요청에 `202 Accepted` 반환
+- ROS2 로그에서 수신 작업 확인
+
+현재는 Action Client가 없으므로 `JOB_RECEIVED` 이후 실제 로봇 작업은 실행되지 않는다. 다음 Step 8에서는 Flask Backend가 DB의 Work Order와 Operation을 확인한 뒤 Bridge의 `POST /jobs`를 호출하도록 연결한다.
