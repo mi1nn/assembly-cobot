@@ -6,19 +6,24 @@ from app.config import Config
 from app.extensions import db
 from app.routes.health import health_bp
 from app.routes.work_orders import work_orders_bp
-
+from app.routes.pages import pages_bp
 
 def create_app():
     # Flask app 생성
-    app = Flask(__name__)
+    app = Flask(
+        __name__,
+        static_folder='../frontend',
+        static_url_path='/static',
+    )
 
     # 설정 적용
     app.config.from_object(Config)
     
     # DB 확장 초기화
-    db.init_app(app)
+    db.init_app(app)        
     
     # Blueprint 등록
+    app.register_blueprint(pages_bp)
     app.register_blueprint(health_bp)
     app.register_blueprint(work_orders_bp)
 

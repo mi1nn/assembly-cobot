@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+
+    <title>Robot Automation Dashboard</title>
+
+    <link
+        rel="stylesheet"
+        href="/static/styles.css"
+    >
+</head>
+<body>
+    <header class="page-header">
+        <h1>Robot Automation Dashboard</h1>
+        <p>로봇 자동화 작업 현황</p>
+    </header>
+
+    <main class="dashboard">
+
+        <section class="dashboard-section">
+            <h2>Create Work Order</h2>
+
+            <form id="work-order-form">
+                <div class="form-grid">
+                    <label class="form-field">
+                        <span>Order Number</span>
+
+                        <input
+                            id="order-number"
+                            name="order_number"
+                            type="text"
+                            maxlength="50"
+                            required
+                        >
+                    </label>
+
+                    <label class="form-field">
+                        <span>Title</span>
+
+                        <input
+                            id="work-order-title"
+                            name="title"
+                            type="text"
+                            maxlength="300"
+                            required
+                        >
+                    </label>
+
+                    <label class="form-field">
+                        <span>Installation ID</span>
+
+                        <input
+                            id="installation-id"
+                            name="installation_id"
+                            type="number"
+                            min="1"
+                            required
+                        >
+                    </label>
+
+                    <label class="form-field">
+                        <span>Priority</span>
+
+                        <input
+                            id="priority"
+                            name="priority"
+                            type="number"
+                            min="1"
+                            value="3"
+                            required
+                        >
+                    </label>
+
+                    <label class="form-field form-field-wide">
+                        <span>Remark</span>
+
+                        <textarea
+                            id="remark"
+                            name="remark"
+                            rows="3"
+                        ></textarea>
+                    </label>
+
+                    <label class="form-field">
+                        <span>Created By</span>
+
+                        <input
+                            id="created-by"
+                            name="created_by"
+                            type="text"
+                            maxlength="100"
+                        >
+                    </label>
+                </div>
+
+                <div class="form-actions">
+                    <button
+                        id="create-button"
+                        type="submit"
+                    >
+                        Work Order 생성
+                    </button>
+
+                    <p
+                        id="form-message"
+                        aria-live="polite"
+                    ></p>
+                </div>
+            </form>
+        </section>
+
+
+        <section class="dashboard-section">
+            <div class="section-header">
+                <h2>Work Orders</h2>
+
+                <button
+                    id="refresh-button"
+                    type="button"
+                >
+                    새로고침
+                </button>
+            </div>
+
+            <div id="work-order-list">
+                Work Order를 불러오는 중입니다.
+            </div>
+        </section>
+
+        <section class="dashboard-section">
+            <h2>Robot Status</h2>
+
+            <p id="robot-status">
+                IDLE
+            </p>
+        </section>
+    </main>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

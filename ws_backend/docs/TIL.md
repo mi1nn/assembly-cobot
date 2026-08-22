@@ -160,3 +160,11 @@ Step 5에서 앞으로 구현할 내용:
 - `POST /api/v1/work-orders`: 생성
 - `PATCH /api/v1/work-orders/{id}`: 수정
 - 요청값 검증과 공통 예외 처리
+
+--- 
+## Step6. 
+
+index.html 화면 구조 정의 - 무엇을 표시할지
+styles.css 화면 디자인 정의 - 어떻게 보일지
+app.js 사용자 동작과 API 호출 처리 - 어떻게 동작할지
+
