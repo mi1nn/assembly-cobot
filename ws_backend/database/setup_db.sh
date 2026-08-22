@@ -7,8 +7,9 @@ set -euo pipefail
 # --------------------------------------------------
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-ENV_FILE="$SCRIPT_DIR/.env"
+ENV_FILE="$PROJECT_ROOT/.env"
 SCHEMA_FILE="$SCRIPT_DIR/schema.sql"
 GRANT_FILE="$SCRIPT_DIR/grant.sql"
 SEED_FILE="$SCRIPT_DIR/seed.sql"
@@ -38,7 +39,7 @@ fi
 
 if [ ! -f "$ENV_FILE" ]; then
     echo "Error: .env file not found."
-    echo "Create .env from .env.example first."
+    echo "Create $PROJECT_ROOT/.env from $PROJECT_ROOT/.env.example first."
     exit 1
 fi
 

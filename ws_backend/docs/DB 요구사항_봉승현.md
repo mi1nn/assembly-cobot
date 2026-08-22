@@ -1,8 +1,8 @@
 # 7. DB 요구사항
 
 > 최초 작성: 2026-08-20
-> 개정: 2026-08-21 (DB_specs.md v5 / DB_DDL.sql v5 설계 반영)
-> 상위 문서: DB_specs.md, DB_DDL.sql
+> 개정: 2026-08-22 (DB_specs.md / database 설계 반영)
+> 상위 문서: 
 
 본 시스템은 작업 지시부터 로봇 작업 실행 및 결과 관리까지의 공정 데이터를 통합 관리하기 위한 데이터베이스를 구축한다.
 
@@ -12,19 +12,13 @@
 - Project / Site / Installation Target
 - Operation 및 작업 순서
 - 작업 Parameter 및 치수
-- 구성 부품(Component) 및 수량, 자재 위치 정보
+- 구성 부품(Component) 및 수량, 자재 위치/조립 위치 정보
 - Robot / Sensor 정보
 - Tool / TCP / Fixture / Position / Coordinate System (작업 파라미터로 관리)
 - 작업 실행 및 상태
 - 작업 이벤트 및 오류
 - Force/Torque 센서 데이터
 - 작업 결과 및 이력
-
-> **v5 개정 반영 사항**
-> - **제외**: Product, Recipe, Recipe Component, Recipe Version → Installation Target / Operation 기반 구조로 대체
-> - **변경**: Work Order는 Installation Target 기준 생성, Operation은 Installation Target 직속
-> - **신규**: Component의 자재 현재 위치 / 조립 위치 관리 (DB-FR-42)
-> - **위임**: Tool / TCP / Fixture / Position / Coordinate System / Robot State Log / Sensor Result는 `operation.parameter`(JSONB)로 관리하며, 확장 시 별도 테이블 분리
 
 ---
 

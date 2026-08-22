@@ -61,7 +61,7 @@ database/
 `.env.example` 항목을 바탕으로 `.env` 파일을 생성한다.
 
 ```bash
-cp database/.env.example database/.env
+cp .env.example .env
 ```
 
 ---
