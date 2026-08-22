@@ -30,5 +30,5 @@ class Config:
     )
 
     # 불필요한 객체 변경 추적 기능 OFF
-    SQLALCAHEMY_TRACK_MODIFICATIONS = False
+    SQLALCHEMY_TRACK_MODIFICATIONS = False
 

@@ -4,6 +4,8 @@
 
 본 디렉토리는 로봇 자동화 공정 시스템에서 사용하는 PostgreSQL 데이터베이스의 구축, 초기화 및 재현을 관리한다.
 
+현재 스키마는 설치 정보를 `installation`으로, 작업 대상물을 `operation.components` JSONB로, 이벤트와 오류를 `log`로 통합한 9개 테이블 구조다.
+
 `setup_db.sh`를 실행하면 다음 작업을 수행한다.
 
 ```text
@@ -92,6 +94,8 @@ PostgreSQL
 
 기존 PostgreSQL, User, Database, Table, Index 등이 존재하면 중복 생성하지 않는다.
 
+`CREATE TABLE IF NOT EXISTS`는 기존 테이블의 컬럼을 변경하지 않으므로, 이전 버전 스키마에서 v6로 전환할 때는 마이그레이션이나 Database Reset이 필요하다.
+
 ---
 
 ## 5. Seed Data 포함 구축
@@ -132,11 +136,11 @@ PostgreSQL
         ↓
 Database 삭제
         ↓
-setup_db.sh --seed 실행
+setup_db.sh 실행
         ↓
 Database 재생성
         ↓
-Schema / Grant / Seed 적용
+Schema / Grant 적용
 ```
 
 DB User는 삭제하지 않는다.
@@ -178,10 +182,15 @@ Table 확인:
 주요 Table 구조 확인:
 
 ```sql
-\d project
-\d installation_target
-\d work_order
+\d installation
 \d operation
+\d robot
+\d sensor
+\d work_order
+\d work_execution
+\d operation_execution
+\d log
+\d sensor_data
 ```
 
 종료:
@@ -248,11 +257,14 @@ Database와 전체 Table이 다시 생성되어야 한다.
 
 ### 8.3 Seed 적용 검사
 
+Database를 초기화한 뒤 Seed Data를 적용하려면:
+
 ```bash
 ./database/reset_db.sh
+./database/setup_db.sh --seed
 ```
 
-또는:
+빈 Database에 바로 적용하려면:
 
 ```bash
 ./database/setup_db.sh --seed
@@ -263,10 +275,13 @@ Database와 전체 Table이 다시 생성되어야 한다.
 예:
 
 ```sql
-SELECT * FROM project;
+SELECT COUNT(*) FROM installation;
+SELECT COUNT(*) FROM operation;
+SELECT COUNT(*) FROM log;
+SELECT COUNT(*) FROM sensor_data;
 ```
 
-`seed.sql`은 가능하면 반복 실행 시 데이터가 중복되지 않도록 작성한다.
+`seed.sql`은 고정 PK를 사용하므로 빈 Database에서 1회 적용한다. 다시 적용하려면 Database를 Reset하거나 기존 Seed Data를 먼저 정리해야 한다.
 
 ---
 
@@ -286,12 +301,6 @@ Index:
 CREATE INDEX IF NOT EXISTS ...
 ```
 
-Extension:
-
-```sql
-CREATE EXTENSION IF NOT EXISTS ...
-```
-
 Trigger는 PostgreSQL에서 일반적인 `CREATE TRIGGER IF NOT EXISTS`를 지원하지 않으므로 다음 방식으로 관리한다.
 
 ```sql
@@ -301,7 +310,7 @@ CREATE TRIGGER trigger_name
 ...
 ```
 
-이를 통해 `schema.sql`을 반복 적용해도 중복 객체로 인해 Setup이 실패하지 않도록 한다.
+이를 통해 동일한 v6 스키마에 `schema.sql`을 반복 적용해도 중복 객체로 인해 Setup이 실패하지 않도록 한다. 스키마 버전 간 변경은 자동으로 마이그레이션하지 않는다.
 
 ---
 
