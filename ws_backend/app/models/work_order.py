@@ -22,9 +22,9 @@ class WorkOrder(db.Model):
         nullable=False,
     )
 
-    installation_target_id = db.Column(
+    installation_id = db.Column(
         db.BigInteger,
-        # db.ForeignKey("installation_target.installation_target_id"),
+        # db.ForeignKey("installation.installation_id"),
         nullable=False,
     )
 
@@ -63,7 +63,7 @@ class WorkOrder(db.Model):
             "work_order_id": self.work_order_id,
             "order_number": self.order_number,
             "title": self.title,
-            "installation_target_id": self.installation_target_id,
+            "installation_id": self.installation_id,
             "priority": self.priority,
             "status": self.status,
             "planned_start_date": (

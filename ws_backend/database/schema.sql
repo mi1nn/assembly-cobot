@@ -72,7 +72,14 @@ CREATE TABLE IF NOT EXISTS work_order (
     title VARCHAR(300) NOT NULL,
     installation_id BIGINT NOT NULL REFERENCES installation(installation_id),
     priority INT NOT NULL DEFAULT 3,
-    status VARCHAR(30) NOT NULL DEFAULT 'CREATED',
+    status VARCHAR(30) NOT NULL DEFAULT 'CREATED'
+    CHECK (status IN(
+        "CREATED",
+        "READY",
+        "RUNNING",
+        "COMPLETED",
+        "FAILED"
+    )),
     planned_start_date TIMESTAMP,
     planned_end_date TIMESTAMP,
     remark TEXT,
