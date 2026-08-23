@@ -1,3 +1,15 @@
+# =========================================================
+# Frame 작업 예외
+# =========================================================
+
+class FramePickError(Exception):
+    pass
+
+
+class FramePlaceError(Exception):
+    pass
+
+
 class SolarMotion:
 
     def __init__(self, node):
@@ -25,8 +37,12 @@ class SolarMotion:
         self.motion = RobotMotion()
         self.force = ForceController()
 
+        # =====================================================
         # 현재 테스트용 좌표
         # 추후 DB에서 전달받는 구조로 변경 예정
+        # =====================================================
+
+        # Lock Pin 관련 좌표
         self.start = posx(
             self.config.get("start")["position"]
         )
@@ -47,8 +63,166 @@ class SolarMotion:
             self.config.get("d")["position"]
         )
 
+        # Frame 관련 좌표
+        self.frame_pick = posx(
+            self.config.get("frame_pick")["position"]
+        )
 
+        self.frame_place = posx(
+            self.config.get("frame_place")["position"]
+        )
+
+
+    # =========================================================
+    # Frame Pick
+    # =========================================================
+
+    def pick_frame(self):
+
+        self.node.get_logger().info(
+            "========== FRAME PICK START =========="
+        )
+
+        try:
+
+            self.node.get_logger().info(
+                "Frame Pick 대기 위치 이동"
+            )
+
+            self.movel(
+                self.frame_pick,
+                vel=self.motion.velocity,
+                acc=self.motion.acc,
+                ref=self.DR_BASE,
+            )
+
+            self.wait(0.5)
+
+            self.node.get_logger().info(
+                "Frame Pick 시작"
+            )
+
+            self.motion.pick()
+
+            self.node.get_logger().info(
+                "Frame Pick 완료"
+            )
+
+            self.wait(0.5)
+
+            self.node.get_logger().info(
+                "========== FRAME PICK COMPLETE =========="
+            )
+
+        except Exception as e:
+
+            self.node.get_logger().error(
+                f"Frame Pick 실패: {e}"
+            )
+
+            raise FramePickError(
+                str(e)
+            ) from e
+
+
+    # =========================================================
+    # Frame Place
+    # =========================================================
+
+    def place_frame(self):
+
+        self.node.get_logger().info(
+            "========== FRAME PLACE START =========="
+        )
+
+        try:
+
+            self.node.get_logger().info(
+                "Frame Place 대기 위치 이동"
+            )
+
+            self.movel(
+                self.frame_place,
+                vel=self.motion.velocity,
+                acc=self.motion.acc,
+                ref=self.DR_BASE,
+            )
+
+            self.wait(0.5)
+
+            self.node.get_logger().info(
+                "Frame Place 시작"
+            )
+
+            self.motion.place()
+
+            self.node.get_logger().info(
+                "Frame Place 완료"
+            )
+
+            self.wait(0.5)
+
+            self.node.get_logger().info(
+                "========== FRAME PLACE COMPLETE =========="
+            )
+
+        except Exception as e:
+
+            self.node.get_logger().error(
+                f"Frame Place 실패: {e}"
+            )
+
+            raise FramePlaceError(
+                str(e)
+            ) from e
+
+
+    # =========================================================
+    # 전체 Frame 설치 공정
+    # =========================================================
+
+    def install_frame(self):
+
+        self.node.get_logger().info(
+            "========== FRAME INSTALL START =========="
+        )
+
+        try:
+            self.pick_frame()
+            self.place_frame()
+
+            self.node.get_logger().info(
+                "========== FRAME INSTALL COMPLETE =========="
+            )
+
+        except FramePickError as e:
+
+            self.node.get_logger().error(
+                f"Frame Install 실패 - PICK 단계: {e}"
+            )
+
+            # 상위 Controller까지 전달
+            raise
+
+        except FramePlaceError as e:
+
+            self.node.get_logger().error(
+                f"Frame Install 실패 - PLACE 단계: {e}"
+            )
+            raise
+
+        except Exception as e:
+
+            self.node.get_logger().error(
+                f"Frame Install 알 수 없는 오류: {e}"
+            )
+
+            raise
+
+
+    # =========================================================
     # Lock Pin Pick
+    # =========================================================
 
     def pick_pin(self):
 
@@ -86,7 +260,9 @@ class SolarMotion:
         )
 
 
+    # =========================================================
     # Lock Pin 1차 삽입
+    # =========================================================
 
     def first_insert_pin(self):
 
@@ -94,7 +270,10 @@ class SolarMotion:
             "========== FIRST PIN INSERT START =========="
         )
 
+        # -----------------------------------------------------
         # Hole Front까지 Arc 이동
+        # -----------------------------------------------------
+
         self.node.get_logger().info(
             "Hole Front Arc 이동 시작"
         )
@@ -112,7 +291,10 @@ class SolarMotion:
 
         self.wait(1.0)
 
+        # -----------------------------------------------------
         # Compliance ON
+        # -----------------------------------------------------
+
         self.node.get_logger().info(
             "1차 삽입 Compliance ON"
         )
@@ -131,7 +313,10 @@ class SolarMotion:
 
         self.wait(1.0)
 
+        # -----------------------------------------------------
         # Force ON
+        # -----------------------------------------------------
+
         self.node.get_logger().info(
             "1차 삽입 Force ON"
         )
@@ -144,7 +329,10 @@ class SolarMotion:
             reference="base",
         )
 
+        # -----------------------------------------------------
         # 1차 삽입 위치 확인
+        # -----------------------------------------------------
+
         while True:
 
             current_pos, _ = self.get_current_posx(
@@ -170,12 +358,18 @@ class SolarMotion:
 
             self.wait(0.05)
 
+        # -----------------------------------------------------
         # Force OFF
+        # -----------------------------------------------------
+
         self.force.force_off()
 
         self.wait(0.3)
 
+        # -----------------------------------------------------
         # Compliance OFF
+        # -----------------------------------------------------
+
         self.force.compliance_off()
 
         self.wait(0.5)
@@ -185,7 +379,9 @@ class SolarMotion:
         )
 
 
+    # =========================================================
     # Lock Pin 최종 삽입
+    # =========================================================
 
     def final_insert_pin(self):
 
@@ -193,7 +389,10 @@ class SolarMotion:
             "========== FINAL PIN INSERT START =========="
         )
 
+        # -----------------------------------------------------
         # 기존 파지 해제
+        # -----------------------------------------------------
+
         self.node.get_logger().info(
             "Pin Release"
         )
@@ -202,7 +401,10 @@ class SolarMotion:
 
         self.wait(0.5)
 
+        # -----------------------------------------------------
         # 재파지 위치 이동
+        # -----------------------------------------------------
+
         self.node.get_logger().info(
             "Pin 재파지 위치 이동"
         )
@@ -216,7 +418,10 @@ class SolarMotion:
 
         self.wait(1.0)
 
+        # -----------------------------------------------------
         # 다시 파지
+        # -----------------------------------------------------
+
         self.node.get_logger().info(
             "Pin Re-Grasp"
         )
@@ -225,7 +430,10 @@ class SolarMotion:
 
         self.wait(0.5)
 
+        # -----------------------------------------------------
         # Compliance ON
+        # -----------------------------------------------------
+
         self.node.get_logger().info(
             "최종 삽입 Compliance ON"
         )
@@ -244,7 +452,10 @@ class SolarMotion:
 
         self.wait(1.0)
 
+        # -----------------------------------------------------
         # Force ON
+        # -----------------------------------------------------
+
         self.node.get_logger().info(
             "최종 삽입 Force ON"
         )
@@ -257,7 +468,10 @@ class SolarMotion:
             reference="base",
         )
 
+        # -----------------------------------------------------
         # 최종 삽입 위치 확인
+        # -----------------------------------------------------
+
         while True:
 
             current_pos, _ = self.get_current_posx(
@@ -283,17 +497,26 @@ class SolarMotion:
 
             self.wait(0.05)
 
+        # -----------------------------------------------------
         # Force OFF
+        # -----------------------------------------------------
+
         self.force.force_off()
 
         self.wait(0.3)
 
+        # -----------------------------------------------------
         # Compliance OFF
+        # -----------------------------------------------------
+
         self.force.compliance_off()
 
         self.wait(0.5)
 
+        # -----------------------------------------------------
         # 최종 Pin Release
+        # -----------------------------------------------------
+
         self.node.get_logger().info(
             "최종 Pin Release"
         )
@@ -307,7 +530,9 @@ class SolarMotion:
         )
 
 
+    # =========================================================
     # 전체 Lock Pin 삽입 공정
+    # =========================================================
 
     def insert_pin(self):
 
@@ -326,7 +551,9 @@ class SolarMotion:
         )
 
 
+    # =========================================================
     # 전체 Solar 작업
+    # =========================================================
 
     def run(self):
 
@@ -336,7 +563,10 @@ class SolarMotion:
                 "========== SOLAR MOTION START =========="
             )
 
+            # -------------------------------------------------
             # 시작 위치
+            # -------------------------------------------------
+
             self.node.get_logger().info(
                 "Home 이동"
             )
@@ -345,10 +575,24 @@ class SolarMotion:
 
             self.wait(1.0)
 
-            # 현재 구현된 Lock Pin 공정
+            # -------------------------------------------------
+            # Frame 설치
+            # -------------------------------------------------
+
+            self.install_frame()
+
+            self.wait(1.0)
+
+            # -------------------------------------------------
+            # Lock Pin 삽입
+            # -------------------------------------------------
+
             self.insert_pin()
 
+            # -------------------------------------------------
             # 작업 완료 후 Home 복귀
+            # -------------------------------------------------
+
             self.node.get_logger().info(
                 "Home 복귀 시작"
             )
@@ -369,8 +613,11 @@ class SolarMotion:
                 f"Solar Motion 작업 중 오류: {e}"
             )
 
+            # -------------------------------------------------
             # Force / Compliance가 켜진 상태에서
             # 오류가 발생했을 경우 안전하게 해제
+            # -------------------------------------------------
+
             try:
 
                 self.force.all_off()
@@ -381,5 +628,5 @@ class SolarMotion:
                     f"Force 해제 중 오류: {force_error}"
                 )
 
-            # main.py까지 오류 전달
+            # main.py / Action Server까지 오류 전달
             raise

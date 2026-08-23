@@ -40,3 +40,11 @@ poses:
   d:
     type: task
     position: [590.09, -20.84, 49.65, 161.63, -179.36, 68.28]
+    
+  frame_pick:
+    type: task
+    position: [370.0, 5.0, 200.0, 5.0, 179.0, 5.0]
+
+  frame_place:
+    type: task
+    position: [550.0, 4.0, 150.0, 5.0, 179.0, 5.0]
