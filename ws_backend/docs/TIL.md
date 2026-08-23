@@ -1302,15 +1302,6 @@ Backend의 `202 Accepted`는 실제 로봇 작업 완료가 아니라 Bridge가 
 
 현재 Action 결과는 Bridge 메모리에만 저장되며 Backend DB에는 반영되지 않는다. Bridge 프로세스가 종료되면 `/status`의 실행 정보도 사라진다. 또한 Operation의 `parameter` JSONB 값은 아직 Action의 `Parameter[]`로 전달하지 않는다.
 
-다음 Step 10에서 구현할 내용:
-
-- `work_execution`과 `operation_execution` SQLAlchemy 모델
-- 실행 요청 시 DB에 `PENDING` 실행 이력 생성
-- 작업 시작 시 `RUNNING` 상태 반영
-- Bridge Result를 Backend callback API로 전달
-- 성공 시 `COMPLETED`, 실패 시 `FAILED` 기록
-- Operation parameter를 Action Parameter 메시지로 변환
-
 ---
 
 ## Step 10. ROS2 Action 실행 이력을 DB에 반영

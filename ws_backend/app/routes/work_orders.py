@@ -1,5 +1,5 @@
 from app.services.execution_service import (
-    create_execution_records,
+    create_execution_records_for_operations,
     get_robot_by_id,
     mark_execution_running,
     mark_execution_submission_failed,
@@ -12,7 +12,7 @@ from app.services.bridge_service import (
     submit_bridge_job,
 )
 from app.services.operation_service import (
-    get_operation_for_installation,
+    get_operations_for_installation,
 )
 
 from flask import Blueprint, jsonify, request
@@ -303,29 +303,9 @@ def execute_work_order(work_order_id: int):
             },
         }), 400
 
-    operation_id = request_data.get(
-        "operation_id"
-    )
     robot_id = request_data.get(
         "robot_id"
     )
-
-    if (
-        not isinstance(operation_id, int)
-        or isinstance(operation_id, bool)
-        or operation_id <= 0
-    ):
-        return jsonify({
-            "success": False,
-            "data": None,
-            "error": {
-                "code": "INVALID_OPERATION_ID",
-                "message": (
-                    "operation_id must be "
-                    "a positive integer."
-                ),
-            },
-        }), 400
 
     if (
         not isinstance(robot_id, int)
@@ -404,34 +384,34 @@ def execute_work_order(work_order_id: int):
             },
         }), 409
 
-    operation = get_operation_for_installation(
-        operation_id=operation_id,
-        installation_id=(
+    operations = (
+        get_operations_for_installation(
             work_order.installation_id
-        ),
+        )
     )
 
-    if operation is None:
+    if not operations:
         return jsonify({
             "success": False,
             "data": None,
             "error": {
-                "code": "OPERATION_NOT_FOUND",
+                "code": "NO_OPERATIONS",
                 "message": (
-                    "The operation was not found "
+                    "No operations are configured "
                     "for this work order's "
                     "installation."
                 ),
             },
-        }), 404
+        }), 409
+
 
     try:
         (
             work_execution,
-            operation_execution,
-        ) = create_execution_records(
+            operation_executions,
+        ) = create_execution_records_for_operations(
             work_order_id=work_order_id,
-            operation=operation,
+            operations=operations,
             robot_id=robot_id,
         )
 
@@ -450,10 +430,18 @@ def execute_work_order(work_order_id: int):
             },
         }), 409
 
+    operation = operations[0]
+
+    operation_execution = (
+        operation_executions[0]
+    )
+
     try:
         bridge_data = submit_bridge_job(
             work_order_id=work_order_id,
-            operation_id=operation_id,
+            operation_id=(
+                operation.operation_id
+            ),
             work_execution_id=(
                 work_execution.work_execution_id
             ),
@@ -508,12 +496,19 @@ def execute_work_order(work_order_id: int):
         "success": True,
         "data": {
             "work_order_id": work_order_id,
-            "operation": operation.to_dict(),
             "work_execution": (
                 work_execution.to_dict()
             ),
-            "operation_execution": (
-                operation_execution.to_dict()
+            "first_operation": (
+                operation.to_dict()
+            ),
+            "operation_executions": [
+                item.to_dict()
+                for item
+                in operation_executions
+            ],
+            "total_operations": len(
+                operation_executions
             ),
             "bridge": bridge_data,
         },

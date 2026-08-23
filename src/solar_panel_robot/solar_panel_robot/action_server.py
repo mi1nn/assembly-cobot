@@ -1,5 +1,5 @@
 # ROS 연결 확인을 위한 Mock data를 보내주는 실험용 노드입니다.
-
+import os
 import time
 
 import rclpy
@@ -8,6 +8,10 @@ from rclpy.node import Node
 
 from solar_panel_interface.action import ExecuteOperation
 
+# 실패 테스트용 변수 설정 - 노드 실행 전 환경변수 설정(실패할 번호 입력)
+MOCK_FAIL_OPERATION_ID = os.getenv(
+    "MOCK_FAIL_OPERATION_ID"
+)
 
 class ExecuteOperationServer(Node):
 
@@ -86,6 +90,30 @@ class ExecuteOperationServer(Node):
             self.get_logger().info(
                 f"Operation {request.operation_id}: {progress}%"
             )
+
+            if (
+                MOCK_FAIL_OPERATION_ID
+                and request.operation_id
+                == MOCK_FAIL_OPERATION_ID
+                and progress >= 60
+            ):
+                goal_handle.abort()
+
+                result = ExecuteOperation.Result()
+                result.success = False
+                result.error_code = (
+                    "MOCK_OPERATION_FAILURE"
+                )
+                result.message = (
+                    "Mock failure requested for "
+                    f"operation {request.operation_id}"
+                )
+
+                self.get_logger().error(
+                    result.message
+                )
+
+                return result
 
             time.sleep(1.0)
 
