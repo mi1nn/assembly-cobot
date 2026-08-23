@@ -1,5 +1,5 @@
 # ROS 연결 확인을 위한 Mock data를 보내주는 실험용 노드입니다.
-
+import os
 import json
 import time
 
@@ -33,25 +33,58 @@ class ExecuteOperationServer(Node):
         )
 
     def goal_callback(self, goal_request):
-        """새로운 작업 요청을 받을 때 실행됩니다."""
-
         self.get_logger().info(
             "Goal received: "
-            f"work_order_id={goal_request.work_order_id}, "
-            f"operation_id={goal_request.operation_id}"
+            f"work_order_id="
+            f"{goal_request.work_order_id}, "
+            f"work_execution_id="
+            f"{goal_request.work_execution_id}, "
+            f"operation_id="
+            f"{goal_request.operation_id}, "
+            f"operation_execution_id="
+            f"{goal_request.operation_execution_id}, "
+            f"robot_id="
+            f"{goal_request.robot_id}"
         )
+
+        id_values = (
+            goal_request.work_order_id,
+            goal_request.work_execution_id,
+            goal_request.operation_id,
+            goal_request.operation_execution_id,
+            goal_request.robot_id,
+        )
+
+        if any(value <= 0 for value in id_values):
+            self.get_logger().warning(
+                "Goal contains an invalid ID."
+            )
+            return GoalResponse.REJECT
 
         for parameter in goal_request.parameters:
             self.get_logger().info(
-                f"parameter: {parameter.key}={parameter.value}"
+                "parameter: "
+                f"{parameter.key}="
+                f"{parameter.value}"
             )
 
         try:
             components = json.loads(
                 goal_request.components
             )
-        except ValueError:
-            components = []
+
+        except (TypeError, ValueError):
+            self.get_logger().warning(
+                "components is not valid JSON."
+            )
+            return GoalResponse.REJECT
+
+        if not isinstance(components, list):
+            self.get_logger().warning(
+                "components must decode "
+                "to a list."
+            )
+            return GoalResponse.REJECT
 
         self.get_logger().info(
             f"components: {len(components)}개"
@@ -80,6 +113,23 @@ class ExecuteOperationServer(Node):
         for progress in range(0, 101, 20):
 
             if goal_handle.is_cancel_requested:
+                feedback.operation_execution_id = (
+                    request.operation_execution_id
+                )
+
+                feedback.status = (
+                    ExecuteOperation.Feedback
+                    .STATUS_CANCELLED
+                )
+
+                feedback.message = (
+                    "Mock operation was cancelled."
+                )
+
+                goal_handle.publish_feedback(
+                    feedback
+                )
+
                 goal_handle.canceled()
 
                 result = ExecuteOperation.Result()
@@ -93,10 +143,22 @@ class ExecuteOperationServer(Node):
 
                 return result
 
-            feedback.current_operation = request.operation_id
-            feedback.status = "RUNNING"
+            feedback.operation_execution_id = (
+                request.operation_execution_id
+            )
 
-            goal_handle.publish_feedback(feedback)
+            feedback.status = (
+                ExecuteOperation.Feedback
+                .STATUS_RUNNING
+            )
+
+            feedback.message = (
+                "Mock operation is running."
+            )
+
+            goal_handle.publish_feedback(
+                feedback
+            )
 
             self.get_logger().info(
                 f"Operation {request.operation_id}: {progress}%"
@@ -108,6 +170,23 @@ class ExecuteOperationServer(Node):
                 == MOCK_FAIL_OPERATION_ID
                 and progress >= 60
             ):
+                feedback.operation_execution_id = (
+                    request.operation_execution_id
+                )
+
+                feedback.status = (
+                    ExecuteOperation.Feedback
+                    .STATUS_FAILED
+                )
+
+                feedback.message = (
+                    "Mock operation failure."
+                )
+
+                goal_handle.publish_feedback(
+                    feedback
+                )
+
                 goal_handle.abort()
 
                 result = ExecuteOperation.Result()
@@ -127,6 +206,23 @@ class ExecuteOperationServer(Node):
                 return result
 
             time.sleep(1.0)
+
+        feedback.operation_execution_id = (
+            request.operation_execution_id
+        )
+
+        feedback.status = (
+            ExecuteOperation.Feedback
+            .STATUS_COMPLETED
+        )
+
+        feedback.message = (
+            "Mock operation completed."
+        )
+
+        goal_handle.publish_feedback(
+            feedback
+        )
 
         goal_handle.succeed()
 

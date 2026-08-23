@@ -2,6 +2,8 @@ from app.services.execution_service import (
     create_execution_records_for_operations,
     get_active_work_execution,
     get_robot_by_id,
+    mark_work_execution_running,
+    mark_work_submission_failed,
 )
 
 # API 발행
@@ -17,6 +19,14 @@ from app.services.work_order_service import (
     update_work_order,
     validate_ready_requirements,
 )
+
+from app.services.bridge_service import (
+    BridgeConnectionError,
+    BridgeResponseError,
+    build_work_command,
+    submit_bridge_work,
+)
+
 # 제약조건 오류 처리하기 위한 모듈
 from sqlalchemy.exc import IntegrityError
 from app.extensions import db
@@ -515,6 +525,78 @@ def execute_work_order(work_order_id: int):
             },
         }), 409
 
+    try:
+        work_command = build_work_command(
+            work_order_id=work_order_id,
+            work_execution_id=(
+                work_execution
+                .work_execution_id
+            ),
+            robot_id=robot_id,
+            operations=operations,
+            operation_executions=(
+                operation_executions
+            ),
+        )
+
+    except ValueError as error:
+        mark_work_submission_failed(
+            work_execution,
+            operation_executions,
+        )
+
+        return jsonify({
+            "success": False,
+            "data": None,
+            "error": {
+                "code": (
+                    "WORK_COMMAND_BUILD_FAILED"
+                ),
+                "message": str(error),
+            },
+        }), 500
+
+    try:
+        bridge_data = submit_bridge_work(
+            work_command
+        )
+
+    except BridgeConnectionError as error:
+        mark_work_submission_failed(
+            work_execution,
+            operation_executions,
+        )
+
+        return jsonify({
+            "success": False,
+            "data": None,
+            "error": {
+                "code": "BRIDGE_UNAVAILABLE",
+                "message": str(error),
+            },
+        }), 503
+
+    except BridgeResponseError as error:
+        mark_work_submission_failed(
+            work_execution,
+            operation_executions,
+        )
+
+        return jsonify({
+            "success": False,
+            "data": None,
+            "error": {
+                "code": "BRIDGE_WORK_REJECTED",
+                "message": str(error),
+            },
+        }), 502
+
+    mark_work_execution_running(
+        work_order=work_order,
+        work_execution=work_execution,
+        robot=robot,
+    )
+
     return jsonify({
         "success": True,
         "data": {
@@ -529,6 +611,7 @@ def execute_work_order(work_order_id: int):
             "total_operations": len(
                 operation_executions
             ),
+            "bridge": bridge_data,
         },
         "error": None,
-    }), 201
+    }), 202

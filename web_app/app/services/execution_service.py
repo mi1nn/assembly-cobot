@@ -193,29 +193,23 @@ def get_robot_by_id(
         robot_id,
     )
 
-def mark_execution_running(
-    work_order: WorkOrder,
-    work_execution: WorkExecution,
+def mark_operation_running(
     operation_execution: OperationExecution,
-    robot: Robot,
 ) -> None:
-    current_time = datetime.now()
+    if operation_execution.status == "RUNNING":
+        return
 
-    work_order.status = "RUNNING"
+    if operation_execution.status != "PENDING":
+        raise ValueError(
+            "Only a PENDING operation can "
+            "transition to RUNNING."
+        )
 
-    work_execution.status = "RUNNING"
-    work_execution.start_time = (
-        current_time
-    )
+    operation_execution.status = "RUNNING"
 
-    operation_execution.status = (
-        "RUNNING"
-    )
     operation_execution.start_time = (
-        current_time
+        datetime.now()
     )
-
-    robot.status = "RUNNING"
 
     db.session.commit()
 
@@ -355,3 +349,47 @@ def get_active_work_execution(
     return db.session.scalar(
         statement
     )
+
+def mark_work_execution_running(
+    work_order: WorkOrder,
+    work_execution: WorkExecution,
+    robot: Robot,
+) -> None:
+    current_time = datetime.now()
+
+    work_order.status = "RUNNING"
+
+    work_execution.status = "RUNNING"
+    work_execution.start_time = (
+        current_time
+    )
+
+    robot.status = "RUNNING"
+
+    db.session.commit()
+
+def mark_work_submission_failed(
+    work_execution: WorkExecution,
+    operation_executions: list[
+        OperationExecution
+    ],
+) -> None:
+    current_time = datetime.now()
+
+    work_execution.status = "FAILED"
+    work_execution.end_time = (
+        current_time
+    )
+
+    for operation_execution in (
+        operation_executions
+    ):
+        if operation_execution.status == "PENDING":
+            operation_execution.status = (
+                "CANCELLED"
+            )
+            operation_execution.end_time = (
+                current_time
+            )
+
+    db.session.commit()

@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from queue import Empty, Queue
 from threading import Lock, Thread
 from uuid import uuid4
+from types import SimpleNamespace
 
 from flask import Flask, jsonify, request
 import rclpy
@@ -41,6 +42,7 @@ class Ros2BridgeNode(Node):
         self._state_lock = Lock()
         self._status = "IDLE"
         self._last_job = None
+        self._stopped_work_execution_ids = set()
 
         self.create_timer(
             0.1,
@@ -51,8 +53,69 @@ class Ros2BridgeNode(Node):
             "ROS2 Bridge Node started."
         )
 
-    def enqueue_job(self, job: dict) -> None:
-        self.job_queue.put(job)
+    def enqueue_work(
+        self,
+        work: dict,
+    ) -> None:
+        for operation in work["operations"]:
+            job = {
+                "bridge_work_id": (
+                    work["bridge_work_id"]
+                ),
+                "work_order_id": (
+                    work["work_order_id"]
+                ),
+                "work_execution_id": (
+                    work["work_execution_id"]
+                ),
+                "robot_id": work["robot_id"],
+                "operation_execution_id": (
+                    operation[
+                        "operation_execution_id"
+                    ]
+                ),
+                "operation_id": (
+                    operation["operation_id"]
+                ),
+                "sequence": (
+                    operation["sequence"]
+                ),
+                "parameters": (
+                    operation["parameters"]
+                ),
+                "components": (
+                    operation["components"]
+                ),
+                "received_at": (
+                    work["received_at"]
+                ),
+            }
+
+            self.job_queue.put(job)
+
+    def stop_current_work(
+        self,
+        status: str,
+    ) -> dict | None:
+        with self._state_lock:
+            current_job = (
+                dict(self._last_job)
+                if self._last_job is not None
+                else None
+            )
+
+            self._status = status
+            self._goal_in_progress = False
+
+            if current_job is not None:
+                self._stopped_work_execution_ids.add(
+                    current_job[
+                        "work_execution_id"
+                    ]
+                )
+
+        return current_job
+
 
     def process_job_queue(self) -> None:
         with self._state_lock:
@@ -72,13 +135,32 @@ class Ros2BridgeNode(Node):
             return
 
         with self._state_lock:
+            work_stopped = (
+                job["work_execution_id"]
+                in self._stopped_work_execution_ids
+            )
+
+        if work_stopped:
+            self.get_logger().warning(
+                "Skipping queued operation from "
+                "a stopped work: "
+                "work_execution_id="
+                f"{job['work_execution_id']}, "
+                "operation_execution_id="
+                f"{job['operation_execution_id']}"
+            )
+
+            self.job_queue.task_done()
+            return
+
+        with self._state_lock:
             self._goal_in_progress = True
             self._status = "SENDING_GOAL"
             self._last_job = job
 
         self.get_logger().info(
             "Sending Action Goal: "
-            f"bridge_job_id={job['bridge_job_id']}, "
+            f"bridge_work_id={job['bridge_work_id']}, "
             f"work_order_id={job['work_order_id']}, "
             f"operation_id={job['operation_id']}, "
             f"work_execution_id="
@@ -89,17 +171,33 @@ class Ros2BridgeNode(Node):
         )
 
         goal = ExecuteOperation.Goal()
-        goal.work_order_id = str(
+
+        goal.work_order_id = int(
             job["work_order_id"]
-        )   
-        goal.operation_id = str(
+        )
+
+        goal.work_execution_id = int(
+            job["work_execution_id"]
+        )
+
+        goal.operation_id = int(
             job["operation_id"]
         )
+
+        goal.operation_execution_id = int(
+            job["operation_execution_id"]
+        )
+
+        goal.robot_id = int(
+            job["robot_id"]
+        )
+
         goal.parameters = (
             self.convert_parameters(
                 job["parameters"]
             )
         )
+
         goal.components = json.dumps(
             job["components"],
             ensure_ascii=False,
@@ -122,6 +220,7 @@ class Ros2BridgeNode(Node):
         self.job_queue.task_done()
 
     def goal_response_callback(self, future) -> None:
+
         try:
             goal_handle = future.result()
         except Exception as error:
@@ -129,9 +228,27 @@ class Ros2BridgeNode(Node):
                 f"Failed to send Action Goal: {error}"
             )
 
-            with self._state_lock:
-                self._status = "GOAL_SEND_FAILED"
-                self._goal_in_progress = False
+            current_job = self.stop_current_work(
+                "GOAL_SEND_FAILED"
+            )
+
+            if current_job is not None:
+                try:
+                    self.notify_backend_dispatch_failure(
+                        job=current_job,
+                        error_code="GOAL_SEND_FAILED",
+                        message=(
+                            "Failed to send the Action Goal.: "
+                            f"{error}"
+                        ),
+                    )
+
+                except Exception as callback_error:
+                    self.get_logger().error(
+                        "Could not notify Backend of "
+                        "Goal send failure: "
+                        f"{callback_error}"
+                    )
 
             return
 
@@ -140,9 +257,27 @@ class Ros2BridgeNode(Node):
                 "Action Goal rejected."
             )
 
-            with self._state_lock:
-                self._status = "GOAL_REJECTED"
-                self._goal_in_progress = False
+            current_job = self.stop_current_work(
+                "GOAL_REJECTED"
+            )
+
+            if current_job is not None:
+                try:
+                    self.notify_backend_dispatch_failure(
+                        job=current_job,
+                        error_code="GOAL_REJECTED",
+                        message=(
+                            "Controller rejected the "
+                            "Action Goal."
+                        ),
+                    )
+
+                except Exception as callback_error:
+                    self.get_logger().error(
+                        "Could not notify Backend of "
+                        "Goal rejection: "
+                        f"{callback_error}"
+                    )
 
             return
 
@@ -158,23 +293,88 @@ class Ros2BridgeNode(Node):
         result_future.add_done_callback(
             self.result_callback
         )
-
     def feedback_callback(
         self,
         feedback_message,
     ) -> None:
         feedback = feedback_message.feedback
 
-        self.get_logger().info(
-            "Action Feedback: "
-            f"operation={feedback.current_operation}, "
-            f"status={feedback.status}"
+        status_names = {
+            ExecuteOperation.Feedback
+            .STATUS_PENDING: "PENDING",
+            ExecuteOperation.Feedback
+            .STATUS_RUNNING: "RUNNING",
+            ExecuteOperation.Feedback
+            .STATUS_COMPLETED: "COMPLETED",
+            ExecuteOperation.Feedback
+            .STATUS_FAILED: "FAILED",
+            ExecuteOperation.Feedback
+            .STATUS_CANCELLED: "CANCELLED",
+        }
+
+        status_name = status_names.get(
+            feedback.status,
+            "UNKNOWN",
         )
 
         with self._state_lock:
-            self._status = feedback.status
+            current_job = (
+                dict(self._last_job)
+                if self._last_job is not None
+                else None
+            )
+
+        if current_job is None:
+            self.get_logger().warning(
+                "Feedback received without "
+                "an active job."
+            )
+            return
+
+        expected_execution_id = int(
+            current_job[
+                "operation_execution_id"
+            ]
+        )
+
+        if (
+            feedback.operation_execution_id
+            != expected_execution_id
+        ):
+            self.get_logger().warning(
+                "Feedback execution ID mismatch: "
+                f"expected={expected_execution_id}, "
+                "received="
+                f"{feedback.operation_execution_id}"
+            )
+            return
+
+        self.get_logger().info(
+            "Action Feedback: "
+            "operation_execution_id="
+            f"{feedback.operation_execution_id}, "
+            f"status={status_name}, "
+            f"message={feedback.message}"
+        )
+
+        try:
+            self.notify_backend_action_feedback(
+                job=current_job,
+                feedback=feedback,
+            )
+
+        except Exception as error:
+            self.get_logger().error(
+                "Could not notify Backend of "
+                "Action feedback: "
+                f"{error}"
+            )
+
+        with self._state_lock:
+            self._status = status_name
 
     def result_callback(self, future) -> None:
+
         try:
             wrapped_result = future.result()
             result = wrapped_result.result
@@ -184,9 +384,30 @@ class Ros2BridgeNode(Node):
                 f"{error}"
             )
 
-            with self._state_lock:
-                self._status = "RESULT_FAILED"
-                self._goal_in_progress = False
+            current_job = self.stop_current_work(
+                "RESULT_FAILED"
+            )
+
+            if current_job is not None:
+                try:
+                    self.notify_backend_dispatch_failure(
+                        job=current_job,
+                        error_code=(
+                            "RESULT_RECEIVE_FAILED"
+                        ),
+                        message=(
+                            "Failed to receive the "
+                            "Action Result: "
+                            f"{error}"
+                        ),
+                    )
+
+                except Exception as callback_error:
+                    self.get_logger().error(
+                        "Could not notify Backend of "
+                        "Result receive failure: "
+                        f"{callback_error}"
+                    )
 
             return
 
@@ -273,6 +494,76 @@ class Ros2BridgeNode(Node):
                     "backend_notified"
                 ] = True
 
+    def notify_backend_action_feedback(
+        self,
+        job: dict,
+        feedback,
+    ) -> dict:
+        callback_url = (
+            f"{BACKEND_BASE_URL}"
+            "/api/v1/executions/action-feedback"
+        )
+
+        request_data = {
+            "work_execution_id": (
+                job["work_execution_id"]
+            ),
+            "operation_execution_id": (
+                feedback.operation_execution_id
+            ),
+            "status": int(
+                feedback.status
+            ),
+            "message": feedback.message,
+        }
+
+        response = requests.post(
+            callback_url,
+            json=request_data,
+            timeout=BACKEND_CALLBACK_TIMEOUT,
+        )
+
+        if response.status_code != 200:
+            raise RuntimeError(
+                "Backend feedback callback "
+                "failed with "
+                f"HTTP {response.status_code}: "
+                f"{response.text}"
+            )
+
+        try:
+            response_data = response.json()
+
+        except ValueError as error:
+            raise RuntimeError(
+                "Backend feedback callback "
+                "returned invalid JSON."
+            ) from error
+
+        if not response_data.get("success"):
+            raise RuntimeError(
+                "Backend rejected the "
+                "Action feedback callback."
+            )
+
+        return response_data
+
+    def notify_backend_dispatch_failure(
+        self,
+        job: dict,
+        error_code: str,
+        message: str,
+    ) -> dict:
+        failure_result = SimpleNamespace(
+            success=False,
+            error_code=error_code,
+            message=message,
+        )
+
+        return self.notify_backend_action_result(
+            job=job,
+            result=failure_result,
+        )
 
     def notify_backend_action_result(
         self,
@@ -390,157 +681,281 @@ def create_http_app(
             silent=True,
         )
 
-        if not isinstance(request_data, dict):
-            return jsonify({
-                "success": False,
-                "data": None,
-                "error": {
-                    "code": "INVALID_JSON",
-                    "message": (
-                        "A JSON request body is required."
-                    ),
-                },
-            }), 400
-
-        required_fields = (
-            "work_order_id",
-            "operation_id",
-            "work_execution_id",
-            "operation_execution_id",
-            "robot_id",
-            "parameters",
-            "components",
+        validation_error = (
+            validate_work_command(
+                request_data
+            )
         )
 
-        missing_fields = [
-            field
-            for field in required_fields
-            if request_data.get(field) is None
-        ]
+        if validation_error is not None:
+            error_code, error_message = (
+                validation_error
+            )
 
-        if missing_fields:
             return jsonify({
                 "success": False,
                 "data": None,
                 "error": {
-                    "code": "MISSING_REQUIRED_FIELDS",
-                    "message": (
-                        "Missing required fields: "
-                        + ", ".join(missing_fields)
-                    ),
+                    "code": error_code,
+                    "message": error_message,
                 },
             }), 400
 
-        id_fields = {
-            "work_order_id": (
-                "INVALID_WORK_ORDER_ID"
+        sorted_operations = sorted(
+            request_data["operations"],
+            key=lambda operation: (
+                operation["sequence"]
             ),
-            "operation_id": (
-                "INVALID_OPERATION_ID"
+        )
+
+        work = {
+            "bridge_work_id": str(
+                uuid4()
+            ),
+            "work_order_id": (
+                request_data[
+                    "work_order_id"
+                ]
             ),
             "work_execution_id": (
-                "INVALID_WORK_EXECUTION_ID"
-            ),
-            "operation_execution_id": (
-                "INVALID_OPERATION_EXECUTION_ID"
-            ),
-            "robot_id": (
-                "INVALID_ROBOT_ID"
-            ),
-        }
-
-        for field, error_code in (
-            id_fields.items()
-        ):
-            value = request_data[field]
-
-            if not is_positive_integer(value):
-                return jsonify({
-                    "success": False,
-                    "data": None,
-                    "error": {
-                        "code": error_code,
-                        "message": (
-                            f"{field} must be "
-                            "a positive integer."
-                        ),
-                    },
-                }), 400
-
-        parameters = request_data[
-            "parameters"
-        ]
-
-        if not isinstance(parameters, dict):
-            return jsonify({
-                "success": False,
-                "data": None,
-                "error": {
-                    "code": "INVALID_PARAMETERS",
-                    "message": (
-                        "parameters must be "
-                        "a JSON object."
-                    ),
-                },
-            }), 400
-
-        components = request_data[
-            "components"
-        ]
-
-        if not isinstance(components, list):
-            return jsonify({
-                "success": False,
-                "data": None,
-                "error": {
-                    "code": "INVALID_COMPONENTS",
-                    "message": (
-                        "components must be "
-                        "a JSON array."
-                    ),
-                },
-            }), 400
-
-        job = {
-            "bridge_job_id": str(uuid4()),
-            "work_order_id": request_data[
-                "work_order_id"
-            ],
-            "operation_id": request_data[
-                "operation_id"
-            ],
-            "work_execution_id": request_data[
-                "work_execution_id"
-            ],
-            "operation_execution_id": (
                 request_data[
-                    "operation_execution_id"
+                    "work_execution_id"
                 ]
             ),
             "robot_id": request_data[
                 "robot_id"
             ],
-            "parameters": parameters,
-            "components": components,
+            "operations": [
+                dict(operation)
+                for operation
+                in sorted_operations
+            ],
             "received_at": datetime.now(
                 timezone.utc,
             ).isoformat(),
         }
 
-        node.enqueue_job(job)
+        node.enqueue_work(work)
 
         return jsonify({
             "success": True,
             "data": {
                 "accepted": True,
-                "bridge_job_id": (
-                    job["bridge_job_id"]
+                "bridge_work_id": (
+                    work["bridge_work_id"]
+                ),
+                "work_execution_id": (
+                    work[
+                        "work_execution_id"
+                    ]
+                ),
+                "total_operations": len(
+                    work["operations"]
                 ),
             },
             "error": None,
         }), 202
 
     return http_app
+
+def validate_operation_item(
+    operation: object,
+    index: int,
+) -> tuple[str, str] | None:
+    if not isinstance(operation, dict):
+        return (
+            "INVALID_OPERATION",
+            (
+                f"operations[{index}] must be "
+                "a JSON object."
+            ),
+        )
+
+    required_fields = (
+        "operation_execution_id",
+        "operation_id",
+        "sequence",
+        "parameters",
+        "components",
+    )
+
+    missing_fields = [
+        field
+        for field in required_fields
+        if operation.get(field) is None
+    ]
+
+    if missing_fields:
+        return (
+            "MISSING_OPERATION_FIELDS",
+            (
+                f"operations[{index}] is missing: "
+                + ", ".join(missing_fields)
+            ),
+        )
+
+    integer_fields = (
+        "operation_execution_id",
+        "operation_id",
+        "sequence",
+    )
+
+    for field in integer_fields:
+        if not is_positive_integer(
+            operation[field]
+        ):
+            return (
+                f"INVALID_{field.upper()}",
+                (
+                    f"operations[{index}].{field} "
+                    "must be a positive integer."
+                ),
+            )
+
+    if not isinstance(
+        operation["parameters"],
+        dict,
+    ):
+        return (
+            "INVALID_PARAMETERS",
+            (
+                f"operations[{index}].parameters "
+                "must be a JSON object."
+            ),
+        )
+
+    if not isinstance(
+        operation["components"],
+        list,
+    ):
+        return (
+            "INVALID_COMPONENTS",
+            (
+                f"operations[{index}].components "
+                "must be a JSON array."
+            ),
+        )
+
+    return None
+
+def validate_work_command(
+    command: object,
+) -> tuple[str, str] | None:
+    if not isinstance(command, dict):
+        return (
+            "INVALID_JSON",
+            "A JSON request body is required.",
+        )
+
+    required_fields = (
+        "work_order_id",
+        "work_execution_id",
+        "robot_id",
+        "operations",
+    )
+
+    missing_fields = [
+        field
+        for field in required_fields
+        if command.get(field) is None
+    ]
+
+    if missing_fields:
+        return (
+            "MISSING_REQUIRED_FIELDS",
+            (
+                "Missing required fields: "
+                + ", ".join(missing_fields)
+            ),
+        )
+
+    id_fields = (
+        "work_order_id",
+        "work_execution_id",
+        "robot_id",
+    )
+
+    for field in id_fields:
+        if not is_positive_integer(
+            command[field]
+        ):
+            return (
+                f"INVALID_{field.upper()}",
+                (
+                    f"{field} must be "
+                    "a positive integer."
+                ),
+            )
+
+    operations = command["operations"]
+
+    if (
+        not isinstance(operations, list)
+        or not operations
+    ):
+        return (
+            "INVALID_OPERATIONS",
+            (
+                "operations must be a "
+                "non-empty JSON array."
+            ),
+        )
+
+    sequences = set()
+    operation_execution_ids = set()
+
+    for index, operation in enumerate(
+        operations
+    ):
+        validation_error = (
+            validate_operation_item(
+                operation,
+                index,
+            )
+        )
+
+        if validation_error is not None:
+            return validation_error
+
+        sequence = operation["sequence"]
+
+        if sequence in sequences:
+            return (
+                "DUPLICATE_SEQUENCE",
+                (
+                    "Operation sequence values "
+                    "must be unique."
+                ),
+            )
+
+        sequences.add(sequence)
+
+        operation_execution_id = (
+            operation[
+                "operation_execution_id"
+            ]
+        )
+
+        if (
+            operation_execution_id
+            in operation_execution_ids
+        ):
+            return (
+                (
+                    "DUPLICATE_OPERATION_"
+                    "EXECUTION_ID"
+                ),
+                (
+                    "operation_execution_id "
+                    "values must be unique."
+                ),
+            )
+
+        operation_execution_ids.add(
+            operation_execution_id
+        )
+
+    return None
 
 def is_positive_integer(value) -> bool:
     return (
