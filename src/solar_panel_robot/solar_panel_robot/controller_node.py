@@ -1,3 +1,4 @@
+import json
 import threading
 
 import rclpy
@@ -19,8 +20,100 @@ from solar_panel_interface.action import ExecuteOperation
 import DR_init
 
 
+# =============================================================
+# Robot 기본 설정
+# =============================================================
+
 ROBOT_ID = "dsr01"
 ROBOT_MODEL = "m0609"
+
+
+OPERATION_ID_MAP = {
+    "1": "FRAME_PICK",
+    "2": "FRAME_PLACE",
+    "3": "FRAME_INSTALL",
+    "4": "PIN_PICK",
+    "5": "PIN_INSERT_1",
+    "6": "PIN_INSERT_FINAL",
+    "7": "PIN_INSERT",
+    "8": "SOLAR_FULL",
+}
+
+
+# =============================================================
+# Bridge 기준 Action 이름
+#
+# ros2_bridge_node.py:
+#
+# ActionClient(
+#     self,
+#     ExecuteOperation,
+#     "execute_operation",
+# )
+#
+# Bridge Node에는 namespace가 없으므로 실제 Action:
+#
+# /execute_operation
+#
+# 따라서 Controller도 절대 이름으로 맞춤.
+# =============================================================
+
+ACTION_NAME = "/execute_operation"
+
+
+# =============================================================
+# Controller가 실행 가능한 Operation Code
+# =============================================================
+
+SUPPORTED_OPERATION_CODES = {
+    "FRAME_PICK",
+    "FRAME_PLACE",
+    "FRAME_INSTALL",
+    "PIN_PICK",
+    "PIN_INSERT_1",
+    "PIN_INSERT_FINAL",
+    "PIN_INSERT",
+    "SOLAR_FULL",
+}
+
+
+# =============================================================
+# DB Operation ID -> Robot Operation Code
+#
+# Bridge는 DB의 operation_id를 숫자로 받고,
+# Controller에는 문자열로 전달함.
+#
+# 예:
+#
+# Backend:
+# operation_id = 12
+#
+# Bridge:
+# goal.operation_id = "12"
+#
+#
+# 실제 DB ID가 확정되면 아래에 등록 가능.
+#
+# 예:
+#
+# OPERATION_ID_MAP = {
+#     "12": "FRAME_PICK",
+#     "13": "FRAME_PLACE",
+# }
+#
+#
+# 현재는 임의의 DB ID를 만들지 않기 위해 비워둠.
+#
+# 대신 Backend가 parameters에:
+#
+# {
+#     "operation_code": "FRAME_PICK"
+# }
+#
+# 를 넣으면 이 Mapping 없이도 실행 가능.
+# =============================================================
+
+OPERATION_ID_MAP = {}
 
 
 class SolarPanelControllerNode(Node):
@@ -33,14 +126,14 @@ class SolarPanelControllerNode(Node):
         )
 
         # =====================================================
-        # Component
+        # Components
         # =====================================================
 
         self.robot = None
         self.solar = None
 
         # =====================================================
-        # 현재 상태
+        # Controller 상태
         # =====================================================
 
         self.current_status = "STARTING"
@@ -50,18 +143,20 @@ class SolarPanelControllerNode(Node):
         self.operation_lock = threading.Lock()
 
         # =====================================================
-        # Callback Group
+        # Callback Groups
         #
-        # Action 실행 중에도 Timer 등의 Callback을
-        # 다른 Thread에서 처리할 수 있도록 설정
+        # Action과 Status Timer 분리
         # =====================================================
 
-        self.callback_group = ReentrantCallbackGroup()
+        self.action_callback_group = ReentrantCallbackGroup()
+
+        self.status_callback_group = ReentrantCallbackGroup()
 
         # =====================================================
         # Status Publisher
         #
-        # Topic:
+        # Node namespace가 /dsr01 이므로:
+        #
         # /dsr01/status
         # =====================================================
 
@@ -80,38 +175,48 @@ class SolarPanelControllerNode(Node):
         self.status_timer = self.create_timer(
             1.0,
             self.publish_current_status,
-            callback_group=self.callback_group,
+            callback_group=self.status_callback_group,
         )
 
         # =====================================================
         # ExecuteOperation Action Server
         #
-        # Action:
-        # /dsr01/execute_operation
+        # Bridge와 동일한:
+        #
+        # /execute_operation
         # =====================================================
 
         self.action_server = ActionServer(
             self,
             ExecuteOperation,
-            "execute_operation",
+            ACTION_NAME,
             execute_callback=self.execute_callback,
             goal_callback=self.goal_callback,
             cancel_callback=self.cancel_callback,
-            callback_group=self.callback_group,
+            callback_group=self.action_callback_group,
         )
 
         self.get_logger().info(
             "Solar Panel Controller Node 생성 완료"
         )
 
-        self.set_status("STARTING")
+        self.get_logger().info(
+            f"ExecuteOperation Action Server: {ACTION_NAME}"
+        )
+
+        self.set_status(
+            "STARTING"
+        )
 
 
     # =========================================================
     # 상태 변경
     # =========================================================
 
-    def set_status(self, status):
+    def set_status(
+        self,
+        status,
+    ):
 
         self.current_status = status
 
@@ -130,9 +235,12 @@ class SolarPanelControllerNode(Node):
     def publish_current_status(self):
 
         msg = String()
+
         msg.data = self.current_status
 
-        self.status_publisher.publish(msg)
+        self.status_publisher.publish(
+            msg
+        )
 
 
     # =========================================================
@@ -141,21 +249,23 @@ class SolarPanelControllerNode(Node):
 
     def setup_components(self):
 
-        # DR_init 설정 이후 import
+        # 중요:
+        #
+        # DR_init.__dsr__node 설정 이후 호출되어야 함.
+        #
+        # DSR_ROBOT2를 사용하는 모듈은
+        # 이 시점 이후 import.
+
         from .robot_controller import RobotController
         from .solar_motion import SolarMotion
 
         # =====================================================
-        # Robot 초기화 시작
+        # Robot 초기화
         # =====================================================
 
         self.set_status(
             "INITIALIZING"
         )
-
-        # =====================================================
-        # Robot Controller 생성
-        # =====================================================
 
         self.robot = RobotController(
             self
@@ -168,7 +278,7 @@ class SolarPanelControllerNode(Node):
         self.robot.initialize()
 
         # =====================================================
-        # Solar Motion 생성
+        # SolarMotion 생성
         # =====================================================
 
         self.solar = SolarMotion(
@@ -179,12 +289,201 @@ class SolarPanelControllerNode(Node):
             "Robot 및 Solar Motion 준비 완료"
         )
 
-        # =====================================================
-        # 작업 준비 완료
-        # =====================================================
-
         self.set_status(
             "READY"
+        )
+
+
+    # =========================================================
+    # Bridge Parameter[] -> Python dict
+    #
+    # Bridge에서는:
+    #
+    # 문자열:
+    #   그대로 Parameter.value
+    #
+    # 숫자 / list / dict / bool:
+    #   json.dumps() 후 Parameter.value
+    #
+    # 따라서 Controller에서는 가능한 경우
+    # json.loads()로 원래 타입 복원.
+    # =========================================================
+
+    def parse_parameters(
+        self,
+        parameters,
+    ):
+
+        parsed = {}
+
+        for parameter in parameters:
+
+            key = str(
+                parameter.key
+            )
+
+            raw_value = parameter.value
+
+            try:
+
+                value = json.loads(
+                    raw_value
+                )
+
+            except (
+                json.JSONDecodeError,
+                TypeError,
+            ):
+
+                # 일반 문자열
+                value = raw_value
+
+            parsed[key] = value
+
+        return parsed
+
+
+    # =========================================================
+    # Bridge components JSON 문자열 -> Python list
+    # =========================================================
+
+    def parse_components(
+        self,
+        components_raw,
+    ):
+
+        if components_raw is None:
+
+            return []
+
+        if components_raw == "":
+
+            return []
+
+        try:
+
+            components = json.loads(
+                components_raw
+            )
+
+        except (
+            json.JSONDecodeError,
+            TypeError,
+        ) as e:
+
+            raise ValueError(
+                f"components JSON 파싱 실패: {e}"
+            ) from e
+
+        if not isinstance(
+            components,
+            list,
+        ):
+
+            raise ValueError(
+                "components는 JSON array여야 합니다."
+            )
+
+        return components
+
+
+    # =========================================================
+    # DB Operation ID -> Robot Operation Code 결정
+    #
+    # 우선순위:
+    #
+    # 1. operation_id 자체가 FRAME_PICK 등의 Code
+    #    -> 기존 CLI 테스트 호환
+    #
+    # 2. parameters["operation_code"]
+    #    -> Bridge/Backend 권장 방식
+    #
+    # 3. OPERATION_ID_MAP
+    #    -> DB ID가 고정된 경우 사용
+    # =========================================================
+
+    def resolve_operation_code(
+        self,
+        operation_id,
+        parameters,
+    ):
+
+        operation_id = str(
+            operation_id
+        )
+
+        # -----------------------------------------------------
+        # 기존 직접 Action 테스트 호환
+        #
+        # operation_id="FRAME_PICK"
+        # -----------------------------------------------------
+
+        if (
+            operation_id
+            in SUPPORTED_OPERATION_CODES
+        ):
+
+            return operation_id
+
+        # -----------------------------------------------------
+        # Bridge Parameters에서 operation_code 확인
+        # -----------------------------------------------------
+
+        operation_code = parameters.get(
+            "operation_code"
+        )
+
+        if operation_code is not None:
+
+            operation_code = str(
+                operation_code
+            ).strip()
+
+            if (
+                operation_code
+                in SUPPORTED_OPERATION_CODES
+            ):
+
+                return operation_code
+
+            raise ValueError(
+                "지원하지 않는 operation_code: "
+                f"{operation_code}"
+            )
+
+        # -----------------------------------------------------
+        # DB Operation ID Mapping
+        # -----------------------------------------------------
+
+        mapped_code = OPERATION_ID_MAP.get(
+            operation_id
+        )
+
+        if mapped_code is not None:
+
+            if (
+                mapped_code
+                not in SUPPORTED_OPERATION_CODES
+            ):
+
+                raise ValueError(
+                    "OPERATION_ID_MAP에 잘못된 "
+                    f"Operation Code가 있습니다: "
+                    f"{mapped_code}"
+                )
+
+            return mapped_code
+
+        # -----------------------------------------------------
+        # Mapping 불가능
+        # -----------------------------------------------------
+
+        raise ValueError(
+            "DB operation_id를 Robot Operation으로 "
+            f"변환할 수 없습니다. "
+            f"operation_id={operation_id}. "
+            "Backend parameters에 operation_code를 "
+            "전달하거나 OPERATION_ID_MAP을 설정하세요."
         )
 
 
@@ -192,12 +491,15 @@ class SolarPanelControllerNode(Node):
     # Action Goal 수락 여부
     # =========================================================
 
-    def goal_callback(self, goal_request):
+    def goal_callback(
+        self,
+        goal_request,
+    ):
 
         self.get_logger().info(
             f"[IF-14] Goal 요청 수신 "
             f"work_order={goal_request.work_order_id}, "
-            f"operation={goal_request.operation_id}"
+            f"operation_id={goal_request.operation_id}"
         )
 
         # =====================================================
@@ -213,7 +515,7 @@ class SolarPanelControllerNode(Node):
             return GoalResponse.REJECT
 
         # =====================================================
-        # ERROR 상태에서는 새로운 작업 거부
+        # ERROR 상태에서는 새 작업 거부
         # =====================================================
 
         if self.current_status == "ERROR":
@@ -225,7 +527,7 @@ class SolarPanelControllerNode(Node):
             return GoalResponse.REJECT
 
         # =====================================================
-        # 이미 다른 Operation 실행 중
+        # Operation 중복 실행 방지
         # =====================================================
 
         with self.operation_lock:
@@ -238,7 +540,6 @@ class SolarPanelControllerNode(Node):
 
                 return GoalResponse.REJECT
 
-            # Goal을 수락하는 시점부터 Busy 처리
             self.operation_running = True
 
         self.get_logger().info(
@@ -249,23 +550,20 @@ class SolarPanelControllerNode(Node):
 
 
     # =========================================================
-    # Action Cancel 요청
+    # Action Cancel
     # =========================================================
 
-    def cancel_callback(self, goal_handle):
+    def cancel_callback(
+        self,
+        goal_handle,
+    ):
 
         self.get_logger().warning(
             "Operation Cancel 요청 수신"
         )
 
-        # 현재 SolarMotion은
-        # 동작 중 안전하게 정지시키는 기능이 없음.
-        #
-        # Force Control이나 로봇 이동 중 임의로
-        # Cancel하면 위험할 수 있으므로 현재는 거부.
-        #
-        # 추후 안전 정지 기능 구현 후
-        # CancelResponse.ACCEPT로 변경 가능.
+        # 현재 Robot Motion / Force Control을
+        # 안전하게 중단시키는 로직이 없으므로 Cancel 거부.
 
         self.get_logger().warning(
             "현재 버전에서는 Operation Cancel을 지원하지 않습니다."
@@ -275,9 +573,7 @@ class SolarPanelControllerNode(Node):
 
 
     # =========================================================
-    # IF-15
-    # Controller -> Work Manager
-    # Feedback 전송
+    # IF-15 Feedback
     # =========================================================
 
     def publish_feedback(
@@ -290,9 +586,15 @@ class SolarPanelControllerNode(Node):
 
         feedback = ExecuteOperation.Feedback()
 
-        feedback.current_operation = operation
+        feedback.current_operation = str(
+            operation
+        )
+
         feedback.status = status
-        feedback.progress = float(progress)
+
+        feedback.progress = float(
+            progress
+        )
 
         goal_handle.publish_feedback(
             feedback
@@ -307,13 +609,14 @@ class SolarPanelControllerNode(Node):
 
 
     # =========================================================
-    # Operation 실행 분기
+    # 실제 Robot Operation 실행
     # =========================================================
 
     def execute_operation(
         self,
-        operation_id,
+        operation_code,
         parameters,
+        components,
     ):
 
         if self.solar is None:
@@ -323,51 +626,66 @@ class SolarPanelControllerNode(Node):
             )
 
         # =====================================================
+        # Frame Pick
+        # =====================================================
+
+        if operation_code == "FRAME_PICK":
+
+            self.solar.pick_frame()
+
+        # =====================================================
+        # Frame Place
+        # =====================================================
+
+        elif operation_code == "FRAME_PLACE":
+
+            self.solar.place_frame()
+
+        # =====================================================
+        # Frame 전체 설치
+        # =====================================================
+
+        elif operation_code == "FRAME_INSTALL":
+
+            self.solar.install_frame()
+
+        # =====================================================
         # Pin Pick
         # =====================================================
 
-        if operation_id == "PIN_PICK":
+        elif operation_code == "PIN_PICK":
 
             self.solar.pick_pin()
 
         # =====================================================
-        # Lock Pin 1차 삽입
+        # Pin 1차 삽입
         # =====================================================
 
-        elif operation_id == "PIN_INSERT_1":
+        elif operation_code == "PIN_INSERT_1":
 
             self.solar.first_insert_pin()
 
         # =====================================================
-        # Lock Pin 최종 삽입
+        # Pin 최종 삽입
         # =====================================================
 
-        elif operation_id == "PIN_INSERT_FINAL":
+        elif operation_code == "PIN_INSERT_FINAL":
 
             self.solar.final_insert_pin()
 
         # =====================================================
-        # 전체 Lock Pin 공정
-        #
-        # pick_pin()
-        #     ↓
-        # first_insert_pin()
-        #     ↓
-        # final_insert_pin()
+        # 전체 Pin 삽입
         # =====================================================
 
-        elif operation_id == "PIN_INSERT":
+        elif operation_code == "PIN_INSERT":
 
             self.solar.insert_pin()
 
         # =====================================================
-        # 전체 Solar 작업
-        #
-        # 현재 SolarMotion.run()에 구현된
-        # 전체 작업 실행
+        # 전체 Solar 공정
         # =====================================================
 
-        elif operation_id == "SOLAR_FULL":
+        elif operation_code == "SOLAR_FULL":
 
             self.solar.run()
 
@@ -378,73 +696,68 @@ class SolarPanelControllerNode(Node):
         else:
 
             raise ValueError(
-                f"지원하지 않는 Operation ID: "
-                f"{operation_id}"
+                "지원하지 않는 Operation Code: "
+                f"{operation_code}"
             )
 
         # =====================================================
-        # Parameter[]
-        # =====================================================
+        # parameters / components
         #
-        # 현재 단계에서는 parameters를 아직 사용하지 않음.
+        # 현재 SolarMotion에서는 아직 직접 사용하지 않음.
         #
-        # 추후:
+        # 이후:
         #
-        # DB
-        #   ↓
-        # Work Manager
-        #   ↓
-        # ExecuteOperation.parameters
-        #   ↓
-        # Controller
-        #   ↓
-        # SolarMotion
-        #
-        # 형태로 연결.
-        #
-        # 예:
-        #
+        # pose
         # velocity
         # acceleration
-        # stiffness
         # force
-        # insertion_distance
-        # pose
+        # stiffness
+        # component
         #
-        # 등을 parameters에서 읽어서
-        # SolarMotion에 전달.
+        # 등을 SolarMotion에 전달할 수 있음.
+        # =====================================================
 
 
     # =========================================================
     # Action 실행
-    #
-    # IF-14 Goal
-    # IF-15 Feedback
-    # IF-16 Result
     # =========================================================
 
-    def execute_callback(self, goal_handle):
+    def execute_callback(
+        self,
+        goal_handle,
+    ):
 
         request = goal_handle.request
 
+        # =====================================================
+        # Bridge에서 받은 원본 값
+        # =====================================================
+
         work_order_id = request.work_order_id
+
+        # 이 값은 DB의 Operation ID
         operation_id = request.operation_id
-        parameters = request.parameters
 
-        self.get_logger().info(
-            "========== OPERATION START =========="
+        # Parameter[] -> dict
+        parameters = self.parse_parameters(
+            request.parameters
         )
 
-        self.get_logger().info(
-            f"Work Order ID : {work_order_id}"
+        # =====================================================
+        # components
+        #
+        # Bridge 기준 ExecuteOperation.action에
+        # components 필드가 존재해야 함.
+        # =====================================================
+
+        components_raw = getattr(
+            request,
+            "components",
+            "",
         )
 
-        self.get_logger().info(
-            f"Operation ID  : {operation_id}"
-        )
-
-        self.get_logger().info(
-            f"Parameter 개수 : {len(parameters)}"
+        components = self.parse_components(
+            components_raw
         )
 
         result = ExecuteOperation.Result()
@@ -452,40 +765,81 @@ class SolarPanelControllerNode(Node):
         try:
 
             # =================================================
-            # Controller RUNNING
+            # Robot Operation Code 결정
+            # =================================================
+
+            operation_code = (
+                self.resolve_operation_code(
+                    operation_id,
+                    parameters,
+                )
+            )
+
+            # =================================================
+            # 로그
+            # =================================================
+
+            self.get_logger().info(
+                "========== OPERATION START =========="
+            )
+
+            self.get_logger().info(
+                f"Work Order ID       : "
+                f"{work_order_id}"
+            )
+
+            self.get_logger().info(
+                f"DB Operation ID     : "
+                f"{operation_id}"
+            )
+
+            self.get_logger().info(
+                f"Robot Operation Code: "
+                f"{operation_code}"
+            )
+
+            self.get_logger().info(
+                f"Parameter 개수      : "
+                f"{len(parameters)}"
+            )
+
+            self.get_logger().info(
+                f"Component 개수      : "
+                f"{len(components)}"
+            )
+
+            # =================================================
+            # RUNNING
             # =================================================
 
             self.set_status(
                 "RUNNING"
             )
 
-            # =================================================
-            # 시작 Feedback
-            # =================================================
-
             self.publish_feedback(
                 goal_handle,
-                operation_id,
+                operation_code,
                 "RUNNING",
                 0.0,
             )
 
             # =================================================
-            # 실제 Operation 실행
+            # 실제 Robot 동작
             # =================================================
 
             self.execute_operation(
-                operation_id,
+                operation_code,
                 parameters,
+                components,
             )
 
             # =================================================
-            # 완료 Feedback
+            # DONE Feedback
             # =================================================
 
             self.publish_feedback(
                 goal_handle,
-                operation_id,
+                operation_code,
                 "DONE",
                 100.0,
             )
@@ -497,9 +851,16 @@ class SolarPanelControllerNode(Node):
             goal_handle.succeed()
 
             result.success = True
+
             result.error_code = ""
+
             result.message = (
-                f"{operation_id} completed successfully"
+                f"{operation_code} "
+                "completed successfully"
+            )
+
+            self.get_logger().info(
+                "========== OPERATION COMPLETE =========="
             )
 
             # =================================================
@@ -510,17 +871,13 @@ class SolarPanelControllerNode(Node):
                 "READY"
             )
 
-            self.get_logger().info(
-                "========== OPERATION COMPLETE =========="
-            )
-
             return result
 
 
         except Exception as e:
 
             # =================================================
-            # Operation 오류
+            # Operation 실패
             # =================================================
 
             self.get_logger().error(
@@ -540,7 +897,8 @@ class SolarPanelControllerNode(Node):
                 except Exception as force_error:
 
                     self.get_logger().error(
-                        f"Force 해제 오류: {force_error}"
+                        "Force 해제 오류: "
+                        f"{force_error}"
                     )
 
             # =================================================
@@ -551,7 +909,7 @@ class SolarPanelControllerNode(Node):
 
                 self.publish_feedback(
                     goal_handle,
-                    operation_id,
+                    str(operation_id),
                     "ERROR",
                     0.0,
                 )
@@ -567,8 +925,14 @@ class SolarPanelControllerNode(Node):
             goal_handle.abort()
 
             result.success = False
-            result.error_code = "OPERATION_FAILED"
-            result.message = str(e)
+
+            result.error_code = (
+                "OPERATION_FAILED"
+            )
+
+            result.message = str(
+                e
+            )
 
             self.set_status(
                 "ERROR"
@@ -580,12 +944,16 @@ class SolarPanelControllerNode(Node):
         finally:
 
             # =================================================
-            # Operation 실행 종료
+            # 다음 Goal 허용
             # =================================================
 
             with self.operation_lock:
 
                 self.operation_running = False
+
+            self.get_logger().info(
+                "[DEBUG] operation_running = False"
+            )
 
 
     # =========================================================
@@ -601,6 +969,10 @@ class SolarPanelControllerNode(Node):
         super().destroy_node()
 
 
+# =============================================================
+# MAIN
+# =============================================================
+
 def main(args=None):
 
     # =========================================================
@@ -612,25 +984,37 @@ def main(args=None):
     )
 
     # =========================================================
-    # Doosan 기본 설정
+    # Doosan 설정
     # =========================================================
 
     DR_init.__dsr__id = ROBOT_ID
     DR_init.__dsr__model = ROBOT_MODEL
 
     # =========================================================
-    # Controller Node 생성
-    # =========================================================
-
-    node = SolarPanelControllerNode()
-
-    # =========================================================
-    # Doosan Node 등록
+    # Controller Node
     #
-    # DSR_ROBOT2 관련 객체 생성 전에 반드시 설정
+    # Action Server
+    # Status Publisher
+    # Status Timer
     # =========================================================
 
-    DR_init.__dsr__node = node
+    controller_node = (
+        SolarPanelControllerNode()
+    )
+
+    # =========================================================
+    # DSR_ROBOT2 전용 Node
+    #
+    # Controller Action/Timer Node와 분리
+    # =========================================================
+
+    dsr_node = rclpy.create_node(
+        "solar_robot_dsr_client",
+        namespace=ROBOT_ID,
+    )
+
+    # DSR_ROBOT2에서 사용할 Node
+    DR_init.__dsr__node = dsr_node
 
     executor = None
 
@@ -638,16 +1022,14 @@ def main(args=None):
 
         # =====================================================
         # Robot / SolarMotion 초기화
-        # =====================================================
-
-        node.setup_components()
-
-        # =====================================================
-        # MultiThreadedExecutor
         #
-        # Robot Operation이 실행 중이어도
-        # Status Timer 등 다른 ROS Callback을
-        # 처리할 수 있도록 여러 Thread 사용
+        # DR_init.__dsr__node 설정 이후 실행
+        # =====================================================
+
+        controller_node.setup_components()
+
+        # =====================================================
+        # Controller Executor
         # =====================================================
 
         executor = MultiThreadedExecutor(
@@ -655,11 +1037,20 @@ def main(args=None):
         )
 
         executor.add_node(
-            node
+            controller_node
         )
 
-        node.get_logger().info(
+        controller_node.get_logger().info(
             "Controller Action Server 대기 중"
+        )
+
+        controller_node.get_logger().info(
+            f"Action: {ACTION_NAME}"
+        )
+
+        controller_node.get_logger().info(
+            "Controller Node / "
+            "DSR Client Node 분리 완료"
         )
 
         executor.spin()
@@ -667,29 +1058,43 @@ def main(args=None):
 
     except KeyboardInterrupt:
 
-        node.get_logger().info(
+        controller_node.get_logger().info(
             "사용자에 의해 종료되었습니다."
         )
 
 
     except Exception as e:
 
-        node.get_logger().error(
+        controller_node.get_logger().error(
             f"Controller 프로그램 오류: {e}"
         )
 
-        node.set_status(
+        controller_node.set_status(
             "ERROR"
         )
 
 
     finally:
 
+        # =====================================================
+        # Executor 종료
+        # =====================================================
+
         if executor is not None:
 
             executor.shutdown()
 
-        node.destroy_node()
+        # =====================================================
+        # Node 종료
+        # =====================================================
+
+        controller_node.destroy_node()
+
+        dsr_node.destroy_node()
+
+        # =====================================================
+        # ROS2 종료
+        # =====================================================
 
         if rclpy.ok():
 
