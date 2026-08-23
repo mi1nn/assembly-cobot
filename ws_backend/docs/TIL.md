@@ -1310,3 +1310,242 @@ Backend의 `202 Accepted`는 실제 로봇 작업 완료가 아니라 Bridge가 
 - Bridge Result를 Backend callback API로 전달
 - 성공 시 `COMPLETED`, 실패 시 `FAILED` 기록
 - Operation parameter를 Action Parameter 메시지로 변환
+
+---
+
+## Step 10. ROS2 Action 실행 이력을 DB에 반영
+
+### Step 10의 목표
+
+Step 9에서는 Action 결과가 Bridge 메모리에만 남았다. Step 10에서는 실행 요청부터 Action 완료까지의 상태를 PostgreSQL에 기록하도록 확장했다.
+
+```text
+실행 요청
+→ DB 실행 이력 PENDING
+→ Bridge 접수
+→ DB 상태 RUNNING
+→ ROS2 Action 실행
+→ Bridge가 Backend callback 호출
+→ DB 상태 COMPLETED 또는 FAILED
+```
+
+### 실행 이력 모델
+
+기존 DB의 `robot`, `work_execution`, `operation_execution` 테이블을 SQLAlchemy 모델로 작성하고 `app/models/__init__.py`에 등록했다.
+
+```text
+WorkOrder
+└── WorkExecution
+    └── OperationExecution
+```
+
+- `WorkExecution`: Work Order가 특정 Robot에서 실행된 이력
+- `OperationExecution`: Work Execution 안에서 개별 Operation이 실행된 이력
+- `Robot`: 실행 주체와 현재 가용 상태
+
+Foreign Key가 참조하는 테이블도 SQLAlchemy metadata에 등록되어야 한다. 예를 들어 `work_execution.robot_id`가 `robot.robot_id`를 참조하므로 `Robot` 모델을 import하지 않으면 flush 과정에서 `NoReferencedTableError`가 발생할 수 있다.
+
+### flush와 commit
+
+실행 이력을 만들 때 WorkExecution을 먼저 flush하여 PK를 발급받고, 그 값을 OperationExecution의 Foreign Key로 사용했다.
+
+```python
+db.session.add(work_execution)
+db.session.flush()
+
+operation_execution = OperationExecution(
+    work_execution_id=work_execution.work_execution_id,
+    operation_id=operation.operation_id,
+)
+
+db.session.add(operation_execution)
+db.session.commit()
+```
+
+`flush()`는 SQL을 DB로 보내 PK를 발급받지만 트랜잭션을 확정하지 않는다. 마지막 `commit()`이 두 레코드를 함께 확정한다.
+
+실행 번호는 날짜와 UUID 일부를 조합해 생성했다.
+
+```text
+EX-20260823-A1B2C3D4E5F6
+```
+
+### 실행 요청과 상태 전이
+
+Backend 실행 요청에 `robot_id`를 추가했다.
+
+```json
+{
+  "operation_id": 1,
+  "robot_id": 1
+}
+```
+
+Backend는 Work Order가 `READY`인지, Operation이 같은 Installation 소속인지, Robot이 `IDLE`인지 검사한다. 검증 후 실행 이력을 먼저 `PENDING`으로 생성한다.
+
+```text
+WorkOrder          READY
+Robot              IDLE
+WorkExecution      PENDING
+OperationExecution PENDING
+```
+
+Bridge가 요청을 접수하면 다음 상태로 변경한다.
+
+```text
+WorkOrder          RUNNING
+Robot              RUNNING
+WorkExecution      RUNNING
+OperationExecution RUNNING
+```
+
+Bridge 접수가 실패하면 두 실행 이력을 `FAILED`로 남긴다. 실제 로봇은 시작하지 않았으므로 Work Order는 `READY`, Robot은 `IDLE`을 유지한다.
+
+### 실행 이력 식별자 전달
+
+Action 결과가 어느 DB 레코드에 해당하는지 알 수 있도록 Backend가 Bridge에 다음 값을 전달한다.
+
+```json
+{
+  "work_order_id": 2,
+  "operation_id": 1,
+  "work_execution_id": 3,
+  "operation_execution_id": 10,
+  "robot_id": 1
+}
+```
+
+Bridge는 모든 ID가 양의 정수인지 검사하고 job Queue에 저장한다. ROS2 Action 인터페이스에 없는 실행 이력 ID는 Bridge가 보관했다가 결과 callback에 사용한다.
+
+### Backend Action 결과 callback
+
+Backend에 다음 API를 추가했다.
+
+```text
+POST /api/v1/executions/action-result
+```
+
+```json
+{
+  "work_execution_id": 3,
+  "operation_execution_id": 10,
+  "success": true,
+  "error_code": "",
+  "message": "Operation completed successfully"
+}
+```
+
+Callback API는 ID와 success 형식, 두 실행 이력의 소속 관계, WorkOrder와 Robot 참조, 기존 종료 상태를 검사한다.
+
+같은 성공 결과가 재전송되면 오류 대신 `already_processed: true`를 반환한다. 네트워크 재시도로 같은 요청이 여러 번 도착해도 결과가 같도록 만든 멱등 처리다.
+
+### Action 결과에 따른 DB 변경
+
+Action 성공:
+
+```text
+WorkOrder          COMPLETED
+Robot              IDLE
+WorkExecution      COMPLETED
+OperationExecution COMPLETED
+```
+
+Action 실패:
+
+```text
+WorkOrder          FAILED
+Robot              IDLE
+WorkExecution      FAILED
+OperationExecution FAILED
+```
+
+`start_time`은 RUNNING 전환 시점, `end_time`은 COMPLETED 또는 FAILED 전환 시점에 기록한다.
+
+### Bridge에서 Backend 자동 callback
+
+Bridge의 `result_callback()`이 Action Result를 받은 뒤 Backend API를 자동 호출한다.
+
+```text
+ROS2 Action Result
+→ Bridge result_callback()
+→ POST /api/v1/executions/action-result
+→ Backend DB 상태 변경
+```
+
+Backend 주소는 환경변수로 변경할 수 있고 기본값은 로컬 개발 서버다.
+
+```python
+BACKEND_BASE_URL = os.getenv(
+    "BACKEND_BASE_URL",
+    "http://127.0.0.1:5000",
+)
+```
+
+Callback 성공 시 Bridge job에 `backend_notified: true`를 기록한다. 실패하면 `CALLBACK_FAILED` 상태와 오류 내용을 메모리에 남긴다.
+
+현재는 callback 자동 재시도와 인증이 없다. 배포 전에는 재시도 Queue, timeout 정책, 공유 토큰 또는 내부 네트워크 인증이 필요하다.
+
+### Operation parameter 전달
+
+Operation의 `parameter` JSONB를 Backend에서 ROS2 Action Server까지 전달하도록 확장했다.
+
+```text
+PostgreSQL JSONB
+→ Flask JSON
+→ Bridge job
+→ ROS2 Parameter[]
+→ Action Server
+```
+
+`Parameter.msg`의 `value`는 문자열이므로 문자열이 아닌 값은 JSON 문자열로 직렬화한다.
+
+```python
+if isinstance(value, str):
+    parameter.value = value
+else:
+    parameter.value = json.dumps(
+        value,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+```
+
+```text
+"gripper_post"        → gripper_post
+80                    → 80
+true                  → true
+{"x":0,"y":0,"z":150} → {"x":0,"y":0,"z":150}
+```
+
+Mock Action Server 로그에서 tool, speed, force, tcp 등의 DB 설정이 Action Goal까지 전달되는 것을 확인했다.
+
+### Step 10 완료 내용
+
+- Robot, WorkExecution, OperationExecution 모델 구현
+- WorkExecution과 OperationExecution을 하나의 트랜잭션으로 생성
+- Robot 존재 여부와 IDLE 상태 검증
+- 실행 접수 전 PENDING 이력 생성
+- Bridge 접수 후 관련 상태를 RUNNING으로 변경
+- Bridge 요청에 실행 이력 ID와 Robot ID 포함
+- Backend Action 결과 callback API 구현
+- Callback 중복 요청에 대한 멱등 처리
+- Action 성공/실패 결과를 DB에 자동 반영
+- Robot 상태를 Action 종료 후 IDLE로 복구
+- Operation JSONB parameter를 ROS2 Parameter 배열로 변환
+- Backend부터 Mock Action Server, callback, DB까지 통합 테스트
+
+### 현재 구조의 한계와 Step 11
+
+현재는 Operation 하나를 실행할 때마다 WorkExecution 하나를 생성하고, Operation 하나가 성공하면 Work Order를 바로 `COMPLETED`로 변경한다.
+
+실제 Work Order 실행 구조는 다음과 같아야 한다.
+
+```text
+WorkOrder 1개
+└── WorkExecution 1개
+    ├── OperationExecution(sequence=1)
+    ├── OperationExecution(sequence=2)
+    └── OperationExecution(sequence=N)
+```
+
+Step 11에서는 Installation의 Operation 전체를 sequence 순서로 조회하고 첫 Operation부터 차례로 Bridge에 전달한다. 마지막 Operation까지 성공했을 때만 Work Order를 `COMPLETED`로 변경한다.
