@@ -613,3 +613,423 @@ curl -X POST http://localhost:8001/jobs \
 - ROS2 로그에서 수신 작업 확인
 
 현재는 Action Client가 없으므로 `JOB_RECEIVED` 이후 실제 로봇 작업은 실행되지 않는다. 다음 Step 8에서는 Flask Backend가 DB의 Work Order와 Operation을 확인한 뒤 Bridge의 `POST /jobs`를 호출하도록 연결한다.
+
+---
+
+## Step 8. Flask Backend ↔ ROS2 Bridge 연결
+
+### 전체 흐름
+
+Step 8에서는 Flask Backend가 DB의 Work Order와 Operation을 검증한 뒤 ROS2 Bridge에 HTTP 작업 요청을 전달하도록 구현했다.
+
+```text
+POST /api/v1/work-orders/{id}/execute
+  ↓
+Work Order 존재 여부 및 READY 상태 확인
+  ↓
+Operation이 같은 Installation 소속인지 확인
+  ↓
+Backend → POST http://127.0.0.1:8001/jobs
+  ↓
+Bridge Queue에 작업 접수
+  ↓
+Backend가 202 Accepted 반환
+```
+
+아직 ROS2 Action과 Robot Control은 연결하지 않는다. 이번 단계의 목표는 Backend와 Bridge 사이의 HTTP 통신을 완성하는 것이다.
+
+### Bridge 접속 설정
+
+Bridge 주소와 Timeout은 환경마다 달라질 수 있으므로 `.env`에서 관리한다.
+
+```env
+BRIDGE_BASE_URL=http://127.0.0.1:8001
+BRIDGE_TIMEOUT_SECONDS=3
+```
+
+`Config`에서는 URL 끝의 `/`를 제거하여 경로를 붙일 때 `//health` 또는 `//jobs`가 되지 않도록 한다.
+
+```python
+BRIDGE_BASE_URL = os.getenv(
+    "BRIDGE_BASE_URL",
+    "http://127.0.0.1:8001",
+).rstrip("/")
+```
+
+Timeout을 설정하지 않으면 Bridge가 응답하지 않을 때 Backend 요청도 계속 대기할 수 있다.
+
+---
+
+### Step 8-1. Operation 조회와 Bridge Client
+
+#### Operation 모델
+
+`app/models/operation.py`에서 PostgreSQL의 `operation` 테이블을 SQLAlchemy 모델로 매핑했다.
+
+주요 필드:
+
+```text
+operation_id     Operation PK
+installation_id 소속 Installation
+code/name        Operation 식별 정보
+sequence         실행 순서
+parameter        로봇 실행 파라미터 JSONB
+components       작업 대상 부품 JSONB
+```
+
+PostgreSQL의 JSONB 컬럼은 다음 타입으로 매핑했다.
+
+```python
+from sqlalchemy.dialects.postgresql import JSONB
+```
+
+```python
+parameter = db.Column(JSONB)
+components = db.Column(JSONB, nullable=False)
+```
+
+JSONB를 사용하면 Python에서는 `dict`와 `list` 형태로 작업 파라미터와 부품 데이터를 다룰 수 있다.
+
+현재 `Installation` 모델이 없으므로 SQLAlchemy 모델에는 Foreign Key를 선언하지 않았다. 실제 PostgreSQL Foreign Key는 그대로 유지되며, 추후 `Installation` 모델을 만들면 ORM Foreign Key와 Relationship을 추가한다.
+
+`app/models/__init__.py`에서 `Operation`을 import하여 다른 코드가 다음처럼 사용할 수 있게 했다.
+
+```python
+from app.models import Operation
+```
+
+#### Operation 소속 검사
+
+`get_operation_for_installation()`은 Operation ID만 조회하지 않고 Installation ID도 함께 검사한다.
+
+```python
+statement = db.select(Operation).where(
+    Operation.operation_id == operation_id,
+    Operation.installation_id == installation_id,
+)
+```
+
+이 검사가 필요한 이유:
+
+```text
+Work Order A의 installation_id = 1
+Operation B의 installation_id = 2
+
+Operation B가 DB에 존재하더라도
+Work Order A의 작업으로 실행하면 안 됨
+```
+
+조회 결과가 정확히 한 건이면 Operation 객체를, 없으면 `None`을 반환한다.
+
+```python
+.scalar_one_or_none()
+```
+
+#### Bridge Health 확인
+
+`bridge_service.py`는 Backend에서 Bridge HTTP API를 호출하는 역할을 담당한다.
+
+```text
+get_bridge_health()   GET  Bridge /health
+submit_bridge_job()   POST Bridge /jobs
+```
+
+Bridge 관련 오류를 두 종류로 구분했다.
+
+```python
+class BridgeConnectionError(RuntimeError):
+    pass
+
+class BridgeResponseError(RuntimeError):
+    pass
+```
+
+```text
+BridgeConnectionError
+- Bridge 프로세스가 꺼짐
+- 연결 거부
+- Timeout
+- 네트워크 오류
+
+BridgeResponseError
+- 예상하지 않은 HTTP 상태
+- 잘못된 JSON
+- success=false
+- data 형식 오류
+```
+
+`ConnectionRefusedError`가 발생했을 때 `BridgeConnectionError`로 변환되는 것은 예외 처리가 의도대로 동작한 것이다. Bridge를 별도 프로세스로 실행한 뒤 다시 호출해야 한다.
+
+#### Bridge Job 전송
+
+`submit_bridge_job()`은 Python Dictionary를 Bridge의 `/jobs`로 전송한다.
+
+```python
+request_data = {
+    "work_order_id": work_order_id,
+    "operation_id": operation_id,
+}
+
+response = requests.post(
+    jobs_url,
+    json=request_data,
+    timeout=timeout_seconds,
+)
+```
+
+`requests.post(..., json=request_data)`는 다음을 자동 처리한다.
+
+```text
+Python dict → JSON 문자열
+Content-Type: application/json 설정
+```
+
+Bridge가 작업을 접수하면 HTTP `202`와 `bridge_job_id`를 반환한다. Backend는 HTTP 상태, 공통 `success`, `data` 타입을 모두 검사한다.
+
+```text
+HTTP 202
++ success=true
++ data가 dict
+= 정상 접수
+```
+
+---
+
+### Step 8-2. Work Order Execute API
+
+구현한 API:
+
+```text
+POST /api/v1/work-orders/{work_order_id}/execute
+```
+
+요청 Body:
+
+```json
+{
+  "operation_id": 1
+}
+```
+
+#### 1. 요청 JSON과 ID 검증
+
+요청 Body가 JSON 객체인지 확인하고 `operation_id`가 Boolean이 아닌 양의 정수인지 검사한다.
+
+```python
+if (
+    not isinstance(operation_id, int)
+    or isinstance(operation_id, bool)
+    or operation_id <= 0
+):
+```
+
+실패 시:
+
+```text
+400 INVALID_JSON
+400 INVALID_OPERATION_ID
+```
+
+#### 2. Work Order 존재 여부 확인
+
+```python
+work_order = get_work_order_by_id(
+    work_order_id
+)
+```
+
+해당 ID가 없으면 Bridge를 호출하지 않고 종료한다.
+
+```text
+404 WORK_ORDER_NOT_FOUND
+```
+
+#### 3. 실행 가능 상태 검사
+
+현재는 `READY` 상태의 Work Order만 실행할 수 있다.
+
+```python
+if work_order.status != "READY":
+```
+
+```text
+CREATED   실행 불가
+READY     실행 가능
+RUNNING   중복 실행 불가
+COMPLETED 실행 불가
+FAILED    재실행 정책 필요
+CANCELLED 실행 불가
+```
+
+실행할 수 없는 상태이면 다음을 반환한다.
+
+```text
+409 WORK_ORDER_NOT_READY
+```
+
+HTTP `409 Conflict`는 요청 형식은 올바르지만 현재 리소스 상태와 충돌한다는 뜻이다.
+
+#### 4. Operation 소속 확인
+
+Work Order의 `installation_id`와 요청 Operation의 소속을 함께 검사한다.
+
+```python
+operation = get_operation_for_installation(
+    operation_id=operation_id,
+    installation_id=work_order.installation_id,
+)
+```
+
+Operation이 없거나 다른 Installation에 속하면 다음을 반환한다.
+
+```text
+404 OPERATION_NOT_FOUND
+```
+
+#### 5. Bridge 호출과 오류 변환
+
+검증을 모두 통과한 후에만 Bridge를 호출한다.
+
+```python
+bridge_data = submit_bridge_job(
+    work_order_id=work_order_id,
+    operation_id=operation_id,
+)
+```
+
+Bridge 오류를 Backend HTTP 응답으로 변환한다.
+
+```text
+BridgeConnectionError → 503 BRIDGE_UNAVAILABLE
+BridgeResponseError   → 502 BRIDGE_JOB_REJECTED
+```
+
+상태 코드 의미:
+
+```text
+502 Bad Gateway
+Backend가 연결한 Bridge에서 잘못된 응답을 받음
+
+503 Service Unavailable
+Bridge에 연결할 수 없어 현재 실행 요청을 처리할 수 없음
+```
+
+#### 6. 정상 접수 응답
+
+Bridge가 작업을 Queue에 접수하면 Backend도 `202 Accepted`를 반환한다.
+
+```json
+{
+  "success": true,
+  "data": {
+    "work_order_id": 2,
+    "operation": {
+      "operation_id": 1,
+      "installation_id": 1,
+      "sequence": 1
+    },
+    "bridge": {
+      "accepted": true,
+      "bridge_job_id": "UUID"
+    }
+  },
+  "error": null
+}
+```
+
+`202`는 Robot 작업 완료가 아니라 Backend와 Bridge가 요청을 검증하고 접수했다는 뜻이다.
+
+### Step 8에서 확인한 실행 순서
+
+터미널 1에서 Bridge 실행:
+
+```bash
+source /opt/ros/jazzy/setup.bash
+source ros2_ws/install/setup.bash
+ros2 run ros2_bridge bridge_node
+```
+
+터미널 2에서 Backend 실행:
+
+```bash
+source .venv/bin/activate
+python run.py
+```
+
+READY Work Order에 실행 요청:
+
+```bash
+curl -X POST \
+  http://localhost:5000/api/v1/work-orders/2/execute \
+  -H "Content-Type: application/json" \
+  -d '{"operation_id":1}'
+```
+
+성공 시 다음 두 곳에서 확인할 수 있다.
+
+```text
+Backend 응답: HTTP 202 + bridge_job_id
+Bridge 로그:   work_order_id와 operation_id 출력
+```
+
+Bridge 상태 확인:
+
+```bash
+curl http://127.0.0.1:8001/status
+```
+
+### Backend와 Bridge의 검증 범위
+
+```text
+Backend
+- Work Order가 DB에 존재하는지 확인
+- Work Order가 READY인지 확인
+- Operation이 DB에 존재하는지 확인
+- 같은 Installation 소속인지 확인
+
+Bridge
+- work_order_id와 operation_id 형식 확인
+- 작업 UUID 발급
+- Thread-safe Queue에 작업 저장
+- 이후 ROS2 Action Goal로 변환
+```
+
+Bridge가 Backend DB를 직접 조회하지 않게 하여 시스템 책임을 분리했다.
+
+### 현재 제한사항
+
+현재는 하나의 실행 요청에 Operation 한 건만 전달한다.
+
+```json
+{
+  "operation_id": 1
+}
+```
+
+실제 Work Order에는 여러 Operation이 있으므로 향후에는 sequence 순서로 Operation 목록을 전달하는 구조가 필요하다.
+
+아직 구현하지 않은 항목:
+
+- `work_execution` 생성
+- `operation_execution` 생성
+- Work Order의 `RUNNING` 변경
+- 중복 실행의 트랜잭션 차단
+- ROS2 Action Goal 전송
+- Action Feedback과 Result 처리
+- 성공/실패 결과 DB 기록
+
+Bridge가 요청을 수락해도 현재 Work Order는 `READY`를 유지한다. `202` 응답만으로 실제 Robot 실행이 시작됐다고 판단하면 안 된다.
+
+### Step 8 완료 내용
+
+- Operation SQLAlchemy 모델 구현
+- Work Order와 Operation의 Installation 관계 검증
+- Backend에서 Bridge Health 확인
+- Backend에서 Bridge `/jobs` 호출
+- `POST /api/v1/work-orders/{id}/execute` 구현
+- READY 상태 검증
+- Bridge 연결/응답 오류 구분
+- 정상 작업 접수 시 `202 Accepted`와 `bridge_job_id` 반환
+- Bridge Queue와 ROS2 로그에서 요청 수신 확인
+
+다음 Step 9에서는 Bridge를 ROS2 Action Client로 만들고 Robot Control Action Server와 연결한다.

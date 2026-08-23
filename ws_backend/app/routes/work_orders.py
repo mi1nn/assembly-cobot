@@ -1,4 +1,12 @@
 # API 발행
+from app.services.bridge_service import (
+    BridgeConnectionError,
+    BridgeResponseError,
+    submit_bridge_job,
+)
+from app.services.operation_service import (
+    get_operation_for_installation,
+)
 
 from flask import Blueprint, jsonify, request
 from app.services.work_order_service import (
@@ -267,3 +275,131 @@ def edit_work_order(work_order_id: int):
         "data": work_order.to_dict(),
         "error": None,
     }), 200
+
+@work_orders_bp.post(
+    "/<int:work_order_id>/execute"
+)
+def execute_work_order(work_order_id: int):
+    request_data = request.get_json(
+        silent=True,
+    )
+
+    if not isinstance(request_data, dict):
+        return jsonify({
+            "success": False,
+            "data": None,
+            "error": {
+                "code": "INVALID_JSON",
+                "message": (
+                    "A JSON request body is required."
+                ),
+            },
+        }), 400
+
+    operation_id = request_data.get(
+        "operation_id"
+    )
+
+    if (
+        not isinstance(operation_id, int)
+        or isinstance(operation_id, bool)
+        or operation_id <= 0
+    ):
+        return jsonify({
+            "success": False,
+            "data": None,
+            "error": {
+                "code": "INVALID_OPERATION_ID",
+                "message": (
+                    "operation_id must be "
+                    "a positive integer."
+                ),
+            },
+        }), 400
+
+    work_order = get_work_order_by_id(
+        work_order_id
+    )
+
+    if work_order is None:
+        return jsonify({
+            "success": False,
+            "data": None,
+            "error": {
+                "code": "WORK_ORDER_NOT_FOUND",
+                "message": (
+                    f"Work order {work_order_id} "
+                    "was not found."
+                ),
+            },
+        }), 404
+
+    if work_order.status != "READY":
+        return jsonify({
+            "success": False,
+            "data": None,
+            "error": {
+                "code": "WORK_ORDER_NOT_READY",
+                "message": (
+                    "Only READY work orders "
+                    "can be executed."
+                ),
+            },
+        }), 409
+
+    operation = get_operation_for_installation(
+        operation_id=operation_id,
+        installation_id=(
+            work_order.installation_id
+        ),
+    )
+
+    if operation is None:
+        return jsonify({
+            "success": False,
+            "data": None,
+            "error": {
+                "code": "OPERATION_NOT_FOUND",
+                "message": (
+                    "The operation was not found "
+                    "for this work order's "
+                    "installation."
+                ),
+            },
+        }), 404
+
+    try:
+        bridge_data = submit_bridge_job(
+            work_order_id=work_order_id,
+            operation_id=operation_id,
+        )
+
+    except BridgeConnectionError as error:
+        return jsonify({
+            "success": False,
+            "data": None,
+            "error": {
+                "code": "BRIDGE_UNAVAILABLE",
+                "message": str(error),
+            },
+        }), 503
+
+    except BridgeResponseError as error:
+        return jsonify({
+            "success": False,
+            "data": None,
+            "error": {
+                "code": "BRIDGE_JOB_REJECTED",
+                "message": str(error),
+            },
+        }), 502
+
+    return jsonify({
+        "success": True,
+        "data": {
+            "work_order_id": work_order_id,
+            "operation": operation.to_dict(),
+            "bridge": bridge_data,
+        },
+        "error": None,
+    }), 202

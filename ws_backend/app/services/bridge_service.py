@@ -57,3 +57,74 @@ def get_bridge_health() -> dict:
         )
 
     return bridge_data
+
+def submit_bridge_job(
+    work_order_id: int,
+    operation_id: int,
+) -> dict:
+    bridge_base_url = current_app.config[
+        "BRIDGE_BASE_URL"
+    ]
+
+    timeout_seconds = current_app.config[
+        "BRIDGE_TIMEOUT_SECONDS"
+    ]
+
+    jobs_url = f"{bridge_base_url}/jobs"
+
+    request_data = {
+        "work_order_id": work_order_id,
+        "operation_id": operation_id,
+    }
+
+    try:
+        response = requests.post(
+            jobs_url,
+            json=request_data,
+            timeout=timeout_seconds,
+        )
+    except requests.RequestException as error:
+        raise BridgeConnectionError(
+            "Could not connect to ROS2 Bridge."
+        ) from error
+
+    try:
+        response_data = response.json()
+    except ValueError as error:
+        raise BridgeResponseError(
+            "ROS2 Bridge returned invalid JSON."
+        ) from error
+
+    if response.status_code != 202:
+        bridge_error = response_data.get(
+            "error"
+        )
+
+        bridge_message = None
+
+        if isinstance(bridge_error, dict):
+            bridge_message = bridge_error.get(
+                "message"
+            )
+
+        raise BridgeResponseError(
+            bridge_message
+            or (
+                "ROS2 Bridge rejected the job "
+                f"with HTTP {response.status_code}."
+            )
+        )
+
+    if not response_data.get("success"):
+        raise BridgeResponseError(
+            "ROS2 Bridge did not accept the job."
+        )
+
+    bridge_data = response_data.get("data")
+
+    if not isinstance(bridge_data, dict):
+        raise BridgeResponseError(
+            "ROS2 Bridge response data is invalid."
+        )
+
+    return bridge_data
