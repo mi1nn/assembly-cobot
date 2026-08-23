@@ -10,8 +10,15 @@ from rclpy.node import Node
 from solar_panel_interface.action import ExecuteOperation
 
 # 실패 테스트용 변수 설정 - 노드 실행 전 환경변수 설정(실패할 번호 입력)
-MOCK_FAIL_OPERATION_ID = os.getenv(
-    "MOCK_FAIL_OPERATION_ID"
+mock_fail_operation_id = os.getenv(
+    "MOCK_FAIL_OPERATION_ID",
+    "",
+).strip()
+
+MOCK_FAIL_OPERATION_ID = (
+    int(mock_fail_operation_id)
+    if mock_fail_operation_id
+    else None
 )
 
 class ExecuteOperationServer(Node):

@@ -435,21 +435,29 @@ class Ros2BridgeNode(Node):
             else "FAILED"
         )
 
+        if not result.success:
+            with self._state_lock:
+                self._stopped_work_execution_ids.add(
+                    job["work_execution_id"]
+                )
+
         try:
             self.notify_backend_action_result(
                 job=job,
                 result=result,
             )
+
         except Exception as error:
             self.get_logger().error(
                 "Could not notify Backend of "
                 f"Action result: {error}"
             )
 
-            with self._state_lock:
-                self._status = "CALLBACK_FAILED"
-                self._goal_in_progress = False
+            self.stop_current_work(
+                "CALLBACK_FAILED"
+            )
 
+            with self._state_lock:
                 if self._last_job is not None:
                     self._last_job["result"] = {
                         "success": result.success,
