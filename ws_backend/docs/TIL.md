@@ -1540,3 +1540,233 @@ WorkOrder 1개
 ```
 
 Step 11에서는 Installation의 Operation 전체를 sequence 순서로 조회하고 첫 Operation부터 차례로 Bridge에 전달한다. 마지막 Operation까지 성공했을 때만 Work Order를 `COMPLETED`로 변경한다.
+
+---
+
+## Step 11. Work Order의 다중 Operation 순차 실행
+
+### Step 11의 목표
+
+Step 10까지는 Operation 하나를 실행할 때마다 WorkExecution을 만들고, Operation 하나가 성공하면 Work Order 전체를 완료 처리했다. Step 11에서는 Work Order의 전체 Operation을 하나의 실행 단위로 묶고 `sequence` 순서대로 실행하도록 변경했다.
+
+```text
+WorkOrder 1개
+└── WorkExecution 1개
+    ├── OperationExecution sequence=1
+    ├── OperationExecution sequence=2
+    ├── OperationExecution sequence=3
+    └── OperationExecution sequence=N
+```
+
+### Operation 순서 조회
+
+Work Order의 `installation_id`에 속한 Operation 전체를 조회하고 `sequence ASC`로 정렬한다.
+
+```python
+statement = (
+    db.select(Operation)
+    .where(
+        Operation.installation_id
+        == installation_id
+    )
+    .order_by(Operation.sequence.asc())
+)
+```
+
+실행 순서는 API 요청자가 지정하지 않고 DB의 Operation 기준정보가 결정한다. 따라서 실행 요청에서 `operation_id`를 제거했다.
+
+```json
+{
+  "robot_id": 1
+}
+```
+
+Installation에 Operation이 없으면 빈 WorkExecution을 만들지 않고 `409 NO_OPERATIONS`를 반환한다.
+
+### 다중 실행 이력 생성
+
+WorkExecution을 한 번 생성하고 `flush()`로 ID를 발급받은 다음, 모든 Operation에 대한 OperationExecution을 만든다.
+
+```python
+db.session.add(work_execution)
+db.session.flush()
+
+operation_executions = [
+    OperationExecution(
+        work_execution_id=(
+            work_execution.work_execution_id
+        ),
+        operation_id=operation.operation_id,
+        sequence=operation.sequence,
+        status="PENDING",
+    )
+    for operation in operations
+]
+
+db.session.add_all(operation_executions)
+db.session.commit()
+```
+
+WorkExecution과 모든 OperationExecution은 하나의 트랜잭션으로 저장된다. 중간 INSERT가 실패하면 전체를 rollback할 수 있다.
+
+생성 직후 상태:
+
+```text
+WorkExecution RUNNING
+├── sequence 1 RUNNING
+├── sequence 2 PENDING
+├── sequence 3 PENDING
+└── sequence N PENDING
+```
+
+첫 Operation만 Bridge에 보내고 나머지는 DB에서 대기시킨다.
+
+### callback 기반 다음 Operation 실행
+
+Bridge가 현재 Operation의 Action Result를 Backend callback으로 보내면 Backend가 다음 실행 대상을 결정한다.
+
+```text
+현재 Operation 성공
+→ 현재 OperationExecution COMPLETED
+→ 같은 WorkExecution의 첫 PENDING 항목 조회
+→ 다음 Operation과 parameter 조회
+→ Bridge /jobs에 다음 작업 접수
+→ 다음 OperationExecution RUNNING
+```
+
+다음 실행 이력 조회 조건:
+
+```text
+같은 work_execution_id
+status = PENDING
+sequence ASC
+LIMIT 1
+```
+
+Backend callback 처리 중 Bridge에 다음 작업을 HTTP로 접수한다. Bridge의 현재 Action callback이 끝난 뒤 `_goal_in_progress`가 해제되면 Queue에 들어간 다음 Goal이 실행된다.
+
+### 전체 완료 조건
+
+현재 Operation이 성공했고 다음 `PENDING` Operation이 없을 때만 전체 작업을 완료한다.
+
+```text
+마지막 OperationExecution COMPLETED
+WorkExecution          COMPLETED
+WorkOrder              COMPLETED
+Robot                  IDLE
+```
+
+중간 Operation이 완료될 때는 WorkExecution, WorkOrder, Robot 상태를 변경하지 않고 `RUNNING`으로 유지한다.
+
+### 실패 처리
+
+현재 Operation의 Action Result가 실패이면 다음 Operation을 Bridge에 보내지 않는다.
+
+```text
+이전 Operation들  COMPLETED
+현재 Operation    FAILED
+이후 Operation들  PENDING
+WorkExecution     FAILED
+WorkOrder         FAILED
+Robot             IDLE
+```
+
+다음 Operation의 원본 정보가 없거나 Bridge 접수가 실패한 경우에도 전체 WorkExecution을 `FAILED`로 종료하고 Robot을 `IDLE`로 돌린다.
+
+### Mock 중간 실패 테스트
+
+Mock Action Server에 `MOCK_FAIL_OPERATION_ID` 환경변수를 추가했다.
+
+```bash
+MOCK_FAIL_OPERATION_ID=3 \
+ros2 run solar_panel_robot action_server
+```
+
+지정된 Operation은 진행률 60%에서 다음 실패 Result를 반환한다.
+
+```text
+success: false
+error_code: MOCK_OPERATION_FAILURE
+```
+
+Operation 3 실패 테스트 결과:
+
+```text
+Operation 1 COMPLETED
+Operation 2 COMPLETED
+Operation 3 FAILED
+Operation 4 PENDING
+...
+Operation 8 PENDING
+```
+
+환경변수 없이 Mock Server를 실행하면 모든 Operation이 정상 완료된다.
+
+### 전체 실행 API 응답
+
+실행 API는 첫 실행 대상뿐 아니라 생성된 전체 OperationExecution과 총 Operation 수를 반환하도록 변경했다.
+
+```json
+{
+  "work_execution": {
+    "status": "RUNNING"
+  },
+  "first_operation": {
+    "sequence": 1
+  },
+  "operation_executions": [
+    {
+      "sequence": 1,
+      "status": "RUNNING"
+    },
+    {
+      "sequence": 2,
+      "status": "PENDING"
+    }
+  ],
+  "total_operations": 8
+}
+```
+
+HTTP `202 Accepted`는 전체 작업 완료가 아니라 전체 실행 계획을 생성하고 첫 Operation을 접수했다는 의미다.
+
+### Step 11에서 확인한 정상 실행
+
+8개 Operation의 통합 실행에서 다음을 확인했다.
+
+- Operation이 sequence 1부터 8까지 순서대로 실행됨
+- 실행 중에는 한 Operation만 `RUNNING` 상태가 됨
+- 완료된 Operation은 `COMPLETED`로 누적됨
+- 마지막 Operation 완료 후 WorkExecution과 WorkOrder가 `COMPLETED`로 변경됨
+- 전체 종료 후 Robot이 `IDLE`로 복구됨
+
+### Step 11 완료 내용
+
+- Installation의 전체 Operation 순서 조회
+- 실행 요청에서 operation_id 제거
+- WorkExecution 1개와 OperationExecution 여러 개 생성
+- 첫 Operation만 Bridge에 전달
+- Action callback에서 다음 PENDING Operation 조회
+- 다음 Operation의 parameter를 포함해 자동 접수
+- 마지막 Operation에서만 전체 완료 처리
+- 중간 실패 시 후속 Operation 실행 중단
+- Mock Server의 지정 Operation 실패 기능
+- 정상 8단계 실행과 중간 실패 경로 검증
+
+### 다음 작업
+
+현재 실행 상태는 DB에 저장되지만 클라이언트가 진행률을 확인하려면 DB를 직접 조회해야 한다. 다음으로 다음 조회 API를 구현할 수 있다.
+
+```text
+GET /api/v1/executions/{work_execution_id}
+```
+
+조회 응답에는 WorkExecution 상태, Operation별 상태, 완료 개수, 현재 Operation, 전체 진행률을 포함한다.
+
+그 이후 안정화 항목:
+
+- Bridge callback 재시도 Queue
+- callback 인증
+- 실행 취소 API와 ROS2 Goal 취소
+- 실패 Operation 재시도 정책
+- 실행 Event/Error 로그 저장
