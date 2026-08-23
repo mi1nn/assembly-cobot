@@ -1,19 +1,38 @@
-# 작업 관리 노드 -> Controller(M0609)
-# IF-14: 작업 관리 노드 -> Controller, Work Order ID / Operation ID / 작업 Parameter
-string work_order_id
-string operation_id
+# ROS Bridge -> Controller 노드
+# IF-14 Work Order ID / Work Execution ID / Operation ID / Operation Execution ID / 작업 Parameter / 작업 components
+
+# Goal
+uint64 work_order_id
+uint64 work_execution_id
+uint64 operation_id
+uint64 operation_execution_id
+uint64 robot_id
+
 solar_panel_interface/Parameter[] parameters
-# operation 테이블의 components(JSONB, 조립 대상 부품 목록)를 JSON 문자열로 그대로 전달한다.
+
 # 부품마다 필드 구성이 달라(quantity만 있는 것도, pickup/assembly position이 있는 것도 있음)
+# operation 테이블의 components(JSONB, 조립 대상 부품 목록)를 JSON 문자열로 그대로 전달한다.
 # Parameter[]처럼 고정 스키마로 만들지 않고 parameters.value 변환과 같은 방식으로 문자열화한다.
 string components
 ---
-# IF-16: Controller -> 작업 관리 노드, 완료/실패 + Error Code
+# IF-16: Controller -> ROS Bridge, 완료/실패 + Error Code
+
+# Result
 bool success
 string error_code
 string message
 ---
 # IF-15: Controller -> 작업 관리 노드, 현재 Operation + 진행 상태
-string current_operation
-string status
-# float32 progress
+
+# Feedback
+
+# 상태 값 상수화
+uint8 STATUS_PENDING=0
+uint8 STATUS_RUNNING=1
+uint8 STATUS_COMPLETED=2
+uint8 STATUS_FAILED=3
+uint8 STATUS_CANCELLED=4
+
+uint64 operation_execution_id
+uint8 status
+string message
