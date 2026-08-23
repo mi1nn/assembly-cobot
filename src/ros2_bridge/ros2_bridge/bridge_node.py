@@ -6,6 +6,9 @@ from uuid import uuid4
 from flask import Flask, jsonify, request
 import rclpy
 from rclpy.node import Node
+from rclpy.action import ActionClient
+
+from solar_panel_interface.action import ExecuteOperation
 
 
 BRIDGE_HOST = "0.0.0.0"
@@ -17,7 +20,13 @@ class Ros2BridgeNode(Node):
         super().__init__("ros2_bridge")
 
         self.job_queue = Queue()
+        self.action_client = ActionClient(
+            self,
+            ExecuteOperation,
+            "execute_operation",
+        )
 
+        self._goal_in_progress = False
         self._state_lock = Lock()
         self._status = "IDLE"
         self._last_job = None
@@ -35,25 +44,157 @@ class Ros2BridgeNode(Node):
         self.job_queue.put(job)
 
     def process_job_queue(self) -> None:
+        with self._state_lock:
+            if self._goal_in_progress:
+                return
+
+        # Action Server가 준비되지 않았다면 큐에서 작업을 꺼내지 않는다.
+        if not self.action_client.server_is_ready():
+            with self._state_lock:
+                self._status = "ACTION_SERVER_UNAVAILABLE"
+
+            return
+
         try:
             job = self.job_queue.get_nowait()
         except Empty:
             return
 
         with self._state_lock:
-            self._status = "JOB_RECEIVED"
+            self._goal_in_progress = True
+            self._status = "SENDING_GOAL"
             self._last_job = job
 
         self.get_logger().info(
-            "Job received: "
+            "Sending Action Goal: "
             f"bridge_job_id={job['bridge_job_id']}, "
             f"work_order_id={job['work_order_id']}, "
             f"operation_id={job['operation_id']}"
         )
 
-        # Step 9에서 이 위치에 ROS2 Action Goal 전송을 구현한다.
+        goal = ExecuteOperation.Goal()
+        goal.work_order_id = str(
+            job["work_order_id"]
+        )
+        goal.operation_id = str(
+            job["operation_id"]
+        )
+
+        send_goal_future = (
+            self.action_client.send_goal_async(
+                goal,
+                feedback_callback=(
+                    self.feedback_callback
+                ),
+            )
+        )
+
+        send_goal_future.add_done_callback(
+            self.goal_response_callback
+        )
 
         self.job_queue.task_done()
+
+    def goal_response_callback(self, future) -> None:
+        try:
+            goal_handle = future.result()
+        except Exception as error:
+            self.get_logger().error(
+                f"Failed to send Action Goal: {error}"
+            )
+
+            with self._state_lock:
+                self._status = "GOAL_SEND_FAILED"
+                self._goal_in_progress = False
+
+            return
+
+        if not goal_handle.accepted:
+            self.get_logger().warning(
+                "Action Goal rejected."
+            )
+
+            with self._state_lock:
+                self._status = "GOAL_REJECTED"
+                self._goal_in_progress = False
+
+            return
+
+        self.get_logger().info(
+            "Action Goal accepted."
+        )
+
+        with self._state_lock:
+            self._status = "EXECUTING"
+
+        result_future = goal_handle.get_result_async()
+
+        result_future.add_done_callback(
+            self.result_callback
+        )
+
+    def feedback_callback(
+        self,
+        feedback_message,
+    ) -> None:
+        feedback = feedback_message.feedback
+
+        self.get_logger().info(
+            "Action Feedback: "
+            f"operation={feedback.current_operation}, "
+            f"status={feedback.status}, "
+            f"progress={feedback.progress:.1f}%"
+        )
+
+        with self._state_lock:
+            self._status = feedback.status
+
+            if self._last_job is not None:
+                self._last_job["progress"] = (
+                    feedback.progress
+                )
+
+    def result_callback(self, future) -> None:
+        try:
+            wrapped_result = future.result()
+            result = wrapped_result.result
+        except Exception as error:
+            self.get_logger().error(
+                f"Failed to receive Action result: {error}"
+            )
+
+            with self._state_lock:
+                self._status = "RESULT_FAILED"
+                self._goal_in_progress = False
+
+            return
+
+        if result.success:
+            final_status = "COMPLETED"
+            log_message = (
+                "Action completed successfully: "
+                f"{result.message}"
+            )
+            self.get_logger().info(log_message)
+        else:
+            final_status = "FAILED"
+            log_message = (
+                "Action failed: "
+                f"error_code={result.error_code}, "
+                f"message={result.message}"
+            )
+            self.get_logger().error(log_message)
+
+        with self._state_lock:
+            self._status = final_status
+            self._goal_in_progress = False
+
+            if self._last_job is not None:
+                self._last_job["result"] = {
+                    "success": result.success,
+                    "error_code": result.error_code,
+                    "message": result.message,
+                }
 
     def get_bridge_status(self) -> dict:
         with self._state_lock:

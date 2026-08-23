@@ -1033,3 +1033,280 @@ Bridge가 요청을 수락해도 현재 Work Order는 `READY`를 유지한다. `
 - Bridge Queue와 ROS2 로그에서 요청 수신 확인
 
 다음 Step 9에서는 Bridge를 ROS2 Action Client로 만들고 Robot Control Action Server와 연결한다.
+
+---
+
+## Step 9. ROS2 Action으로 Bridge와 Robot 연결
+
+### Step 9의 목표
+
+Step 8까지는 Flask Backend가 Bridge의 HTTP Queue에 작업을 접수하는 것까지만 구현했다. Step 9에서는 Queue에서 꺼낸 작업을 ROS2 Action Goal로 변환하고 Robot 제어 노드로 보내는 흐름을 구현했다.
+
+```text
+사용자 요청
+→ Flask Backend
+→ Bridge HTTP API
+→ Bridge Queue
+→ ROS2 Action Client
+→ Robot Action Server
+→ Feedback / Result
+```
+
+ROS2 패키지는 하나의 workspace에서 관리할 수 있도록 다음 위치로 정리했다.
+
+```text
+assembly-cobot/
+├── src/
+│   ├── ros2_bridge/
+│   ├── solar_panel_interface/
+│   └── solar_panel_robot/
+└── ws_backend/
+```
+
+따라서 workspace를 여러 번 source하고 각각 빌드할 필요 없이 `assembly-cobot`에서 한 번에 빌드할 수 있다.
+
+```bash
+cd ~/workspace/assembly-cobot
+source /opt/ros/jazzy/setup.bash
+colcon build --symlink-install
+source install/setup.bash
+```
+
+### ROS2 Action을 사용한 이유
+
+로봇 작업은 요청 직후 끝나는 일반 함수 호출이 아니다. 수 초 이상 실행되며 진행률, 성공/실패 결과, 취소 기능이 필요하다.
+
+```text
+Goal     실행할 작업 요청
+Feedback 실행 중 반복해서 전달되는 진행 상태
+Result   작업 종료 후 한 번 전달되는 최종 결과
+```
+
+Service는 요청과 응답이 한 번씩 오가는 짧은 작업에 적합하고, Action은 진행 상태가 필요한 장시간 작업에 적합하다.
+
+### ExecuteOperation Action 인터페이스
+
+기존 `solar_panel_interface/action/ExecuteOperation.action`을 사용했다.
+
+```text
+string work_order_id
+string operation_id
+solar_panel_interface/Parameter[] parameters
+---
+bool success
+string error_code
+string message
+---
+string current_operation
+string status
+float32 progress
+```
+
+첫 번째 구역은 Goal, 두 번째 구역은 Result, 세 번째 구역은 Feedback이다. DB의 ID는 정수지만 Action 메시지에서는 문자열이므로 Bridge에서 변환한다.
+
+```python
+goal.work_order_id = str(job["work_order_id"])
+goal.operation_id = str(job["operation_id"])
+```
+
+### Mock Action Server 구현
+
+실제 로봇 제어 코드를 바로 연결하면 테스트 과정에서 장비가 움직일 수 있으므로 `solar_panel_robot`에 Mock Action Server를 별도로 구현했다.
+
+```text
+main 노드          실제 로봇 제어용
+action_server 노드 Action 통신 검증용 Mock Server
+```
+
+Mock Server는 Goal을 승인한 후 진행률을 `0, 20, 40, 60, 80, 100` 순서로 Feedback에 담아 발행하고, 마지막에 성공 Result를 반환한다.
+
+```python
+feedback.current_operation = request.operation_id
+feedback.status = "RUNNING"
+feedback.progress = float(progress)
+goal_handle.publish_feedback(feedback)
+```
+
+작업 성공 처리는 다음 두 부분으로 구성된다.
+
+```python
+goal_handle.succeed()
+
+result = ExecuteOperation.Result()
+result.success = True
+result.error_code = ""
+result.message = "Operation completed successfully"
+```
+
+`goal_handle.succeed()`는 ROS2 Action 자체의 종료 상태를 성공으로 변경하고, `result.success`는 애플리케이션에서 정의한 작업 결과를 나타낸다.
+
+### asyncio 오류와 처리
+
+처음에는 실행 콜백을 `async def`로 만들고 `await asyncio.sleep(1.0)`을 사용했다. 그러나 현재 rclpy executor에서 일반 Python asyncio event loop가 실행되고 있지 않아 다음 오류가 발생했다.
+
+```text
+RuntimeError: no running event loop
+```
+
+Mock Server에서는 실행 콜백을 동기 함수로 바꾸고 `time.sleep()`을 사용해 해결했다.
+
+```python
+def execute_callback(self, goal_handle):
+    time.sleep(1.0)
+```
+
+이 방식은 기본 Goal과 Feedback 테스트에는 충분하지만 sleep 중 executor thread를 점유한다. 실제 서버에서 취소 요청이나 여러 콜백을 동시에 처리하려면 `MultiThreadedExecutor`와 callback group을 검토해야 한다.
+
+### Bridge Action Client 구현
+
+Bridge Node에 `ActionClient`를 생성했다.
+
+```python
+self.action_client = ActionClient(
+    self,
+    ExecuteOperation,
+    "execute_operation",
+)
+```
+
+Action 이름인 `execute_operation`은 Client와 Server에서 같아야 한다.
+
+Bridge timer는 주기적으로 Queue를 확인한다. Action Server가 준비되지 않았으면 작업을 꺼내지 않고 `ACTION_SERVER_UNAVAILABLE` 상태로 대기한다. Server가 준비되면 작업 하나를 꺼내 Goal을 비동기로 전송한다.
+
+```python
+send_goal_future = self.action_client.send_goal_async(
+    goal,
+    feedback_callback=self.feedback_callback,
+)
+send_goal_future.add_done_callback(
+    self.goal_response_callback
+)
+```
+
+Future와 done callback을 사용하므로 결과를 기다리는 동안 프로그램 전체가 멈추지 않는다.
+
+### Action Client 콜백 흐름
+
+```text
+send_goal_async()
+→ goal_response_callback()
+→ feedback_callback() 반복
+→ result_callback()
+```
+
+`goal_response_callback()`에서는 Server가 Goal을 승인했는지 확인한다. 승인되면 Result Future를 등록한다.
+
+```python
+if not goal_handle.accepted:
+    # GOAL_REJECTED 처리
+
+result_future = goal_handle.get_result_async()
+result_future.add_done_callback(self.result_callback)
+```
+
+`feedback_callback()`은 실행 중 여러 번 호출되며 현재 상태와 진행률을 Bridge 상태에 반영한다.
+
+```python
+self._status = feedback.status
+self._last_job["progress"] = feedback.progress
+```
+
+`result_callback()`은 최종 결과에 따라 상태를 변경한다.
+
+```text
+result.success == true  → COMPLETED
+result.success == false → FAILED
+```
+
+### Queue의 순차 실행 제어
+
+Bridge에는 `_goal_in_progress` 변수를 추가했다. Goal 실행 중에는 다음 작업을 Queue에서 꺼내지 않고, Result를 받은 뒤 다음 작업을 처리한다.
+
+```text
+Operation 10 실행 중
+Operation 11 Queue 대기
+Operation 12 Queue 대기
+→ 10 완료 후 11 실행
+→ 11 완료 후 12 실행
+```
+
+공유 상태인 `_status`, `_last_job`, `_goal_in_progress`는 Flask HTTP thread와 ROS2 executor가 함께 접근하므로 Lock으로 보호한다.
+
+### Bridge 직접 통합 테스트
+
+Mock Action Server와 Bridge를 실행하고 Bridge에 직접 작업을 접수했다.
+
+```bash
+ros2 run solar_panel_robot action_server
+ros2 run ros2_bridge bridge_node
+
+curl -X POST \
+  http://127.0.0.1:8001/jobs \
+  -H "Content-Type: application/json" \
+  -d '{"work_order_id":1,"operation_id":10}'
+```
+
+다음 항목을 확인했다.
+
+- HTTP `202 Accepted`와 `bridge_job_id` 반환
+- Action Server의 Goal 수신 및 승인
+- Bridge가 0%부터 100%까지 Feedback 수신
+- Action Server가 성공 Result 반환
+- Bridge `/status`가 `COMPLETED`로 변경
+- 요청을 연속 전송했을 때 Queue 순서대로 실행
+
+### Flask Backend 전체 통합 테스트
+
+최종적으로 Bridge에 직접 요청하지 않고 기존 Backend 실행 API를 사용했다.
+
+```text
+POST /api/v1/work-orders/{work_order_id}/execute
+```
+
+```bash
+curl -X POST \
+  http://127.0.0.1:5000/api/v1/work-orders/1/execute \
+  -H "Content-Type: application/json" \
+  -d '{"operation_id":10}'
+```
+
+전체 처리 순서는 다음과 같다.
+
+```text
+1. Work Order 존재 확인
+2. Work Order 상태가 READY인지 확인
+3. Operation 존재 확인
+4. Work Order와 Operation의 installation_id 일치 확인
+5. Flask Backend가 Bridge /jobs 호출
+6. Bridge가 Queue에 작업 저장
+7. Bridge Action Client가 Goal 전송
+8. Mock Action Server가 Feedback과 Result 반환
+```
+
+Backend의 `202 Accepted`는 실제 로봇 작업 완료가 아니라 Bridge가 실행 요청을 접수했다는 의미다.
+
+### Step 9 완료 내용
+
+- ROS2 패키지를 하나의 workspace로 정리
+- 기존 ExecuteOperation Action 인터페이스 확인
+- 실제 장비 없이 테스트할 Mock Action Server 구현
+- Goal, Feedback, Result 통신 확인
+- Bridge에 ROS2 Action Client 구현
+- Bridge Queue의 작업을 Action Goal로 변환
+- Action Server 미실행 상태 처리
+- Goal 승인, Feedback, 성공/실패 Result 처리
+- `_goal_in_progress`를 이용한 작업 순차 실행
+- Flask Backend부터 Mock Robot까지 전체 경로 통합 테스트
+
+### 현재 제한사항과 다음 단계
+
+현재 Action 결과는 Bridge 메모리에만 저장되며 Backend DB에는 반영되지 않는다. Bridge 프로세스가 종료되면 `/status`의 실행 정보도 사라진다. 또한 Operation의 `parameter` JSONB 값은 아직 Action의 `Parameter[]`로 전달하지 않는다.
+
+다음 Step 10에서 구현할 내용:
+
+- `work_execution`과 `operation_execution` SQLAlchemy 모델
+- 실행 요청 시 DB에 `PENDING` 실행 이력 생성
+- 작업 시작 시 `RUNNING` 상태 반영
+- Bridge Result를 Backend callback API로 전달
+- 성공 시 `COMPLETED`, 실패 시 `FAILED` 기록
+- Operation parameter를 Action Parameter 메시지로 변환

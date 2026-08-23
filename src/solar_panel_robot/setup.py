@@ -27,7 +27,8 @@ setup(
     },
     entry_points={
         'console_scripts': [
-            "main = solar_panel_robot.main:main"
+            "main = solar_panel_robot.main:main",
+            "action_server=solar_panel_robot.action_server:main",
         ],
     },
 )   
