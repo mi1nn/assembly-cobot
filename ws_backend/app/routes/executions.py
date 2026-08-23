@@ -2,12 +2,25 @@ from flask import Blueprint, jsonify, request
 
 from app.extensions import db
 from app.models import Robot, WorkOrder
+
+from app.services.bridge_service import (
+    BridgeConnectionError,
+    BridgeResponseError,
+    submit_bridge_job,
+)
 from app.services.execution_service import (
+    get_next_pending_operation_execution,
     get_operation_execution_by_id,
     get_work_execution_by_id,
     mark_execution_completed,
     mark_execution_failed,
+    mark_operation_completed,
+    mark_operation_running,
 )
+from app.services.operation_service import (
+    get_operation_by_id,
+)
+
 
 
 executions_bp = Blueprint(
@@ -174,16 +187,11 @@ def receive_action_result():
             },
         }), 409
 
-    expected_status = (
-        "COMPLETED"
-        if action_success
-        else "FAILED"
-    )
-
+    # 같은 결과 callback이 다시 들어온 경우
     if (
-        work_execution.status == expected_status
+        action_success
         and operation_execution.status
-        == expected_status
+        == "COMPLETED"
     ):
         return jsonify({
             "success": True,
@@ -199,41 +207,44 @@ def receive_action_result():
             "error": None,
         }), 200
 
-    terminal_statuses = {
-        "COMPLETED",
-        "FAILED",
-        "CANCELLED",
-    }
-
     if (
-        work_execution.status in terminal_statuses
-        or operation_execution.status
-        in terminal_statuses
+        not action_success
+        and operation_execution.status
+        == "FAILED"
+        and work_execution.status
+        == "FAILED"
     ):
+        return jsonify({
+            "success": True,
+            "data": {
+                "already_processed": True,
+                "work_execution": (
+                    work_execution.to_dict()
+                ),
+                "operation_execution": (
+                    operation_execution.to_dict()
+                ),
+            },
+            "error": None,
+        }), 200
+
+    if operation_execution.status != "RUNNING":
         return jsonify({
             "success": False,
             "data": None,
             "error": {
                 "code": (
-                    "EXECUTION_ALREADY_FINISHED"
+                    "OPERATION_NOT_RUNNING"
                 ),
                 "message": (
-                    "The execution already has "
-                    "a terminal status."
+                    "Only a RUNNING operation "
+                    "can receive an Action result."
                 ),
             },
         }), 409
 
-    if action_success:
-        mark_execution_completed(
-            work_order=work_order,
-            work_execution=work_execution,
-            operation_execution=(
-                operation_execution
-            ),
-            robot=robot,
-        )
-    else:
+    # 현재 Operation이 실패한 경우
+    if not action_success:
         mark_execution_failed(
             work_order=work_order,
             work_execution=work_execution,
@@ -243,27 +254,172 @@ def receive_action_result():
             robot=robot,
         )
 
+        return jsonify({
+            "success": True,
+            "data": {
+                "already_processed": False,
+                "workflow_status": "FAILED",
+                "action_result": {
+                    "success": False,
+                    "error_code": (
+                        request_data.get(
+                            "error_code",
+                            "",
+                        )
+                    ),
+                    "message": request_data.get(
+                        "message",
+                        "",
+                    ),
+                },
+                "work_execution": (
+                    work_execution.to_dict()
+                ),
+                "operation_execution": (
+                    operation_execution.to_dict()
+                ),
+            },
+            "error": None,
+        }), 200
+
+    # 현재 Operation만 완료 처리한다.
+    mark_operation_completed(
+        operation_execution
+    )
+
+    next_operation_execution = (
+        get_next_pending_operation_execution(
+            work_execution.work_execution_id
+        )
+    )
+
+    # 다음 Operation이 없으면 전체 작업 완료
+    if next_operation_execution is None:
+        mark_execution_completed(
+            work_order=work_order,
+            work_execution=work_execution,
+            operation_execution=(
+                operation_execution
+            ),
+            robot=robot,
+        )
+
+        return jsonify({
+            "success": True,
+            "data": {
+                "already_processed": False,
+                "workflow_status": (
+                    "COMPLETED"
+                ),
+                "has_next_operation": False,
+                "work_execution": (
+                    work_execution.to_dict()
+                ),
+                "operation_execution": (
+                    operation_execution.to_dict()
+                ),
+            },
+            "error": None,
+        }), 200
+
+    next_operation = get_operation_by_id(
+        next_operation_execution.operation_id
+    )
+
+    # 실행 이력은 있지만 원본 Operation이 없는 경우
+    if next_operation is None:
+        mark_execution_failed(
+            work_order=work_order,
+            work_execution=work_execution,
+            operation_execution=(
+                next_operation_execution
+            ),
+            robot=robot,
+        )
+
+        return jsonify({
+            "success": True,
+            "data": {
+                "already_processed": False,
+                "workflow_status": "FAILED",
+                "has_next_operation": True,
+                "next_submission_error": (
+                    "The next operation "
+                    "was not found."
+                ),
+            },
+            "error": None,
+        }), 200
+
+    # 다음 Operation을 Bridge Queue에 접수한다.
+    try:
+        bridge_data = submit_bridge_job(
+            work_order_id=(
+                work_order.work_order_id
+            ),
+            operation_id=(
+                next_operation.operation_id
+            ),
+            work_execution_id=(
+                work_execution
+                .work_execution_id
+            ),
+            operation_execution_id=(
+                next_operation_execution
+                .operation_execution_id
+            ),
+            robot_id=robot.robot_id,
+            parameters=(
+                next_operation.parameter
+            ),
+        )
+
+    except (
+        BridgeConnectionError,
+        BridgeResponseError,
+    ) as error:
+        mark_execution_failed(
+            work_order=work_order,
+            work_execution=work_execution,
+            operation_execution=(
+                next_operation_execution
+            ),
+            robot=robot,
+        )
+
+        return jsonify({
+            "success": True,
+            "data": {
+                "already_processed": False,
+                "workflow_status": "FAILED",
+                "has_next_operation": True,
+                "next_submission_error": (
+                    str(error)
+                ),
+            },
+            "error": None,
+        }), 200
+
+    mark_operation_running(
+        next_operation_execution
+    )
+
     return jsonify({
         "success": True,
         "data": {
             "already_processed": False,
-            "action_result": {
-                "success": action_success,
-                "error_code": request_data.get(
-                    "error_code",
-                    "",
-                ),
-                "message": request_data.get(
-                    "message",
-                    "",
-                ),
-            },
-            "work_execution": (
-                work_execution.to_dict()
-            ),
-            "operation_execution": (
+            "workflow_status": "RUNNING",
+            "has_next_operation": True,
+            "completed_operation_execution": (
                 operation_execution.to_dict()
             ),
+            "next_operation": (
+                next_operation.to_dict()
+            ),
+            "next_operation_execution": (
+                next_operation_execution.to_dict()
+            ),
+            "bridge": bridge_data,
         },
         "error": None,
     }), 200

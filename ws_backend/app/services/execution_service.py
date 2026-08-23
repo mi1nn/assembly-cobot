@@ -73,6 +73,62 @@ def create_execution_records(
         operation_execution,
     )
 
+def create_execution_records_for_operations(
+    work_order_id: int,
+    operations: list[Operation],
+    robot_id: int,
+) -> tuple[
+    WorkExecution,
+    list[OperationExecution],
+]:
+    if not operations:
+        raise ValueError(
+            "At least one operation is required."
+        )
+
+    work_execution = WorkExecution(
+        work_order_id=work_order_id,
+        robot_id=robot_id,
+        execution_number=(
+            generate_execution_number()
+        ),
+        status="PENDING",
+    )
+
+    db.session.add(work_execution)
+
+    # WorkExecution의 PK를 먼저 발급받는다.
+    db.session.flush()
+
+    operation_executions = [
+        OperationExecution(
+            work_execution_id=(
+                work_execution
+                .work_execution_id
+            ),
+            operation_id=(
+                operation.operation_id
+            ),
+            sequence=operation.sequence,
+            status="PENDING",
+            retry_count=0,
+        )
+        for operation in operations
+    ]
+
+    db.session.add_all(
+        operation_executions
+    )
+
+    # WorkExecution 1개와 모든
+    # OperationExecution을 함께 확정한다.
+    db.session.commit()
+
+    return (
+        work_execution,
+        operation_executions,
+    )
+
 def get_work_execution_by_id(
     work_execution_id: int,
 ) -> WorkExecution | None:
@@ -207,5 +263,51 @@ def mark_execution_failed(
     )
 
     robot.status = "IDLE"
+
+    db.session.commit()
+
+def get_next_pending_operation_execution(
+    work_execution_id: int,
+) -> OperationExecution | None:
+    statement = (
+        db.select(OperationExecution)
+        .where(
+            OperationExecution
+            .work_execution_id
+            == work_execution_id,
+            OperationExecution.status
+            == "PENDING",
+        )
+        .order_by(
+            OperationExecution.sequence.asc()
+        )
+        .limit(1)
+    )
+
+    return db.session.scalar(
+        statement
+    )
+
+def mark_operation_completed(
+    operation_execution: OperationExecution,
+) -> None:
+    operation_execution.status = (
+        "COMPLETED"
+    )
+
+    operation_execution.end_time = (
+        datetime.now()
+    )
+
+    db.session.commit()
+
+def mark_operation_running(
+    operation_execution: OperationExecution,
+) -> None:
+    operation_execution.status = "RUNNING"
+
+    operation_execution.start_time = (
+        datetime.now()
+    )
 
     db.session.commit()

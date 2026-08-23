@@ -16,3 +16,4 @@ string message
 # IF-15: Controller -> 작업 관리 노드, 현재 Operation + 진행 상태
 string current_operation
 string status
+# float32 progress
