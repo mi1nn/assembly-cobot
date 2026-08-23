@@ -91,7 +91,7 @@ class Ros2BridgeNode(Node):
         goal = ExecuteOperation.Goal()
         goal.work_order_id = str(
             job["work_order_id"]
-        )
+        )   
         goal.operation_id = str(
             job["operation_id"]
         )
