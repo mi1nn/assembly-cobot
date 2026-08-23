@@ -65,6 +65,7 @@ def submit_bridge_job(
     operation_execution_id: int,
     robot_id: int,
     parameters: dict | None,
+    components: list | None,
 ) -> dict:
     bridge_base_url = current_app.config[
         "BRIDGE_BASE_URL"
@@ -87,6 +88,7 @@ def submit_bridge_job(
         ),
         "robot_id": robot_id,
         "parameters": parameters or {},
+        "components": components or [],
     }
 
     try:

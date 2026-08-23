@@ -100,6 +100,11 @@ class Ros2BridgeNode(Node):
                 job["parameters"]
             )
         )
+        goal.components = json.dumps(
+            job["components"],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
 
         send_goal_future = (
             self.action_client.send_goal_async(
@@ -163,17 +168,11 @@ class Ros2BridgeNode(Node):
         self.get_logger().info(
             "Action Feedback: "
             f"operation={feedback.current_operation}, "
-            f"status={feedback.status}, "
-            f"progress={feedback.progress:.1f}%"
+            f"status={feedback.status}"
         )
 
         with self._state_lock:
             self._status = feedback.status
-
-            if self._last_job is not None:
-                self._last_job["progress"] = (
-                    feedback.progress
-                )
 
     def result_callback(self, future) -> None:
         try:
@@ -410,6 +409,7 @@ def create_http_app(
             "operation_execution_id",
             "robot_id",
             "parameters",
+            "components",
         )
 
         missing_fields = [
@@ -484,6 +484,23 @@ def create_http_app(
                 },
             }), 400
 
+        components = request_data[
+            "components"
+        ]
+
+        if not isinstance(components, list):
+            return jsonify({
+                "success": False,
+                "data": None,
+                "error": {
+                    "code": "INVALID_COMPONENTS",
+                    "message": (
+                        "components must be "
+                        "a JSON array."
+                    ),
+                },
+            }), 400
+
         job = {
             "bridge_job_id": str(uuid4()),
             "work_order_id": request_data[
@@ -504,6 +521,7 @@ def create_http_app(
                 "robot_id"
             ],
             "parameters": parameters,
+            "components": components,
             "received_at": datetime.now(
                 timezone.utc,
             ).isoformat(),

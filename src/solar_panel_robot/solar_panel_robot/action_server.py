@@ -1,5 +1,6 @@
 # ROS 연결 확인을 위한 Mock data를 보내주는 실험용 노드입니다.
 
+import json
 import time
 
 import rclpy
@@ -41,6 +42,17 @@ class ExecuteOperationServer(Node):
                 f"parameter: {parameter.key}={parameter.value}"
             )
 
+        try:
+            components = json.loads(
+                goal_request.components
+            )
+        except ValueError:
+            components = []
+
+        self.get_logger().info(
+            f"components: {len(components)}개"
+        )
+
         return GoalResponse.ACCEPT
 
     def cancel_callback(self, goal_handle):
@@ -79,7 +91,6 @@ class ExecuteOperationServer(Node):
 
             feedback.current_operation = request.operation_id
             feedback.status = "RUNNING"
-            feedback.progress = float(progress)
 
             goal_handle.publish_feedback(feedback)
 

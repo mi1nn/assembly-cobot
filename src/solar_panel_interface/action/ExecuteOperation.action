@@ -3,6 +3,10 @@
 string work_order_id
 string operation_id
 solar_panel_interface/Parameter[] parameters
+# operation 테이블의 components(JSONB, 조립 대상 부품 목록)를 JSON 문자열로 그대로 전달한다.
+# 부품마다 필드 구성이 달라(quantity만 있는 것도, pickup/assembly position이 있는 것도 있음)
+# Parameter[]처럼 고정 스키마로 만들지 않고 parameters.value 변환과 같은 방식으로 문자열화한다.
+string components
 ---
 # IF-16: Controller -> 작업 관리 노드, 완료/실패 + Error Code
 bool success
@@ -12,4 +16,3 @@ string message
 # IF-15: Controller -> 작업 관리 노드, 현재 Operation + 진행 상태
 string current_operation
 string status
-float32 progress

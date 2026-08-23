@@ -463,6 +463,7 @@ def execute_work_order(work_order_id: int):
             ),
             robot_id=robot_id,
             parameters=operation.parameter,
+            components=operation.components,
         )
 
     except BridgeConnectionError as error:
