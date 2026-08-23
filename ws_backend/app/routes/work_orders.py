@@ -1,3 +1,10 @@
+from app.services.execution_service import (
+    create_execution_records,
+    get_robot_by_id,
+    mark_execution_running,
+    mark_execution_submission_failed,
+)
+
 # API 발행
 from app.services.bridge_service import (
     BridgeConnectionError,
@@ -299,6 +306,9 @@ def execute_work_order(work_order_id: int):
     operation_id = request_data.get(
         "operation_id"
     )
+    robot_id = request_data.get(
+        "robot_id"
+    )
 
     if (
         not isinstance(operation_id, int)
@@ -312,6 +322,23 @@ def execute_work_order(work_order_id: int):
                 "code": "INVALID_OPERATION_ID",
                 "message": (
                     "operation_id must be "
+                    "a positive integer."
+                ),
+            },
+        }), 400
+
+    if (
+        not isinstance(robot_id, int)
+        or isinstance(robot_id, bool)
+        or robot_id <= 0
+    ):
+        return jsonify({
+            "success": False,
+            "data": None,
+            "error": {
+                "code": "INVALID_ROBOT_ID",
+                "message": (
+                    "robot_id must be "
                     "a positive integer."
                 ),
             },
@@ -347,6 +374,36 @@ def execute_work_order(work_order_id: int):
             },
         }), 409
 
+    robot = get_robot_by_id(
+        robot_id
+    )
+
+    if robot is None:
+        return jsonify({
+            "success": False,
+            "data": None,
+            "error": {
+                "code": "ROBOT_NOT_FOUND",
+                "message": (
+                    f"Robot {robot_id} "
+                    "was not found."
+                ),
+            },
+        }), 404
+
+    if robot.status != "IDLE":
+        return jsonify({
+            "success": False,
+            "data": None,
+            "error": {
+                "code": "ROBOT_NOT_AVAILABLE",
+                "message": (
+                    "Only IDLE robots "
+                    "can execute a job."
+                ),
+            },
+        }), 409
+
     operation = get_operation_for_installation(
         operation_id=operation_id,
         installation_id=(
@@ -369,12 +426,51 @@ def execute_work_order(work_order_id: int):
         }), 404
 
     try:
+        (
+            work_execution,
+            operation_execution,
+        ) = create_execution_records(
+            work_order_id=work_order_id,
+            operation=operation,
+            robot_id=robot_id,
+        )
+
+    except IntegrityError:
+        db.session.rollback()
+
+        return jsonify({
+            "success": False,
+            "data": None,
+            "error": {
+                "code": "EXECUTION_CONFLICT",
+                "message": (
+                    "Could not create "
+                    "execution records."
+                ),
+            },
+        }), 409
+
+    try:
         bridge_data = submit_bridge_job(
             work_order_id=work_order_id,
             operation_id=operation_id,
+            work_execution_id=(
+                work_execution.work_execution_id
+            ),
+            operation_execution_id=(
+                operation_execution
+                .operation_execution_id
+            ),
+            robot_id=robot_id,
+            parameters=operation.parameter,
         )
 
     except BridgeConnectionError as error:
+        mark_execution_submission_failed(
+            work_execution,
+            operation_execution,
+        )
+
         return jsonify({
             "success": False,
             "data": None,
@@ -385,6 +481,11 @@ def execute_work_order(work_order_id: int):
         }), 503
 
     except BridgeResponseError as error:
+        mark_execution_submission_failed(
+            work_execution,
+            operation_execution,
+        )
+
         return jsonify({
             "success": False,
             "data": None,
@@ -394,11 +495,26 @@ def execute_work_order(work_order_id: int):
             },
         }), 502
 
+    mark_execution_running(
+        work_order=work_order,
+        work_execution=work_execution,
+        operation_execution=(
+            operation_execution
+        ),
+        robot=robot,
+    )
+        
     return jsonify({
         "success": True,
         "data": {
             "work_order_id": work_order_id,
             "operation": operation.to_dict(),
+            "work_execution": (
+                work_execution.to_dict()
+            ),
+            "operation_execution": (
+                operation_execution.to_dict()
+            ),
             "bridge": bridge_data,
         },
         "error": None,
