@@ -13,7 +13,7 @@
 최초 1회만 실행한다.
 
 ```bash
-cd ws_backend/
+cd web_app/
 
 # Backend용 venv 생성
 python3 -m venv .venv
@@ -71,7 +71,7 @@ source /opt/ros/jazzy/setup.bash
 
 ### 6.1 사전 조건
 
-아래 명령은 프로젝트 루트(`ws_backend`)에서 실행한다.
+아래 명령은 프로젝트 루트(`web_app`)에서 실행한다.
 
 ```bash
 pwd
