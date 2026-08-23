@@ -61,6 +61,10 @@ def get_bridge_health() -> dict:
 def submit_bridge_job(
     work_order_id: int,
     operation_id: int,
+    work_execution_id: int,
+    operation_execution_id: int,
+    robot_id: int,
+    parameters: dict | None,
 ) -> dict:
     bridge_base_url = current_app.config[
         "BRIDGE_BASE_URL"
@@ -75,6 +79,14 @@ def submit_bridge_job(
     request_data = {
         "work_order_id": work_order_id,
         "operation_id": operation_id,
+        "work_execution_id": (
+            work_execution_id
+        ),
+        "operation_execution_id": (
+            operation_execution_id
+        ),
+        "robot_id": robot_id,
+        "parameters": parameters or {},
     }
 
     try:
