@@ -3,6 +3,7 @@
 string work_order_id
 string operation_id
 solar_panel_interface/Parameter[] parameters
+# component 추가
 ---
 # IF-16: Controller -> 작업 관리 노드, 완료/실패 + Error Code
 bool success
@@ -12,4 +13,4 @@ string message
 # IF-15: Controller -> 작업 관리 노드, 현재 Operation + 진행 상태
 string current_operation
 string status
-float32 progress
+# float32 progress

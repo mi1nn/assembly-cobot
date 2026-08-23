@@ -13,90 +13,173 @@ from DSR_ROBOT2 import (
 
 class ForceController:
 
-    def compliance_on(
-        self,
-        stiffness=(3000, 3000, 3000, 200, 200, 200),
-        time=0.0,
-        reference="base"
-    ):
-        print(
-            f"[COMPLIANCE] ON "
-            f"stiffness={stiffness}, "
-            f"time={time}",
-            flush=True
-        )
+    AXIS_MAP = {
+        "x": 0,
+        "y": 1,
+        "z": 2,
+        "a": 3,
+        "b": 4,
+        "c": 5,
+    }
 
-        reference_map = {
+    REFERENCE_MAP = {
         "base": DR_BASE,
         "tool": DR_TOOL,
-        }
+    }
 
-        if reference not in reference_map:
+    MODE_MAP = {
+        "relative": DR_FC_MOD_REL,
+        "absolute": DR_FC_MOD_ABS,
+    }
+
+
+    # =========================================================
+    # Compliance
+    # =========================================================
+
+    def compliance_on(
+        self,
+        stiffness=None,
+        time=0.0,
+        reference="base",
+    ):
+        """
+        stiffness 예시:
+
+        {
+            "x": 300,
+            "y": 8000,
+            "z": 8000,
+            "a": 800,
+            "b": 800,
+            "c": 800,
+        }
+        """
+
+        if reference not in self.REFERENCE_MAP:
             raise ValueError(
                 f"Invalid reference: {reference}"
             )
 
-    # Compliance 시작 전에 기준 좌표계 설정
+        # 기본 stiffness
+        stiffness_vector = [
+            3000,
+            3000,
+            3000,
+            200,
+            200,
+            200,
+        ]
+
+        # 지정된 축만 변경
+        if stiffness is not None:
+
+            for axis, value in stiffness.items():
+
+                axis = axis.lower()
+
+                if axis not in self.AXIS_MAP:
+                    raise ValueError(
+                        f"Invalid stiffness axis: {axis}"
+                    )
+
+                index = self.AXIS_MAP[axis]
+                stiffness_vector[index] = value
+
+        print(
+            f"[COMPLIANCE] ON "
+            f"stiffness={stiffness_vector}, "
+            f"time={time}, "
+            f"reference={reference}",
+            flush=True,
+        )
+
+        # 기준 좌표계 설정
         set_ref_coord(
-            reference_map[reference]
+            self.REFERENCE_MAP[reference]
         )
 
         result = task_compliance_ctrl(
-            stx=list(stiffness),
-            time=time
+            stx=stiffness_vector,
+            time=time,
         )
 
         print(
             f"[COMPLIANCE] result={result}",
-            flush=True
+            flush=True,
         )
 
         return result
 
 
     def compliance_off(self):
+
         print(
             "[COMPLIANCE] OFF",
-            flush=True
+            flush=True,
         )
 
         result = release_compliance_ctrl()
 
         print(
             f"[COMPLIANCE] OFF result={result}",
-            flush=True
+            flush=True,
         )
 
         return result
 
 
+    # =========================================================
+    # Force
+    # =========================================================
+
     def force_on(
         self,
-        desired_force=(0, 0, -10, 0, 0, 0),
-        direction=(0, 0, 1, 0, 0, 0),
+        forces,
         time=0.0,
         mode="relative",
-        reference="base"
+        reference="base",
     ):
-        mode_map = {
-            "relative": DR_FC_MOD_REL,
-            "absolute": DR_FC_MOD_ABS,
-        }
+        """
+        forces 예시:
 
-        reference_map = {
-            "base": DR_BASE,
-            "tool": DR_TOOL,
-        }
+        {"x": 40}
 
-        if mode not in mode_map:
+        또는
+
+        {
+            "x": 40,
+            "z": -10,
+            "a": 5,
+        }
+        """
+
+        if mode not in self.MODE_MAP:
             raise ValueError(
                 f"Invalid force mode: {mode}"
             )
 
-        if reference not in reference_map:
+        if reference not in self.REFERENCE_MAP:
             raise ValueError(
                 f"Invalid reference: {reference}"
             )
+
+        desired_force = [0.0] * 6
+        direction = [0] * 6
+
+        for axis, value in forces.items():
+
+            axis = axis.lower()
+
+            if axis not in self.AXIS_MAP:
+                raise ValueError(
+                    f"Invalid force axis: {axis}"
+                )
+
+            index = self.AXIS_MAP[axis]
+
+            desired_force[index] = value
+            direction[index] = 1
 
         print(
             f"[FORCE] ON "
@@ -104,55 +187,55 @@ class ForceController:
             f"direction={direction}, "
             f"mode={mode}, "
             f"reference={reference}",
-            flush=True
+            flush=True,
         )
 
-        # Force 기준 좌표계 설정
-        ref_result = set_ref_coord(
-            reference_map[reference]
+        # 기준 좌표계 설정
+        set_ref_coord(
+            self.REFERENCE_MAP[reference]
         )
 
-        print(
-            f"[FORCE] set_ref_coord result={ref_result}",
-            flush=True
-        )
-
-        # 목표 힘 설정
-        force_result = set_desired_force(
-            fd=list(desired_force),
-            dir=list(direction),
+        result = set_desired_force(
+            fd=desired_force,
+            dir=direction,
             time=time,
-            mod=mode_map[mode]
+            mod=self.MODE_MAP[mode],
         )
 
         print(
-            f"[FORCE] set_desired_force result={force_result}",
-            flush=True
+            f"[FORCE] result={result}",
+            flush=True,
         )
 
-        return force_result
+        return result
 
 
     def force_off(self):
+
         print(
             "[FORCE] OFF",
-            flush=True
+            flush=True,
         )
 
         result = release_force()
 
         print(
             f"[FORCE] OFF result={result}",
-            flush=True
+            flush=True,
         )
 
         return result
 
 
+    # =========================================================
+    # All OFF
+    # =========================================================
+
     def all_off(self):
+
         print(
             "[FORCE CONTROL] ALL OFF",
-            flush=True
+            flush=True,
         )
 
         force_result = release_force()
@@ -162,5 +245,7 @@ class ForceController:
             f"[FORCE CONTROL] "
             f"force_off={force_result}, "
             f"compliance_off={compliance_result}",
-            flush=True
+            flush=True,
         )
+
+        return force_result, compliance_result
