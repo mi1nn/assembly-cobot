@@ -1,26 +1,21 @@
 from app.services.execution_service import (
     create_execution_records_for_operations,
+    get_active_work_execution,
     get_robot_by_id,
-    mark_execution_running,
-    mark_execution_submission_failed,
 )
 
 # API 발행
-from app.services.bridge_service import (
-    BridgeConnectionError,
-    BridgeResponseError,
-    submit_bridge_job,
-)
 from app.services.operation_service import (
     get_operations_for_installation,
 )
 
 from flask import Blueprint, jsonify, request
 from app.services.work_order_service import (
-    get_work_orders,
-    get_work_order_by_id,
     create_work_order,
+    get_work_order_by_id,
+    get_work_orders,
     update_work_order,
+    validate_ready_requirements,
 )
 # 제약조건 오류 처리하기 위한 모듈
 from sqlalchemy.exc import IntegrityError
@@ -34,13 +29,8 @@ UPDATABLE_FIELDS = {
     "remark",
 }
 # 작업 상태 항목
-WORK_ORDER_STATUSES = {
-    "CREATED",
-    "READY",
-    "RUNNING",
-    "COMPLETED",
-    "FAILED",
-    "CANCELLED",
+USER_STATUS_TRANSITIONS = {
+    "CREATED": {"READY"},
 }
 
 
@@ -204,6 +194,83 @@ def edit_work_order(work_order_id: int):
             },
         }), 400
 
+    work_order = get_work_order_by_id(
+        work_order_id
+    )
+
+    if work_order is None:
+        return jsonify({
+            "success": False,
+            "data": None,
+            "error": {
+                "code": "WORK_ORDER_NOT_FOUND",
+                "message": (
+                    f"Work order {work_order_id} "
+                    "was not found."
+                ),
+            },
+        }), 404
+
+    if "status" in request_data:
+        requested_status = request_data[
+            "status"
+        ]
+
+        allowed_statuses = (
+            USER_STATUS_TRANSITIONS.get(
+                work_order.status,
+                set(),
+            )
+        )
+
+        if requested_status not in allowed_statuses:
+            return jsonify({
+                "success": False,
+                "data": None,
+                "error": {
+                    "code": (
+                        "INVALID_STATUS_TRANSITION"
+                    ),
+                    "message": (
+                        "Only CREATED to READY "
+                        "is allowed."
+                    ),
+                },
+            }), 409
+
+        validation_error = (
+            validate_ready_requirements(
+                work_order
+            )
+        )
+
+        if validation_error is not None:
+            error_messages = {
+                "INSTALLATION_NOT_FOUND": (
+                    "The referenced installation "
+                    "was not found."
+                ),
+                "INSTALLATION_NOT_ACTIVE": (
+                    "The installation must be "
+                    "ACTIVE."
+                ),
+                "NO_OPERATIONS": (
+                    "At least one operation "
+                    "must be configured."
+                ),
+            }
+
+            return jsonify({
+                "success": False,
+                "data": None,
+                "error": {
+                    "code": validation_error,
+                    "message": error_messages[
+                        validation_error
+                    ],
+                },
+            }), 409
+
     # 각 값의 타입과 범위를 검사
     if "title" in request_data:
             title = request_data["title"]
@@ -242,40 +309,38 @@ def edit_work_order(work_order_id: int):
             }), 400
 
     if "status" in request_data:
-        status = request_data["status"]
+        requested_status = request_data[
+            "status"
+        ]
 
-        if status not in WORK_ORDER_STATUSES:
+        allowed_statuses = (
+            USER_STATUS_TRANSITIONS.get(
+                work_order.status,
+                set(),
+            )
+        )
+
+        if requested_status not in allowed_statuses:
             return jsonify({
                 "success": False,
                 "data": None,
                 "error": {
-                    "code": "INVALID_STATUS",
+                    "code": (
+                        "INVALID_STATUS_TRANSITION"
+                    ),
                     "message": (
-                        "status must be one of: "
-                        + ", ".join(
-                            sorted(WORK_ORDER_STATUSES)
-                        )
+                        "Only CREATED to READY "
+                        "is allowed."
                     ),
                 },
-            }), 400
+            }), 409
+
 
     # 서비스 호출
     work_order = update_work_order(
         work_order_id,
         request_data,
     )
-
-    if work_order is None:
-        return jsonify({
-            "success": False,
-            "data": None,
-            "error": {
-                "code": "WORK_ORDER_NOT_FOUND",
-                "message": (
-                    f"Work order {work_order_id} was not found."
-                ),
-            },
-        }), 404
 
     return jsonify({
         "success": True,
@@ -404,6 +469,26 @@ def execute_work_order(work_order_id: int):
             },
         }), 409
 
+    active_execution = (
+        get_active_work_execution(
+            work_order_id
+        )
+    )
+
+    if active_execution is not None:
+        return jsonify({
+            "success": False,
+            "data": None,
+            "error": {
+                "code": (
+                    "WORK_ALREADY_EXECUTING"
+                ),
+                "message": (
+                    "An active execution already "
+                    "exists for this work order."
+                ),
+            },
+        }), 409
 
     try:
         (
@@ -430,69 +515,6 @@ def execute_work_order(work_order_id: int):
             },
         }), 409
 
-    operation = operations[0]
-
-    operation_execution = (
-        operation_executions[0]
-    )
-
-    try:
-        bridge_data = submit_bridge_job(
-            work_order_id=work_order_id,
-            operation_id=(
-                operation.operation_id
-            ),
-            work_execution_id=(
-                work_execution.work_execution_id
-            ),
-            operation_execution_id=(
-                operation_execution
-                .operation_execution_id
-            ),
-            robot_id=robot_id,
-            parameters=operation.parameter,
-            components=operation.components,
-        )
-
-    except BridgeConnectionError as error:
-        mark_execution_submission_failed(
-            work_execution,
-            operation_execution,
-        )
-
-        return jsonify({
-            "success": False,
-            "data": None,
-            "error": {
-                "code": "BRIDGE_UNAVAILABLE",
-                "message": str(error),
-            },
-        }), 503
-
-    except BridgeResponseError as error:
-        mark_execution_submission_failed(
-            work_execution,
-            operation_execution,
-        )
-
-        return jsonify({
-            "success": False,
-            "data": None,
-            "error": {
-                "code": "BRIDGE_JOB_REJECTED",
-                "message": str(error),
-            },
-        }), 502
-
-    mark_execution_running(
-        work_order=work_order,
-        work_execution=work_execution,
-        operation_execution=(
-            operation_execution
-        ),
-        robot=robot,
-    )
-        
     return jsonify({
         "success": True,
         "data": {
@@ -500,18 +522,13 @@ def execute_work_order(work_order_id: int):
             "work_execution": (
                 work_execution.to_dict()
             ),
-            "first_operation": (
-                operation.to_dict()
-            ),
             "operation_executions": [
                 item.to_dict()
-                for item
-                in operation_executions
+                for item in operation_executions
             ],
             "total_operations": len(
                 operation_executions
             ),
-            "bridge": bridge_data,
         },
         "error": None,
-    }), 202
+    }), 201

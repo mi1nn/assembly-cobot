@@ -6,6 +6,7 @@ from app.models.operation import Operation
 from app.models.robot import Robot
 from app.models.work_execution import WorkExecution
 from app.models.operation_execution import OperationExecution
+from app.models.installation import Installation
 
 __all__ = [
     "WorkOrder",
@@ -13,4 +14,5 @@ __all__ = [
     "Robot",
     "WorkExecution",
     "OperationExecution",
+    "Installation",
 ]

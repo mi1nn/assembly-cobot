@@ -85,49 +85,68 @@ def create_execution_records_for_operations(
         raise ValueError(
             "At least one operation is required."
         )
-
-    work_execution = WorkExecution(
-        work_order_id=work_order_id,
-        robot_id=robot_id,
-        execution_number=(
-            generate_execution_number()
+    sorted_operations = sorted(
+        operations,
+        key=lambda operation: (
+            operation.sequence
         ),
-        status="PENDING",
     )
 
-    db.session.add(work_execution)
-
-    # WorkExecution의 PK를 먼저 발급받는다.
-    db.session.flush()
-
-    operation_executions = [
-        OperationExecution(
-            work_execution_id=(
-                work_execution
-                .work_execution_id
-            ),
-            operation_id=(
-                operation.operation_id
-            ),
-            sequence=operation.sequence,
-            status="PENDING",
-            retry_count=0,
-        )
-        for operation in operations
+    sequences = [
+        operation.sequence
+        for operation in sorted_operations
     ]
 
-    db.session.add_all(
-        operation_executions
-    )
+    if len(sequences) != len(set(sequences)):
+        raise ValueError(
+            "Operation sequences must be unique."
+        )
 
-    # WorkExecution 1개와 모든
-    # OperationExecution을 함께 확정한다.
-    db.session.commit()
+    try:
+        work_execution = WorkExecution(
+            work_order_id=work_order_id,
+            robot_id=robot_id,
+            execution_number=(
+                generate_execution_number()
+            ),
+            status="PENDING",
+        )
+
+        db.session.add(work_execution)
+
+        db.session.flush()
+
+        operation_executions = [
+            OperationExecution(
+                work_execution_id=(
+                    work_execution
+                    .work_execution_id
+                ),
+                operation_id=(
+                    operation.operation_id
+                ),
+                sequence=operation.sequence,
+                status="PENDING",
+                retry_count=0,
+            )
+            for operation in sorted_operations
+        ]
+
+        db.session.add_all(
+            operation_executions
+        )
+
+        db.session.commit()
+
+    except Exception:
+        db.session.rollback()
+        raise
 
     return (
         work_execution,
         operation_executions,
     )
+
 
 def get_work_execution_by_id(
     work_execution_id: int,
@@ -311,3 +330,28 @@ def mark_operation_running(
     )
 
     db.session.commit()
+
+def get_active_work_execution(
+    work_order_id: int,
+) -> WorkExecution | None:
+    statement = (
+        db.select(WorkExecution)
+        .where(
+            WorkExecution.work_order_id
+            == work_order_id,
+            WorkExecution.status.in_(
+                (
+                    "PENDING",
+                    "RUNNING",
+                )
+            ),
+        )
+        .order_by(
+            WorkExecution.created_at.desc()
+        )
+        .limit(1)
+    )
+
+    return db.session.scalar(
+        statement
+    )
