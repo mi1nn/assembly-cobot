@@ -66,82 +66,38 @@ def submit_bridge_job(
     robot_id: int,
     parameters: dict | None,
     components: list | None,
+    operation_code: str | None = None,
 ) -> dict:
-    bridge_base_url = current_app.config[
-        "BRIDGE_BASE_URL"
-    ]
+    """Submit one operation using the same /jobs work-command schema."""
+    resolved_code = operation_code
 
-    timeout_seconds = current_app.config[
-        "BRIDGE_TIMEOUT_SECONDS"
-    ]
+    if resolved_code is None:
+        resolved_code = (parameters or {}).get(
+            "operation_code"
+        )
 
-    jobs_url = f"{bridge_base_url}/jobs"
+    if not isinstance(resolved_code, str) or not resolved_code.strip():
+        raise ValueError(
+            "operation_code is required when submitting a single operation."
+        )
 
-    request_data = {
+    command = {
         "work_order_id": work_order_id,
-        "operation_id": operation_id,
-        "work_execution_id": (
-            work_execution_id
-        ),
-        "operation_execution_id": (
-            operation_execution_id
-        ),
+        "work_execution_id": work_execution_id,
         "robot_id": robot_id,
-        "parameters": parameters or {},
-        "components": components or [],
+        "operations": [
+            {
+                "operation_execution_id": operation_execution_id,
+                "operation_id": operation_id,
+                "operation_code": resolved_code.strip(),
+                "sequence": 1,
+                "parameters": parameters or {},
+                "components": components or [],
+            }
+        ],
     }
 
-    try:
-        response = requests.post(
-            jobs_url,
-            json=request_data,
-            timeout=timeout_seconds,
-        )
-    except requests.RequestException as error:
-        raise BridgeConnectionError(
-            "Could not connect to ROS2 Bridge."
-        ) from error
-
-    try:
-        response_data = response.json()
-    except ValueError as error:
-        raise BridgeResponseError(
-            "ROS2 Bridge returned invalid JSON."
-        ) from error
-
-    if response.status_code != 202:
-        bridge_error = response_data.get(
-            "error"
-        )
-
-        bridge_message = None
-
-        if isinstance(bridge_error, dict):
-            bridge_message = bridge_error.get(
-                "message"
-            )
-
-        raise BridgeResponseError(
-            bridge_message
-            or (
-                "ROS2 Bridge rejected the job "
-                f"with HTTP {response.status_code}."
-            )
-        )
-
-    if not response_data.get("success"):
-        raise BridgeResponseError(
-            "ROS2 Bridge did not accept the job."
-        )
-
-    bridge_data = response_data.get("data")
-
-    if not isinstance(bridge_data, dict):
-        raise BridgeResponseError(
-            "ROS2 Bridge response data is invalid."
-        )
-
-    return bridge_data
+    return submit_bridge_work(command)
 
 def build_work_command(
     work_order_id: int,
@@ -180,6 +136,9 @@ def build_work_command(
             ),
             "operation_id": (
                 operation.operation_id
+            ),
+            "operation_code": str(
+                operation.code
             ),
             "sequence": execution.sequence,
             "parameters": (
