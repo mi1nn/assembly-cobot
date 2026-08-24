@@ -498,3 +498,9 @@ def mark_robot_recovered(
     robot.status = "IDLE"
 
     db.session.commit()
+
+def mark_robot_stop_requested(
+    robot: Robot,
+) -> None:
+    robot.status = "ERROR"
+    db.session.commit()

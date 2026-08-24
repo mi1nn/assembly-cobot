@@ -7,7 +7,7 @@ from app.services.execution_service import (
     mark_work_execution_running,
     mark_work_submission_failed,
     get_operation_execution_by_id,
-    mark_execution_force_stopped,
+    mark_robot_stop_requested,
 )
 
 # API 발행
@@ -635,22 +635,15 @@ def stop_work_order(work_order_id: int):
             },
         }), 409
 
-    mark_execution_force_stopped(
-        work_order=work_order,
-        work_execution=work_execution,
-        operation_execution=(
-            operation_execution
-        ),
-        robot=robot,
-    )
+    mark_robot_stop_requested(robot)
 
     create_system_log(
         log_type="EVENT",
         severity="WARNING",
-        code="WORK_STOPPED",
+        code="WORK_STOP_REQUESTED",
         message=(
             stop_result.get("message")
-            or "Robot motion was stopped."
+            or "Robot motion stop was requested."
         ),
         work_execution_id=(
             work_execution.work_execution_id
@@ -662,12 +655,15 @@ def stop_work_order(work_order_id: int):
         robot_id=robot.robot_id,
         detail={
             "stop_type": "FORCED",
+            "terminal_state_pending": True,
         },
     )
 
     return jsonify({
         "success": True,
         "data": {
+            "stop_requested": True,
+            "terminal_state_pending": True,
             "work_order": (
                 work_order.to_dict()
             ),
@@ -681,7 +677,7 @@ def stop_work_order(work_order_id: int):
             "stop_result": stop_result,
         },
         "error": None,
-    }), 200
+    }), 202
 
 @work_orders_bp.post(
     "/<int:work_order_id>/execute"

@@ -260,7 +260,11 @@ class ExecuteOperationServer(Node):
             return response
 
         with self._operation_lock:
-            if self._active_goal_handle is not None:
+            goal_handle = self._active_goal_handle
+            if (
+                goal_handle is not None
+                and goal_handle.is_active
+            ):
                 response.recovered = False
                 response.error_code = (
                     "OPERATION_ACTIVE"
@@ -270,6 +274,11 @@ class ExecuteOperationServer(Node):
                     "while an Operation is active."
                 )
                 return response
+
+            # terminal state인데 참조만 남은 경우 정리
+            if goal_handle is not None:
+                self._active_goal_handle = None
+                self._stop_requested = False
 
             if not self._robot_stopped:
                 response.recovered = True
