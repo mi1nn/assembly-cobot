@@ -9,7 +9,8 @@
 - Work Order 조회, 생성 및 수정
 - Work Order 실행 이력과 공정별 실행 이력 생성
 - ROS2 Bridge 상태 확인 및 작업 제출
-- ROS2 Action 결과 callback 처리
+- ROS2 Action Feedback/Result callback과 실행 상태 반영
+- Controller 및 Bridge 이벤트 로그 저장과 조회
 - `frontend/`의 정적 웹 화면 제공
 
 검증 환경:
@@ -28,28 +29,40 @@ Browser
    │ HTTP :5000
    ▼
 Flask Backend
-   ├── SQLAlchemy ── PostgreSQL :5432
-   └── HTTP ──────── ROS2 Bridge :8001
-                           │
-                           ▼
-                     ROS2 Action Server
-                           │
-                           ▼
-                     Robot Controller
+   ├── SQLAlchemy ──────────────────── PostgreSQL :5432
+   └── HTTP(Work Command DTO) ──────── ROS2 Bridge :8001
+                                            │
+                                            ▼
+                                      ROS2 Action Server
+                                            │
+                                            ▼
+                                        Controller
 ```
 
-Flask Backend와 ROS2 Bridge는 서로 다른 프로세스다. Backend는 일반 HTTP 요청과 DB 상태를 관리하고, Bridge는 HTTP 작업을 ROS2 Action으로 변환한다.
+Flask Backend와 ROS2 Bridge는 서로 다른 프로세스다. Backend는 HTTP API와 DB 상태를 관리하고, Bridge는 Work 단위 Command DTO를 받아 `sequence` 순서로 Operation Action Goal 하나씩 전송한다.
 
 작업 결과는 다음 경로로 돌아온다.
 
 ```text
-ROS2 Action Result
+ROS2 Action Feedback/Result
         ↓
 ROS2 Bridge
-        ↓ POST /api/v1/executions/action-result
+        ↓ POST /api/v1/executions/action-feedback|action-result
 Flask Backend
         ↓
-PostgreSQL 상태 갱신
+PostgreSQL 상태 및 Operation 로그 갱신
+```
+
+Log에는 작업 중 발생하는 상태 뿐 아니라 Controller, Bridge 준비 상태와 같은 시스템 이벤트도 다음과 같은 경로로 관리한다.
+
+```text
+Controller /system_event
+        ↓
+ROS2 Bridge
+        ↓ POST /api/v1/logs
+Flask Backend
+        ↓
+PostgreSQL log 저장
 ```
 
 ---
@@ -67,7 +80,6 @@ web_app/
 │   └── services/         # DB 처리와 Bridge 호출
 ├── frontend/             # Flask가 제공하는 정적 웹 화면
 ├── database/             # Schema, Seed 및 DB 구축 스크립트
-├── docs/                 # 상세 설계 및 검증 문서
 ├── .env                  # 로컬 환경변수, Git에 커밋하지 않음
 ├── .env.example
 ├── requirements.txt
@@ -81,7 +93,7 @@ Route → Service → Model/Database
                └→ ROS2 Bridge HTTP API
 ```
 
-현재 SQLAlchemy Model은 `WorkOrder`, `Operation`, `Robot`, `WorkExecution`, `OperationExecution`을 제공한다. 전체 9개 DB Table과 관계는 [Database 구축 가이드](../database/README.md)를 참고한다.
+현재 Backend는 `WorkOrder`, `Installation`, `Operation`, `Robot`, `WorkExecution`, `OperationExecution`, `SystemLog` SQLAlchemy Model을 제공한다. 전체 DB Table과 관계는 [Database 구축 가이드](../database/README.md)를 참고한다.
 
 ---
 
@@ -193,24 +205,46 @@ python run.py
 
 ```bash
 curl -i http://localhost:5000/api/v1/health
-curl -s http://localhost:5000/api/v1/work-orders | python -m json.tool
+curl -s \
+  http://localhost:5000/api/v1/work-orders \
+  | .venv/bin/python -m json.tool
 ```
 
 ---
 
 ## 8. API 요약
 
-| Method | Path | 역할 | 주요 성공 코드 |
-| --- | --- | --- | --- |
-| `GET` | `/` | Frontend 화면 제공 | `200` |
-| `GET` | `/api/v1/health` | Backend 상태 확인 | `200` |
-| `GET` | `/api/v1/bridge/health` | Backend를 통한 Bridge 상태 확인 | `200` |
-| `GET` | `/api/v1/work-orders` | Work Order 목록 조회 | `200` |
-| `GET` | `/api/v1/work-orders/{id}` | Work Order 단일 조회 | `200` |
-| `POST` | `/api/v1/work-orders` | Work Order 생성 | `201` |
-| `PATCH` | `/api/v1/work-orders/{id}` | Work Order 부분 수정 | `200` |
-| `POST` | `/api/v1/work-orders/{id}/execute` | Work Order 실행 요청 | `202` |
-| `POST` | `/api/v1/executions/action-result` | Bridge의 ROS2 Action 결과 callback | `200` |
+  Method    Path                               역할                             성공 코드
+━━━━━━━━  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  ━━━━━━━━━━━
+  GET       /                                  Frontend 화면 제공               200
+────────  ─────────────────────────────────  ───────────────────────────────  ───────────
+  GET       /api/v1/health                     Backend 상태 확인                200
+────────  ─────────────────────────────────  ───────────────────────────────  ───────────
+  GET       /api/v1/bridge/health              Bridge 상태 확인                 200
+────────  ─────────────────────────────────  ───────────────────────────────  ───────────
+  GET       /api/v1/work-orders                Work Order 목록 조회             200
+────────  ─────────────────────────────────  ───────────────────────────────  ───────────
+  GET       /api/v1/work-orders/{id}           Work Order 단일 조회             200
+────────  ─────────────────────────────────  ───────────────────────────────  ───────────
+  GET       /api/v1/work-orders/{id}/          최신 실행 진행 상태 조회         200
+            progress
+────────  ─────────────────────────────────  ───────────────────────────────  ───────────
+  POST      /api/v1/work-orders                Work Order 생성                  201
+────────  ─────────────────────────────────  ───────────────────────────────  ───────────
+  PATCH     /api/v1/work-orders/{id}           Work Order 수정 및 READY 전환    200
+────────  ─────────────────────────────────  ───────────────────────────────  ───────────
+  POST      /api/v1/work-orders/{id}/          Work 단위 실행 요청              202
+            execute
+────────  ─────────────────────────────────  ───────────────────────────────  ───────────
+  POST      /api/v1/executions/action-         Action Feedback callback         200
+            feedback
+────────  ─────────────────────────────────  ───────────────────────────────  ───────────
+  POST      /api/v1/executions/action-         Action Result callback           200
+            result
+────────  ─────────────────────────────────  ───────────────────────────────  ───────────
+  GET       /api/v1/logs                       로그 조회                        200
+────────  ─────────────────────────────────  ───────────────────────────────  ───────────
+  POST      /api/v1/logs                       Controller·Bridge 로그 저장      201
 
 DELETE API는 현재 제공하지 않는다.
 
@@ -287,40 +321,209 @@ CREATED → READY → RUNNING → COMPLETED
 CREATED/READY/RUNNING ────→ CANCELLED
 ```
 
-현재 PATCH API는 허용 상태 집합을 검사하지만 상태 전이 순서 자체를 강제하지는 않는다.
+사용자가 PATCH로 요청할 수 있는 상태 전이는 `CREATED` → `READY` 하나이다. 
+
+실행 이후 RUNNING, COMPLETED, FAILED, CANCELLED 상태는 Backend가 Bridge 접수 결과와 Action Feedback/Result를 기준으로 갱신한다.
+
+현재 사용자가 직접 작업을 취소하는 API는 제공하지 않는다.
 
 ---
 
 ## 10. 작업 실행 흐름
 
-Work Order 실행 요청에는 `robot_id`가 필요하다.
+Work Order 실행 요청에는 robot_id가 필요하다.
 
-```bash
 curl -i \
   -X POST \
   http://localhost:5000/api/v1/work-orders/WORK_ORDER_ID/execute \
   -H "Content-Type: application/json" \
   -d '{"robot_id":1}'
-```
 
 실행 조건:
 
-- Work Order가 존재하고 상태가 `READY`여야 한다.
-- Robot이 존재하고 상태가 `IDLE`이어야 한다.
-- Work Order의 `installation_id`에 하나 이상의 Operation이 있어야 한다.
-- ROS2 Bridge가 실행 중이며 작업을 받아들여야 한다.
+- Work Order 상태가 READY여야 한다.
+- Robot이 존재하고 상태가 IDLE이어야 한다.
+- Installation에 하나 이상의 Operation이 있어야 한다.
+- 동일 Work Order에 실행 중인 Work Execution이 없어야 한다.
+- ROS2 Bridge가 실행 중이며 Work를 받아들여야 한다.
 
-Backend는 하나의 `work_execution`과 모든 공정의 `operation_execution`을 생성한 뒤 첫 Operation을 Bridge에 제출한다. 첫 제출이 성공하면 Work Order, Work Execution, 첫 Operation Execution 및 Robot 상태를 `RUNNING`으로 변경한다.
+Backend는 하나의 work_execution과 모든 공정의 operation_execution을 생성한다. Operation
+Execution의 초기 상태는 PENDING이다.
 
-Bridge가 Action 결과를 callback하면 Backend는 성공 시 다음 PENDING Operation을 제출하고, 남은 Operation이 없으면 전체 실행을 `COMPLETED`로 변경한다. 실패 시 Work Order와 실행을 `FAILED`, Robot을 `IDLE`로 변경한다. 동일한 완료 또는 실패 callback은 이미 처리된 결과로 응답한다.
+Backend는 다음 Work Command DTO를 Bridge에 한 번 전달한다.
 
-### 현재 알려진 제한
+```
+{
+  "work_order_id": 1,
+  "work_execution_id": 10,
+  "robot_id": 1,
+  "operations": [
+    {
+      "operation_execution_id": 101,
+      "operation_id": 1,
+      "sequence": 1,
+      "parameters": {},
+      "components": []
+    }
+  ]
+}
+```
 
-다음 Operation을 Bridge에 제출하는 callback 경로는 현재 `components` 인자를 전달하지 않아 여러 Operation을 연속 실행할 때 서버 오류가 발생할 수 있다. 첫 Operation 제출과 단일 Operation 실행은 이 문제의 영향을 받지 않는다. 구현이 수정되기 전까지 다중 공정 End-to-End 검증은 완료된 기능으로 간주하지 않는다.
+Bridge는 operations를 sequence 오름차순으로 정렬하고 한 번에 하나의 Action Goal만 Controller에 보낸다. 현재 Operation이 성공해야 다음 Operation을 실행한다.
+
+```
+Backend
+    → Work Command DTO
+Bridge
+    → Operation 1 Action Goal
+    → 성공
+    → Operation 2 Action Goal
+    → 성공
+    → ...
+```
+
+Bridge 접수가 성공하면 Backend는 다음 상태를 변경한다.
+
+```
+Work Order:     READY → RUNNING
+Work Execution: PENDING → RUNNING
+Robot:          IDLE → RUNNING
+```
+
+Operation Execution은 Action Feedback과 Result에 따라 변경한다.
+
+`PENDING → RUNNING → COMPLETED | FAILED | CANCELLED`
+
+상태 추적 기준은 operation_execution_id다. 진행률은 ROS에서 전달하지 않고 Backend가 다음과 같이 계산한다.
+
+`COMPLETED Operation 수 / 전체 Operation 수`
+
+중간 Operation이 실패하거나 취소되면 Bridge는 이후 Operation을 실행하지 않는다. 모든 Operation이 완료되면 Work Order와 Work Execution은 COMPLETED, Robot은 IDLE로 변경된다.
+
+동일한 Feedback 또는 Result callback이 재전송돼도 이미 처리된 상태를 중복 변경하지 않는다.
+
+### 현재 제한
+
+- 사용자가 실행 중인 작업을 취소하는 HTTP API는 아직 제공하지 않는다.
+- Bridge Queue와 중복 접수 정보는 메모리에 있으므로 Bridge 재시작 후 복구되지 않는다.
+- Backend 자체 오류는 DB 로그에 자동 저장하지 않고 Flask 일반 로그로만 출력한다.
+- 실제 Controller Operation handler는 별도 개발 범위다.
+
+———
+
+## 11. 로그 관리
+
+로그는 Operation 내부와 외부를 구분한다.
+
+### Operation 내부 이벤트와 오류
+
+Operation 실행 중 발생하는 상태와 결과는 ROS Action으로만 관리한다.
+
+```
+Controller Action Feedback/Result
+    → ROS2 Bridge
+    → Backend execution callback
+    → log 테이블
+```
+
+Backend 기록 규칙:
+
+| 상황 | log_type | severity | code |
+| --- | --- | --- | --- |
+| Operation 시작 | EVENT | INFO | OPERATION_STARTED |
+| Operation 완료 | EVENT | INFO | OPERATION_COMPLETED |
+| Operation 실패 | ERROR | ERROR | Action Result의 error_code |
+|  Operation 취소 | EVENT | INFO | OPERATION_CANCELLED |
+
+같은 Operation 오류를 /system_event Topic으로 다시 보내지 않는다.
+
+### Operation 외부 Controller 이벤트
+
+Controller 상태 변경과 Operation 외부 오류는 /system_event Topic으로 발행한다.
+
+```
+uint8 SEVERITY_INFO=0
+uint8 SEVERITY_WARNING=1
+uint8 SEVERITY_ERROR=2
+uint8 SEVERITY_CRITICAL=3
+
+uint64 robot_id
+uint8 severity
+string code
+string message
+```
+
+주요 이벤트 코드 예:
+
+- `CONTROLLER_STARTED`
+- `CONTROLLER_READY`
+- `CONTROLLER_ERROR`
+- `SOLAR_MOTION_READY`
+- `SOLAR_MOTION_NOT_READY`
+- `SOLAR_MOTION_ERROR`
+- `SAFETY_STOP_ACTIVATED`
+- `SAFETY_STOP_RELEASED`
+
+Bridge는 Topic 메시지를 다음 형태로 Backend에 전달한다.
+
+```
+{
+  "robot_id": 1,
+  "log_type": "ROBOT",
+  "severity": "ERROR",
+  "code": "SOLAR_MOTION_ERROR",
+  "message": "Solar Motion initialization failed."
+}
+```
+
+### Bridge 자체 이벤트
+
+Bridge 자체 상태와 오류는 Bridge가 직접 /api/v1/logs로 전달한다.
+
+```
+log_type = SYSTEM
+code = BRIDGE_...
+```
+
+현재 Action Server 연결 상태 변경을 다음 코드로 기록한다.
+
+```
+BRIDGE_ACTION_SERVER_CONNECTED
+BRIDGE_ACTION_SERVER_DISCONNECTED
+```
+
+Controller 존재 여부는 /system_event가 아니라 Bridge의 Action Server 연결 상태로 판단한다. Action Goal 수락 여부는 별도 Topic 없이 ROS Action Goal Response를 사용한다.
+
+### 로그 조회
+
+최근 로그 조회:
+```
+curl \
+  'http://localhost:5000/api/v1/logs?limit=100'
+```
+
+특정 Work Execution 로그 조회:
+```
+curl \
+  'http://localhost:5000/api/v1/logs?work_execution_id=10&limit=100'
+```
+
+특정 Operation Execution 로그 조회:
+```
+curl \
+  'http://localhost:5000/api/v1/logs?operation_execution_id=101&limit=100'
+```
+
+지원하는 조회 조건:
+
+- work_execution_id
+- operation_execution_id
+- robot_id
+- limit: 1~500
 
 ---
 
-## 11. 기본 검증
+## 12. 기본 검증
 
 등록된 Route 확인:
 
@@ -345,7 +548,7 @@ CRUD, 오류 응답 및 실행 연동을 단계별로 확인하려면 [Backend A
 
 ---
 
-## 12. 문제 해결
+## 13. 문제 해결
 
 ### `Required environment variable is missing`
 
@@ -375,7 +578,7 @@ ROS2 Bridge가 실행 중인지, `.env`의 `BRIDGE_BASE_URL`이 실제 Bridge �
 
 ---
 
-## 13. Backend 구축 체크리스트
+## 14. Backend 구축 체크리스트
 
 - `web_app`에서 `.venv`를 생성하고 의존성을 설치한다.
 - `.env.example`을 `.env`로 복사하고 DB 및 Bridge 설정을 확인한다.
