@@ -53,6 +53,7 @@ class Ros2BridgeNode(Node):
         self._last_job = None
         self._stopped_work_execution_ids = set()
         self._accepted_work_execution_ids = set()
+        self._action_server_available = None
         self.system_event_queue = Queue()
 
         self.system_event_subscription = (
@@ -115,11 +116,25 @@ class Ros2BridgeNode(Node):
 
         self.system_event_queue.put({
             "robot_id": int(event.robot_id),
+            "log_type": "ROBOT",
             "severity": severity,
             "code": event.code.strip(),
             "message": event.message.strip(),
         })
 
+    def enqueue_bridge_log(
+        self,
+        *,
+        severity: str,
+        code: str,
+        message: str,
+    ) -> None:
+        self.system_event_queue.put({
+            "log_type": "SYSTEM",
+            "severity": severity,
+            "code": code,
+            "message": message,
+        })
 
     def process_system_events(self) -> None:
         while True:
@@ -148,12 +163,16 @@ class Ros2BridgeNode(Node):
         )
 
         request_data = {
-            "robot_id": event["robot_id"],
-            "log_type": "ROBOT",
+            "log_type": event["log_type"],
             "severity": event["severity"],
             "code": event["code"],
             "message": event["message"],
         }
+
+        robot_id = event.get("robot_id")
+
+        if robot_id is not None:
+            request_data["robot_id"] = robot_id
 
         response = requests.post(
             callback_url,
@@ -268,12 +287,22 @@ class Ros2BridgeNode(Node):
                 return
 
         # Action Server가 준비되지 않았다면 큐에서 작업을 꺼내지 않는다.
-        if not self.action_client.server_is_ready():
+        action_server_available = (
+            self.action_client.server_is_ready()
+        )
+
+        self.update_action_server_status(
+            action_server_available
+        )
+
+        if not action_server_available:
             with self._state_lock:
-                self._status = "ACTION_SERVER_UNAVAILABLE"
+                self._status = (
+                    "ACTION_SERVER_UNAVAILABLE"
+                )
 
             return
-
+        
         try:
             job = self.job_queue.get_nowait()
         except Empty:
@@ -438,6 +467,7 @@ class Ros2BridgeNode(Node):
         result_future.add_done_callback(
             self.result_callback
         )
+
     def feedback_callback(
         self,
         feedback_message,
@@ -801,7 +831,43 @@ class Ros2BridgeNode(Node):
 
             ros_parameters.append(parameter)
 
-        return ros_parameters    
+        return ros_parameters
+
+    def update_action_server_status(
+        self,
+        available: bool,
+    ) -> None:
+        if (
+            self._action_server_available
+            is available
+        ):
+            return
+
+        self._action_server_available = available
+
+        if available:
+            self.enqueue_bridge_log(
+                severity="INFO",
+                code=(
+                    "BRIDGE_ACTION_SERVER_CONNECTED"
+                ),
+                message=(
+                    "ExecuteOperation Action Server "
+                    "is available."
+                ),
+            )
+            return
+
+        self.enqueue_bridge_log(
+            severity="WARNING",
+            code=(
+                "BRIDGE_ACTION_SERVER_DISCONNECTED"
+            ),
+            message=(
+                "ExecuteOperation Action Server "
+                "is unavailable."
+            ),
+        )
 
 def create_http_app(
     node: Ros2BridgeNode,

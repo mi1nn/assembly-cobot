@@ -85,5 +85,3 @@ ros2 run solar_panel_robot main
 | `docs/08_ops_요구사항.md` | 운영 절차 |
 | `docs/09_maint_요구사항.md` | 유지보수 점검 항목 |
 | `docs/10_최종_시스템_시나리오md` | 전체 시나리오 |
-
-자세한 프로젝트 컨텍스트는 `CLAUDE.md`를 참조하세요.
