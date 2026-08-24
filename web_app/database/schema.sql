@@ -170,7 +170,7 @@ CREATE TABLE IF NOT EXISTS log (
         'ROBOT'
     )),
     code VARCHAR(50),
-    severity VARCHAR(20) NOT NULL DEFAULT 'INFO'
+    severity VARCHAR(20) NOT NULL DEFAULT 'INFO',
     CONSTRAINT chk_log_severity
     CHECK (severity IN (
         'DEBUG',

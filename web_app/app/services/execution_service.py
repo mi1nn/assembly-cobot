@@ -185,6 +185,25 @@ def get_operation_executions(
         statement
     ).all()
 
+def get_latest_work_execution_for_order(
+    work_order_id: int,
+) -> WorkExecution | None:
+    statement = (
+        db.select(WorkExecution)
+        .where(
+            WorkExecution.work_order_id
+            == work_order_id
+        )
+        .order_by(
+            WorkExecution.created_at.desc(),
+            WorkExecution
+            .work_execution_id.desc(),
+        )
+        .limit(1)
+    )
+
+    return db.session.scalar(statement)
+
 def get_robot_by_id(
     robot_id: int,
 ) -> Robot | None:
@@ -309,17 +328,6 @@ def mark_operation_completed(
     )
 
     operation_execution.end_time = (
-        datetime.now()
-    )
-
-    db.session.commit()
-
-def mark_operation_running(
-    operation_execution: OperationExecution,
-) -> None:
-    operation_execution.status = "RUNNING"
-
-    operation_execution.start_time = (
         datetime.now()
     )
 

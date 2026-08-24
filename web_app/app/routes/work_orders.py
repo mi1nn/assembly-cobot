@@ -1,6 +1,8 @@
 from app.services.execution_service import (
     create_execution_records_for_operations,
     get_active_work_execution,
+    get_latest_work_execution_for_order,
+    get_operation_executions,
     get_robot_by_id,
     mark_work_execution_running,
     mark_work_submission_failed,
@@ -84,6 +86,146 @@ def get_work_order(work_order_id: int):
     return jsonify({
         "success": True,
         "data": work_order.to_dict(),
+        "error": None,
+    }), 200
+
+@work_orders_bp.get(
+    "/<int:work_order_id>/progress"
+)
+def get_work_order_progress(
+    work_order_id: int,
+):
+    work_order = get_work_order_by_id(
+        work_order_id
+    )
+
+    if work_order is None:
+        return jsonify({
+            "success": False,
+            "data": None,
+            "error": {
+                "code": "WORK_ORDER_NOT_FOUND",
+                "message": (
+                    "Work order was not found."
+                ),
+            },
+        }), 404
+
+    operations = (
+        get_operations_for_installation(
+            work_order.installation_id
+        )
+    )
+
+    work_execution = (
+        get_latest_work_execution_for_order(
+            work_order_id
+        )
+    )
+
+    if work_execution is None:
+        total = len(operations)
+
+        return jsonify({
+            "success": True,
+            "data": {
+                "work_order_id": work_order_id,
+                "work_execution_id": None,
+                "work_order_status": (
+                    work_order.status
+                ),
+                "work_execution_status": None,
+                "completed_operations": 0,
+                "total_operations": total,
+                "progress": f"0/{total}",
+                "current_operation": None,
+            },
+            "error": None,
+        }), 200
+
+    executions = get_operation_executions(
+        work_execution.work_execution_id
+    )
+
+    completed = sum(
+        item.status == "COMPLETED"
+        for item in executions
+    )
+
+    current = next(
+        (
+            item
+            for item in executions
+            if item.status == "RUNNING"
+        ),
+        None,
+    )
+
+    if (
+        current is None
+        and work_execution.status == "RUNNING"
+    ):
+        current = next(
+            (
+                item
+                for item in executions
+                if item.status == "PENDING"
+            ),
+            None,
+        )
+
+    operation_by_id = {
+        item.operation_id: item
+        for item in operations
+    }
+
+    current_data = None
+
+    if current is not None:
+        operation = operation_by_id.get(
+            current.operation_id
+        )
+
+        current_data = {
+            "operation_execution_id": (
+                current.operation_execution_id
+            ),
+            "operation_id": current.operation_id,
+            "sequence": current.sequence,
+            "status": current.status,
+            "code": (
+                operation.code
+                if operation
+                else None
+            ),
+            "name": (
+                operation.name
+                if operation
+                else None
+            ),
+        }
+
+    total = len(executions)
+
+    return jsonify({
+        "success": True,
+        "data": {
+            "work_order_id": work_order_id,
+            "work_execution_id": (
+                work_execution
+                .work_execution_id
+            ),
+            "work_order_status": (
+                work_order.status
+            ),
+            "work_execution_status": (
+                work_execution.status
+            ),
+            "completed_operations": completed,
+            "total_operations": total,
+            "progress": f"{completed}/{total}",
+            "current_operation": current_data,
+        },
         "error": None,
     }), 200
 
