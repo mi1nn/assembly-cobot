@@ -38,13 +38,7 @@ setup(
         ],
     },
     entry_points={
-<<<<<<< HEAD
-        'console_scripts': [
-            "main = solar_panel_robot.main:main",
-            "action_server=solar_panel_robot.action_server:main",
-=======
         "console_scripts": [
->>>>>>> origin/feature
             "controller = solar_panel_robot.controller_node:main",
         ],
     },
