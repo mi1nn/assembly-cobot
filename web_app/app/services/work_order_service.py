@@ -1,5 +1,9 @@
 from app.extensions import db
-from app.models import WorkOrder
+from app.models import (
+    Installation,
+    Operation,
+    WorkOrder,
+)
 
 # SELECT * FROM work_order ORDER BY priority ASC, created_at DESC;
 def get_work_orders() -> list[WorkOrder]:
@@ -64,3 +68,31 @@ def update_work_order(
     db.session.commit()
 
     return work_order
+
+def validate_ready_requirements(
+    work_order: WorkOrder,
+) -> str | None:
+    installation = db.session.get(
+        Installation,
+        work_order.installation_id,
+    )
+
+    if installation is None:
+        return "INSTALLATION_NOT_FOUND"
+
+    if installation.status != "ACTIVE":
+        return "INSTALLATION_NOT_ACTIVE"
+
+    operation_exists = db.session.scalar(
+        db.select(
+            db.exists().where(
+                Operation.installation_id
+                == work_order.installation_id
+            )
+        )
+    )
+
+    if not operation_exists:
+        return "NO_OPERATIONS"
+
+    return None

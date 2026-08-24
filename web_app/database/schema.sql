@@ -14,7 +14,7 @@ CREATE TABLE IF NOT EXISTS installation (
     target_code VARCHAR(50) NOT NULL UNIQUE,
     target_name VARCHAR(200) NOT NULL,
     specification TEXT,
-    status VARCHAR(30) NOT NULL DEFAULT 'ACTIVE'
+    status VARCHAR(30) NOT NULL DEFAULT 'ACTIVE',
     CONSTRAINT chk_installation_status
     CHECK (status IN (
         'ACTIVE',
@@ -52,7 +52,7 @@ CREATE TABLE IF NOT EXISTS robot (
     name VARCHAR(200) NOT NULL,
     manufacturer VARCHAR(100),
     model VARCHAR(100),
-    status VARCHAR(30) NOT NULL DEFAULT 'IDLE'
+    status VARCHAR(30) NOT NULL DEFAULT 'IDLE',
     CONSTRAINT chk_robot_status
     CHECK (status IN (
         'IDLE',
@@ -87,7 +87,7 @@ CREATE TABLE IF NOT EXISTS work_order (
     title VARCHAR(300) NOT NULL,
     installation_id BIGINT NOT NULL REFERENCES installation(installation_id),
     priority INT NOT NULL DEFAULT 3,
-    status VARCHAR(30) NOT NULL DEFAULT 'CREATED'
+    status VARCHAR(30) NOT NULL DEFAULT 'CREATED',
     CONSTRAINT chk_work_order_status
     CHECK (
         status IN(
@@ -114,7 +114,7 @@ CREATE TABLE IF NOT EXISTS work_execution (
     work_order_id BIGINT NOT NULL REFERENCES work_order(work_order_id),
     robot_id BIGINT NOT NULL REFERENCES robot(robot_id),
     execution_number VARCHAR(50) NOT NULL UNIQUE,
-    status VARCHAR(30) NOT NULL DEFAULT 'PENDING'
+    status VARCHAR(30) NOT NULL DEFAULT 'PENDING',
     CONSTRAINT chk_work_execution_status
     CHECK (status IN (
         'PENDING',
@@ -137,7 +137,7 @@ CREATE TABLE IF NOT EXISTS operation_execution (
     work_execution_id BIGINT NOT NULL REFERENCES work_execution(work_execution_id),
     operation_id BIGINT NOT NULL REFERENCES operation(operation_id),
     sequence INT NOT NULL,
-    status VARCHAR(30) NOT NULL DEFAULT 'PENDING'
+    status VARCHAR(30) NOT NULL DEFAULT 'PENDING',
     CONSTRAINT chk_operation_execution_status
     CHECK (status IN (
         'PENDING',
@@ -170,7 +170,7 @@ CREATE TABLE IF NOT EXISTS log (
         'ROBOT'
     )),
     code VARCHAR(50),
-    severity VARCHAR(20) NOT NULL DEFAULT 'INFO'
+    severity VARCHAR(20) NOT NULL DEFAULT 'INFO',
     CONSTRAINT chk_log_severity
     CHECK (severity IN (
         'DEBUG',

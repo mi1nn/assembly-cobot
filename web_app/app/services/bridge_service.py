@@ -65,6 +65,7 @@ def submit_bridge_job(
     operation_execution_id: int,
     robot_id: int,
     parameters: dict | None,
+    components: list | None,
 ) -> dict:
     bridge_base_url = current_app.config[
         "BRIDGE_BASE_URL"
@@ -87,6 +88,7 @@ def submit_bridge_job(
         ),
         "robot_id": robot_id,
         "parameters": parameters or {},
+        "components": components or [],
     }
 
     try:
@@ -137,6 +139,137 @@ def submit_bridge_job(
     if not isinstance(bridge_data, dict):
         raise BridgeResponseError(
             "ROS2 Bridge response data is invalid."
+        )
+
+    return bridge_data
+
+def build_work_command(
+    work_order_id: int,
+    work_execution_id: int,
+    robot_id: int,
+    operations: list,
+    operation_executions: list,
+) -> dict:
+    operation_by_id = {
+        operation.operation_id: operation
+        for operation in operations
+    }
+
+    sorted_executions = sorted(
+        operation_executions,
+        key=lambda item: item.sequence,
+    )
+
+    command_operations = []
+
+    for execution in sorted_executions:
+        operation = operation_by_id.get(
+            execution.operation_id
+        )
+
+        if operation is None:
+            raise ValueError(
+                "Operation execution references "
+                "an unknown operation."
+            )
+
+        command_operations.append({
+            "operation_execution_id": (
+                execution
+                .operation_execution_id
+            ),
+            "operation_id": (
+                operation.operation_id
+            ),
+            "sequence": execution.sequence,
+            "parameters": (
+                operation.parameter or {}
+            ),
+            "components": (
+                operation.components or []
+            ),
+        })
+
+    if not command_operations:
+        raise ValueError(
+            "At least one operation is required."
+        )
+
+    return {
+        "work_order_id": work_order_id,
+        "work_execution_id": (
+            work_execution_id
+        ),
+        "robot_id": robot_id,
+        "operations": command_operations,
+    }
+
+def submit_bridge_work(
+    command: dict,
+) -> dict:
+    bridge_base_url = current_app.config[
+        "BRIDGE_BASE_URL"
+    ]
+
+    timeout_seconds = current_app.config[
+        "BRIDGE_TIMEOUT_SECONDS"
+    ]
+
+    jobs_url = f"{bridge_base_url}/jobs"
+
+    try:
+        response = requests.post(
+            jobs_url,
+            json=command,
+            timeout=timeout_seconds,
+        )
+
+    except requests.RequestException as error:
+        raise BridgeConnectionError(
+            "Could not connect to ROS2 Bridge."
+        ) from error
+
+    try:
+        response_data = response.json()
+
+    except ValueError as error:
+        raise BridgeResponseError(
+            "ROS2 Bridge returned invalid JSON."
+        ) from error
+
+    if response.status_code != 202:
+        bridge_error = response_data.get(
+            "error"
+        )
+
+        bridge_message = None
+
+        if isinstance(bridge_error, dict):
+            bridge_message = bridge_error.get(
+                "message"
+            )
+
+        raise BridgeResponseError(
+            bridge_message
+            or (
+                "ROS2 Bridge rejected the work "
+                f"with HTTP {response.status_code}."
+            )
+        )
+
+    if not response_data.get("success"):
+        raise BridgeResponseError(
+            "ROS2 Bridge did not accept the work."
+        )
+
+    bridge_data = response_data.get(
+        "data"
+    )
+
+    if not isinstance(bridge_data, dict):
+        raise BridgeResponseError(
+            "ROS2 Bridge response data "
+            "is invalid."
         )
 
     return bridge_data

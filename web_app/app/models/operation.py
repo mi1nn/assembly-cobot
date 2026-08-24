@@ -14,6 +14,7 @@ class Operation(db.Model):
 
     installation_id = db.Column(
         db.BigInteger,
+        db.ForeignKey("installation.installation_id"),
         nullable=False,
     )
 

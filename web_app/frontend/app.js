@@ -1,40 +1,74 @@
-const WORK_ORDER_STATUSES = [
-    "CREATED",
-    "READY",
-    "RUNNING",
-    "COMPLETED",
-    "FAILED",
-    "CANCELLED",
-];
-
 "use strict";
 
-const WORK_ORDERS_API_URL = "/api/v1/work-orders";
+const WORK_ORDER_POLL_INTERVAL_MS = 3000;
 
-document.addEventListener("DOMContentLoaded", () => {
-    const refreshButton = document.getElementById(
-        "refresh-button",
+const WORK_ORDERS_API_URL =
+    "/api/v1/work-orders";
+
+document.addEventListener(
+    "DOMContentLoaded",
+    () => {
+        const refreshButton =
+            document.getElementById(
+                "refresh-button",
+            );
+
+        const workOrderForm =
+            document.getElementById(
+                "work-order-form",
+            );
+
+        refreshButton.addEventListener(
+            "click",
+            () => loadWorkOrders(true),
+        );
+
+        workOrderForm.addEventListener(
+            "submit",
+            handleWorkOrderSubmit,
+        );
+
+        loadWorkOrders();
+
+        window.setInterval(
+            () => loadWorkOrders(false),
+            WORK_ORDER_POLL_INTERVAL_MS,
+        );
+    },
+);
+
+async function loadWorkOrderProgress(
+    workOrderId,
+) {
+    const response = await fetch(
+        `${WORK_ORDERS_API_URL}/${workOrderId}/progress`,
+        {
+            method: "GET",
+            headers: {
+                "Accept": "application/json",
+            },
+        },
     );
 
-    const workOrderForm = document.getElementById(
-        "work-order-form",
-    );
+    const responseData =
+        await response.json();
 
-    refreshButton.addEventListener(
-        "click",
-        loadWorkOrders,
-    );
+    if (
+        !response.ok
+        || !responseData.success
+    ) {
+        throw new Error(
+            responseData.error?.message
+            ?? "진행률 조회에 실패했습니다.",
+        );
+    }
 
-    workOrderForm.addEventListener(
-        "submit",
-        handleWorkOrderSubmit,
-    );
+    return responseData.data;
+}
 
-    loadWorkOrders();
-});
-
-
-async function loadWorkOrders() {
+async function loadWorkOrders(
+    showLoading = true,
+) {
     const listElement = document.getElementById(
         "work-order-list",
     );
@@ -43,8 +77,10 @@ async function loadWorkOrders() {
         "refresh-button",
     );
 
-    listElement.textContent =
-        "Work Order를 불러오는 중입니다.";
+    if (showLoading) {
+        listElement.textContent =
+            "Work Order를 불러오는 중입니다.";
+    }
 
     refreshButton.disabled = true;
 
@@ -69,7 +105,39 @@ async function loadWorkOrders() {
             throw new Error(errorMessage);
         }
 
-        renderWorkOrders(responseData.data);
+        const workOrdersWithProgress =
+            await Promise.all(
+                responseData.data.map(
+                    async (workOrder) => {
+                        try {
+                            const progress =
+                                await loadWorkOrderProgress(
+                                    workOrder.work_order_id,
+                                );
+
+                            return {
+                                ...workOrder,
+                                progress,
+                            };
+                        } catch (error) {
+                            console.error(
+                                "Failed to load progress:",
+                                error,
+                            );
+
+                            return {
+                                ...workOrder,
+                                progress: null,
+                            };
+                        }
+                    },
+                ),
+            );
+
+        renderWorkOrders(
+            workOrdersWithProgress,
+        );
+
     } catch (error) {
         console.error(
             "Failed to load work orders:",
@@ -171,6 +239,9 @@ function createWorkOrderCard(workOrder) {
     remark.textContent =
         workOrder.remark ?? "비고 없음";
 
+    const progressSection =
+        createProgressSection(workOrder);
+
     const actions = createWorkOrderActions(
         workOrder,
     );
@@ -179,11 +250,72 @@ function createWorkOrderCard(workOrder) {
         cardHeader,
         details,
         remark,
+        progressSection,
         actions,
     );
 
-
     return card;
+}
+
+function createProgressSection(workOrder) {
+    const section =
+        document.createElement("div");
+
+    section.className =
+        "work-order-progress";
+
+    const progress = workOrder.progress;
+
+    if (!progress) {
+        section.textContent =
+            "진행 정보를 불러올 수 없습니다.";
+
+        return section;
+    }
+
+    const summary =
+        document.createElement("div");
+
+    summary.className =
+        "progress-summary";
+
+    const label =
+        document.createElement("span");
+
+    label.textContent = "Operation 진행";
+
+    const value =
+        document.createElement("strong");
+
+    value.textContent =
+        progress.progress ?? "0/0";
+
+    summary.append(label, value);
+
+    section.appendChild(summary);
+
+    if (progress.current_operation) {
+        const current =
+            document.createElement("p");
+
+        current.className =
+            "current-operation";
+
+        const operation =
+            progress.current_operation;
+
+        current.textContent = [
+            `현재 단계 ${operation.sequence}`,
+            operation.name
+                ?? operation.code
+                ?? `Operation ${operation.operation_id}`,
+            `(${operation.status})`,
+        ].join(" · ");
+
+        section.appendChild(current);
+    }
+
+    return section;
 }
 
 function createDetail(label, value) {
@@ -334,50 +466,86 @@ function setFormMessage(message, type) {
 }
 
 function createWorkOrderActions(workOrder) {
-    const actions = document.createElement("div");
-    actions.className = "work-order-actions";
+    const actions =
+        document.createElement("div");
 
-    const statusSelect =
-        document.createElement("select");
+    actions.className =
+        "work-order-actions";
 
-    statusSelect.setAttribute(
-        "aria-label",
-        "Work Order 상태",
-    );
+    if (workOrder.status === "CREATED") {
+        const button =
+            document.createElement("button");
 
-    for (const status of WORK_ORDER_STATUSES) {
-        const option =
-            document.createElement("option");
+        button.type = "button";
+        button.textContent = "작업 준비";
 
-        option.value = status;
-        option.textContent = status;
-        option.selected =
-            status === workOrder.status;
+        button.addEventListener(
+            "click",
+            () => handleStatusUpdate(
+                workOrder.work_order_id,
+                "READY",
+                button,
+            ),
+        );
 
-        statusSelect.appendChild(option);
+        actions.appendChild(button);
+
+        return actions;
     }
 
-    const saveButton =
-        document.createElement("button");
+    if (workOrder.status === "READY") {
+        const robotInput =
+            document.createElement("input");
 
-    saveButton.type = "button";
-    saveButton.textContent = "상태 저장";
+        robotInput.type = "number";
+        robotInput.min = "1";
+        robotInput.value = "1";
+        robotInput.className =
+            "robot-id-input";
 
-    saveButton.addEventListener(
-        "click",
-        async () => {
-            await handleStatusUpdate(
+        const button =
+            document.createElement("button");
+
+        button.type = "button";
+        button.textContent = "작업 시작";
+
+        button.addEventListener(
+            "click",
+            () => handleWorkExecution(
                 workOrder.work_order_id,
-                statusSelect.value,
-                saveButton,
-            );
-        },
-    );
+                Number(robotInput.value),
+                button,
+                robotInput,
+            ),
+        );
 
-    actions.append(
-        statusSelect,
-        saveButton,
-    );
+        actions.append(
+            robotInput,
+            button,
+        );
+
+        return actions;
+    }
+
+    const message =
+        document.createElement("span");
+
+    message.className =
+        "action-state-message";
+
+    const messages = {
+        RUNNING: "작업 실행 중",
+        COMPLETED: "작업 완료",
+        FAILED: "작업 실패",
+        CANCELLED: "작업 취소됨",
+    };
+
+    message.textContent =
+        messages[workOrder.status]
+        ?? workOrder.status
+        ?? "상태 없음";
+
+    actions.appendChild(message);
 
     return actions;
 }
@@ -430,5 +598,74 @@ async function handleStatusUpdate(
         saveButton.disabled = false;
         saveButton.textContent =
             originalButtonText;
+    }
+}
+
+async function handleWorkExecution(
+    workOrderId,
+    robotId,
+    button,
+    robotInput,
+) {
+    if (
+        !Number.isInteger(robotId)
+        || robotId <= 0
+    ) {
+        window.alert(
+            "Robot ID는 양의 정수여야 합니다.",
+        );
+        return;
+    }
+
+    const originalText =
+        button.textContent;
+
+    button.disabled = true;
+    robotInput.disabled = true;
+    button.textContent = "접수 중...";
+
+    try {
+        const response = await fetch(
+            `${WORK_ORDERS_API_URL}/${workOrderId}/execute`,
+            {
+                method: "POST",
+                headers: {
+                    "Content-Type":
+                        "application/json",
+                    "Accept":
+                        "application/json",
+                },
+                body: JSON.stringify({
+                    robot_id: robotId,
+                }),
+            },
+        );
+
+        const responseData =
+            await response.json();
+
+        if (
+            !response.ok
+            || !responseData.success
+        ) {
+            throw new Error(
+                responseData.error?.message
+                ?? "작업 시작에 실패했습니다.",
+            );
+        }
+
+        await loadWorkOrders(false);
+    } catch (error) {
+        console.error(
+            "Failed to execute work order:",
+            error,
+        );
+
+        window.alert(error.message);
+
+        button.disabled = false;
+        robotInput.disabled = false;
+        button.textContent =
+            originalText;
     }
 }

@@ -255,21 +255,62 @@ button:hover {
     border-top: 1px solid #e5e7eb;
 }
 
-.work-order-actions select {
-    min-width: 140px;
+.robot-id-input {
+    width: 110px;
     padding: 8px 10px;
     border: 1px solid #d1d5db;
     border-radius: 6px;
-    background-color: white;
     font: inherit;
 }
 
-.work-order-actions select:focus {
+.robot-id-input:focus {
     border-color: #2563eb;
     outline: 2px solid #dbeafe;
 }
 
+.robot-id-input:disabled {
+    cursor: not-allowed;
+    opacity: 0.6;
+}
+
+.action-state-message {
+    color: #6b7280;
+    font-size: 14px;
+    font-weight: bold;
+}
+
+
 .work-order-actions button:disabled {
     cursor: not-allowed;
     opacity: 0.6;
+}
+
+.work-order-progress {
+    margin-top: 16px;
+    padding: 14px;
+    border-radius: 8px;
+    background-color: #f9fafb;
+}
+
+.progress-summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+}
+
+.progress-summary span {
+    color: #6b7280;
+    font-size: 14px;
+}
+
+.progress-summary strong {
+    color: #2563eb;
+    font-size: 18px;
+}
+
+.current-operation {
+    margin: 10px 0 0;
+    color: #4b5563;
+    font-size: 14px;
 }
