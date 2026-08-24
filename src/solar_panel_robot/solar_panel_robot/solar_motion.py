@@ -1,25 +1,41 @@
 # =========================================================
-# Frame 작업 예외
+# Post 작업 예외
 # =========================================================
 
-class FramePickError(Exception):
+class PostPickError(Exception):
     pass
 
 
-class FramePlaceError(Exception):
+class PostPlaceError(Exception):
+    pass
+
+
+# =========================================================
+# Pin 작업 예외
+# =========================================================
+
+class PinPickError(Exception):
+    pass
+
+
+class PinPlaceError(Exception):
+    pass
+
+
+class PinInsertError(Exception):
     pass
 
 
 class SolarMotion:
 
-    def __init__(self, node):
+    POST_COMPONENT_PREFIX = "CMP-POST-"
 
+    def __init__(self, node):
         self.node = node
 
         from DSR_ROBOT2 import (
             movel,
             posx,
-            get_current_posx,
             wait,
             DR_BASE,
         )
@@ -28,7 +44,7 @@ class SolarMotion:
         from .config_loader import PoseLoader
 
         self.movel = movel
-        self.get_current_posx = get_current_posx
+        self.posx = posx
         self.wait = wait
         self.DR_BASE = DR_BASE
 
@@ -36,699 +52,1061 @@ class SolarMotion:
         self.motion = RobotMotion()
         self.force = self.motion.force
 
-        # =====================================================
-        # 현재 테스트용 좌표
-        # 추후 DB에서 전달받는 구조로 변경 예정
-        # =====================================================
-
-        # Lock Pin 관련 좌표
-        self.start = posx(
-            self.config.get("start")["position"]
+        # Post 좌표는 DB components에서만 받는다.
+        # Pin은 아직 기존 poses.yaml 기반 로직을 유지한다.
+        self.pin_pick = posx(
+            self.config.get("pin_pick")["position"]
+        )
+        self.pin_place = posx(
+            self.config.get("pin_place")["position"]
         )
 
-        self.a = posx(
-            self.config.get("a")["position"]
-        )
-
-        self.b = posx(
-            self.config.get("b")["position"]
-        )
-
-        self.c = posx(
-            self.config.get("c")["position"]
-        )
-
-        self.d = posx(
-            self.config.get("d")["position"]
-        )
-
-        # Frame 관련 좌표
-        self.frame_pick = posx(
-            self.config.get("frame_pick")["position"]
-        )
-
-        self.frame_place = posx(
-            self.config.get("frame_place")["position"]
-        )
-
-
-    # =========================================================
-    # Frame Pick
-    # =========================================================
-
-    def pick_frame(self):
-
-        self.node.get_logger().info(
-            "========== FRAME PICK START =========="
-        )
-
-        try:
-
-            self.node.get_logger().info(
-                "Frame Pick 대기 위치 이동"
-            )
-
-            self.movel(
-                self.frame_pick,
-                vel=self.motion.velocity,
-                acc=self.motion.acc,
-                ref=self.DR_BASE,
-            )
-
-            self.wait(0.5)
-
-            self.node.get_logger().info(
-                "Frame Pick 시작"
-            )
-
-            self.motion.pick()
-
-            self.node.get_logger().info(
-                "Frame Pick 완료"
-            )
-
-            self.wait(0.5)
-
-            self.node.get_logger().info(
-                "========== FRAME PICK COMPLETE =========="
-            )
-
-        except Exception as e:
-
-            self.node.get_logger().error(
-                f"Frame Pick 실패: {e}"
-            )
-
-            raise FramePickError(
-                str(e)
-            ) from e
-
-
-    # =========================================================
-    # Frame Place
-    # =========================================================
-
-    def place_frame(self):
-
-        self.node.get_logger().info(
-            "========== FRAME PLACE START =========="
-        )
-
-        try:
-
-            self.node.get_logger().info(
-                "Frame Place 대기 위치 이동"
-            )
-
-            self.movel(
-                self.frame_place,
-                vel=self.motion.velocity,
-                acc=self.motion.acc,
-                ref=self.DR_BASE,
-            )
-
-            self.wait(0.5)
-
-            self.node.get_logger().info(
-                "Frame Place 시작"
-            )
-
-            retreat_distance = self.motion.place()
-
-            self.node.get_logger().info(
-                "Frame Place Force 단계 완료 - Gripper 유지"
-            )
-
-            self.wait(0.5)
-
-            # =====================================================
-            # Frame 설치 확인
-            # =====================================================
-
-            self.node.get_logger().info(
-                "Frame 설치 상태 확인 시작"
-            )
-
-            check_result = self.check_frame(
-                distance=50.0,
-                force_threshold=50.0,
-            )
-
-            if not check_result:
-
-                self.node.get_logger().error(
-                    "[FRAME INSTALL][ERROR] Frame Check 실패 - "
-                    "현재 위치에서 작업을 중단합니다. "
-                    "Gripper는 파지 상태를 유지합니다."
-                )
-
-                raise FramePlaceError(
-                    "Frame Check 실패: 이동 범위 내 "
-                    f"|F_tool_z| >= 50.00N 미감지"
-                )
-
-            self.node.get_logger().info(
-                "Frame 설치 확인 성공"
-            )
-
-            self.wait(0.5)
-
-            # =====================================================
-            # 2단계 확인 완료 후 Gripper Release
-            # =====================================================
-
-            self.node.get_logger().info(
-                "2단계 확인 완료 -> Gripper Release"
-            )
-
-            self.motion.release()
-
-            self.wait(0.5)
-
-            # =====================================================
-            # Release 이후 BASE +Z 방향 안전 이탈
-            # =====================================================
-
-            self.node.get_logger().info(
-                f"Frame Release 완료 -> BASE +Z {retreat_distance}mm 이탈"
-            )
-
-            self.motion.move_z(
-                retreat_distance,
-                ref=self.DR_BASE,
-            )
-
-            self.wait(0.5)
-
-            self.node.get_logger().info(
-                "========== FRAME PLACE COMPLETE =========="
-            )
-
-        except Exception as e:
-
-            self.node.get_logger().error(
-                f"Frame Place 실패: {e}"
-            )
-
-            raise FramePlaceError(
-                str(e)
-            ) from e
-
-
-    # =========================================================
-    # Frame 설치 확인
-    # =========================================================
-
-    def check_frame(
+    def _require_number(
         self,
-        distance=50.0,
-        force_threshold=50.0,
+        parameters,
+        key,
     ):
+        if key not in parameters:
+            raise ValueError(
+                f"DB parameter 누락: {key}"
+            )
 
+        value = parameters[key]
+
+        if isinstance(value, bool):
+            raise ValueError(
+                f"DB parameter {key}는 숫자여야 합니다."
+            )
+
+        try:
+            return float(value)
+        except (TypeError, ValueError) as e:
+            raise ValueError(
+                f"DB parameter {key}는 숫자여야 합니다: {value}"
+            ) from e
+
+    def _optional_number(
+        self,
+        parameters,
+        key,
+    ):
+        value = parameters.get(key)
+
+        if value is None:
+            return None
+
+        if isinstance(value, bool):
+            raise ValueError(
+                f"DB parameter {key}는 숫자 또는 null이어야 합니다."
+            )
+
+        try:
+            return float(value)
+        except (TypeError, ValueError) as e:
+            raise ValueError(
+                f"DB parameter {key}는 숫자 또는 null이어야 합니다: {value}"
+            ) from e
+
+    def _get_post_component(
+        self,
+        components,
+    ):
+        if not isinstance(components, list):
+            raise ValueError(
+                "components는 list여야 합니다."
+            )
+
+        for component in components:
+            if not isinstance(component, dict):
+                continue
+
+            code = str(
+                component.get("code", "")
+            )
+
+            if (
+                code.startswith(self.POST_COMPONENT_PREFIX)
+                and "pickup_position" in component
+                and "assembly_position" in component
+            ):
+                return component
+
+        raise ValueError(
+            "Post component를 찾을 수 없습니다. "
+            "CMP-POST-* component에 pickup_position과 "
+            "assembly_position이 필요합니다."
+        )
+
+    def _position_to_posx(
+        self,
+        position,
+        label,
+        expected_frame,
+    ):
+        if not isinstance(position, dict):
+            raise ValueError(
+                f"{label}은 JSON object여야 합니다."
+            )
+
+        required = (
+            "x", "y", "z",
+            "rx", "ry", "rz",
+            "frame",
+        )
+
+        missing = [
+            key
+            for key in required
+            if position.get(key) is None
+        ]
+
+        if missing:
+            raise ValueError(
+                f"{label} 필드 누락: "
+                + ", ".join(missing)
+            )
+
+        frame = str(position["frame"]).upper()
+
+        if frame != expected_frame:
+            raise ValueError(
+                f"{label}.frame={frame}, "
+                f"parameter coordinate_system={expected_frame} 불일치"
+            )
+
+        if frame != "BASE":
+            raise ValueError(
+                "현재 Post 동작은 BASE 좌표계만 지원합니다."
+            )
+
+        values = []
+        for key in ("x", "y", "z", "rx", "ry", "rz"):
+            try:
+                values.append(float(position[key]))
+            except (TypeError, ValueError) as e:
+                raise ValueError(
+                    f"{label}.{key}는 숫자여야 합니다."
+                ) from e
+
+        return self.posx(values)
+
+    def _post_inputs(
+        self,
+        parameters,
+        components,
+    ):
+        if not isinstance(parameters, dict):
+            raise ValueError(
+                "parameters는 dict여야 합니다."
+            )
+
+        coordinate_system = str(
+            parameters.get(
+                "coordinate_system",
+                "",
+            )
+        ).upper()
+
+        if coordinate_system != "BASE":
+            raise ValueError(
+                "현재 Post 동작은 coordinate_system=BASE만 지원합니다."
+            )
+
+        component = self._get_post_component(
+            components
+        )
+
+        pickup_pose = self._position_to_posx(
+            component["pickup_position"],
+            "pickup_position",
+            coordinate_system,
+        )
+
+        assembly_pose = self._position_to_posx(
+            component["assembly_position"],
+            "assembly_position",
+            coordinate_system,
+        )
+
+        return (
+            component,
+            pickup_pose,
+            assembly_pose,
+        )
+
+    # =========================================================
+    # Post 단계 DB Log
+    # =========================================================
+
+    def _publish_post_event(
+        self,
+        operation_context,
+        *,
+        phase,
+        status,
+        error=None,
+        detail=None,
+    ):
+        """
+        Post 세부 단계 이벤트를 /system_event로 발행한다.
+
+        phase:
+            PICK / PLACE / CHECK
+
+        status:
+            STARTED / COMPLETED / FAILED
+
+        로깅 실패가 실제 Robot Motion 실패로 전파되지 않도록
+        이벤트 발행 오류는 warning만 남긴다.
+        """
+        if not operation_context:
+            return
+
+        operation_code = str(
+            operation_context.get(
+                "operation_code",
+                "",
+            )
+        ).strip()
+
+        if not operation_code:
+            return
+
+        phase = str(phase).strip().upper()
+        status = str(status).strip().upper()
+
+        event_code = (
+            f"POST_{phase}_{status}"
+        )
+
+        if status == "FAILED":
+            severity = getattr(
+                self.node,
+                "SEVERITY_ERROR",
+                2,
+            )
+            message = (
+                f"[{operation_code}] "
+                f"{phase} failed"
+            )
+        elif status == "COMPLETED":
+            severity = getattr(
+                self.node,
+                "SEVERITY_INFO",
+                0,
+            )
+            message = (
+                f"[{operation_code}] "
+                f"{phase} completed"
+            )
+        else:
+            severity = getattr(
+                self.node,
+                "SEVERITY_INFO",
+                0,
+            )
+            message = (
+                f"[{operation_code}] "
+                f"{phase} started"
+            )
+
+        detail_data = {
+            "operation_code": operation_code,
+            "phase": phase,
+            "status": status,
+        }
+
+        for key in (
+            "work_order_id",
+            "operation_id",
+            "robot_id",
+        ):
+            value = operation_context.get(key)
+            if value is not None:
+                detail_data[key] = value
+
+        if isinstance(detail, dict):
+            detail_data.update(detail)
+
+        if error is not None:
+            detail_data["error"] = str(error)
+            message = (
+                f"{message}: {error}"
+            )
+
+        try:
+            self.node.publish_system_event(
+                severity,
+                event_code,
+                message,
+                work_execution_id=int(
+                    operation_context.get(
+                        "work_execution_id",
+                        0,
+                    )
+                    or 0
+                ),
+                operation_execution_id=int(
+                    operation_context.get(
+                        "operation_execution_id",
+                        0,
+                    )
+                    or 0
+                ),
+                operation_code=operation_code,
+                phase=phase,
+                status=status,
+                detail=detail_data,
+            )
+
+        except Exception as log_error:
+            self.node.get_logger().warning(
+                "Post 단계 SystemEvent 발행 실패: "
+                f"{log_error}"
+            )
+
+
+    # =========================================================
+    # Post Pick
+    # =========================================================
+
+    def pick_post(
+        self,
+        parameters,
+        components,
+        operation_context=None,
+    ):
         self.node.get_logger().info(
-            "========== FRAME CHECK START =========="
+            "========== POST PICK START =========="
         )
 
-        result = self.motion.check_force_move(
-            distance=distance,
-            force_threshold=force_threshold,
-            velocity=10.0,
-            acc=20.0,
+        self._publish_post_event(
+            operation_context,
+            phase="PICK",
+            status="STARTED",
         )
 
-        if result:
+        try:
+            component, pickup_pose, _ = (
+                self._post_inputs(
+                    parameters,
+                    components,
+                )
+            )
 
-            self.node.get_logger().info(
-                "Frame Check 성공"
+            speed = self._require_number(
+                parameters, "speed"
+            )
+            acc = self._require_number(
+                parameters, "acceleration"
+            )
+            pick_distance = self._require_number(
+                parameters, "pick_distance"
             )
 
             self.node.get_logger().info(
-                "========== FRAME CHECK COMPLETE =========="
+                f"Post Pick 대기 위치 이동 - "
+                f"{component.get('code')}"
+            )
+
+            self.movel(
+                pickup_pose,
+                vel=speed,
+                acc=acc,
+                ref=self.DR_BASE,
+            )
+
+            self.wait(0.5)
+
+            self.motion.pick(
+                distance=pick_distance,
+                velocity=speed,
+                acc=acc,
+            )
+
+            self.wait(0.5)
+
+            self.node.get_logger().info(
+                "========== POST PICK COMPLETE =========="
+            )
+
+            self._publish_post_event(
+                operation_context,
+                phase="PICK",
+                status="COMPLETED",
+                detail={
+                    "component_code": (
+                        component.get("code")
+                    ),
+                },
             )
 
             return True
 
-        self.node.get_logger().error(
-            "Frame Check 실패"
-        )
+        except Exception as e:
+            self.node.get_logger().error(
+                f"Post Pick 실패: {e}"
+            )
 
-        self.node.get_logger().info(
-            "========== FRAME CHECK FAILED =========="
-        )
+            self._publish_post_event(
+                operation_context,
+                phase="PICK",
+                status="FAILED",
+                error=e,
+            )
 
-        return False
+            raise PostPickError(str(e)) from e
 
 
     # =========================================================
-    # 전체 Frame 설치 공정
+    # Post Place
     # =========================================================
 
-    def install_frame(self):
-
+    def place_post(
+        self,
+        parameters,
+        components,
+        operation_context=None,
+    ):
         self.node.get_logger().info(
-            "========== FRAME INSTALL START =========="
+            "========== POST PLACE START =========="
+        )
+
+        self._publish_post_event(
+            operation_context,
+            phase="PLACE",
+            status="STARTED",
         )
 
         try:
-            self.pick_frame()
-            self.place_frame()
+            component, _, assembly_pose = (
+                self._post_inputs(
+                    parameters,
+                    components,
+                )
+            )
+
+            speed = self._require_number(
+                parameters, "speed"
+            )
+            acc = self._require_number(
+                parameters, "acceleration"
+            )
 
             self.node.get_logger().info(
-                "========== FRAME INSTALL COMPLETE =========="
+                f"Post Place 대기 위치 이동 - "
+                f"{component.get('code')}"
             )
 
-        except FramePickError as e:
+            self.movel(
+                assembly_pose,
+                vel=speed,
+                acc=acc,
+                ref=self.DR_BASE,
+            )
+
+            self.wait(0.5)
+
+            retreat_distance = self.motion.place(
+                distance=self._require_number(
+                    parameters,
+                    "place_retreat_distance",
+                ),
+                search_limit_z=self._require_number(
+                    parameters,
+                    "place_search_limit_z",
+                ),
+                force=self._require_number(
+                    parameters,
+                    "place_force",
+                ),
+                contact_force=self._require_number(
+                    parameters,
+                    "place_contact_force",
+                ),
+                insert_force=self._require_number(
+                    parameters,
+                    "place_insert_force",
+                ),
+                stiffness_z=self._require_number(
+                    parameters,
+                    "place_stiffness_z",
+                ),
+                search_velocity=self._require_number(
+                    parameters,
+                    "place_search_velocity",
+                ),
+                search_acc=self._require_number(
+                    parameters,
+                    "place_search_acceleration",
+                ),
+                search_timeout=self._optional_number(
+                    parameters,
+                    "place_search_timeout",
+                ),
+                insert_timeout=self._require_number(
+                    parameters,
+                    "place_insert_timeout",
+                ),
+            )
+
+            self.wait(0.5)
+
+            self.node.get_logger().info(
+                "Post Place Force 단계 완료 - "
+                "Gripper 유지"
+            )
+            self.node.get_logger().info(
+                "========== POST PLACE COMPLETE =========="
+            )
+
+            self._publish_post_event(
+                operation_context,
+                phase="PLACE",
+                status="COMPLETED",
+                detail={
+                    "component_code": (
+                        component.get("code")
+                    ),
+                    "retreat_distance": (
+                        float(retreat_distance)
+                    ),
+                },
+            )
+
+            return retreat_distance
+
+        except Exception as e:
+            self.node.get_logger().error(
+                f"Post Place 실패: {e}"
+            )
+
+            self._publish_post_event(
+                operation_context,
+                phase="PLACE",
+                status="FAILED",
+                error=e,
+            )
+
+            raise PostPlaceError(str(e)) from e
+
+
+    # =========================================================
+    # Post 설치 확인
+    # =========================================================
+
+    def check_post(
+        self,
+        parameters,
+        operation_context=None,
+    ):
+        self.node.get_logger().info(
+            "========== POST CHECK START =========="
+        )
+
+        self._publish_post_event(
+            operation_context,
+            phase="CHECK",
+            status="STARTED",
+        )
+
+        try:
+            force_threshold = self._require_number(
+                parameters,
+                "check_force_threshold",
+            )
+
+            result = self.motion.check_force_move(
+                distance=self._require_number(
+                    parameters,
+                    "check_distance",
+                ),
+                force_threshold=force_threshold,
+                velocity=self._require_number(
+                    parameters,
+                    "check_velocity",
+                ),
+                acc=self._require_number(
+                    parameters,
+                    "check_acceleration",
+                ),
+                label="POST CHECK",
+            )
+
+            if result:
+                self.node.get_logger().info(
+                    "========== POST CHECK COMPLETE =========="
+                )
+
+                self._publish_post_event(
+                    operation_context,
+                    phase="CHECK",
+                    status="COMPLETED",
+                    detail={
+                        "force_threshold": (
+                            force_threshold
+                        ),
+                    },
+                )
+
+                return True
+
+            error_message = (
+                "이동 범위 내 Force threshold 미감지"
+            )
 
             self.node.get_logger().error(
-                f"Frame Install 실패 - PICK 단계: {e}"
+                "========== POST CHECK FAILED =========="
             )
 
-            # 상위 Controller까지 전달
+            self._publish_post_event(
+                operation_context,
+                phase="CHECK",
+                status="FAILED",
+                error=error_message,
+                detail={
+                    "force_threshold": (
+                        force_threshold
+                    ),
+                },
+            )
+
+            return False
+
+        except Exception as e:
+            self.node.get_logger().error(
+                f"Post Check 실행 오류: {e}"
+            )
+
+            self._publish_post_event(
+                operation_context,
+                phase="CHECK",
+                status="FAILED",
+                error=e,
+            )
+
             raise
 
-        except FramePlaceError as e:
 
+    # =========================================================
+    # 전체 Post 설치 공정
+    # =========================================================
+
+    def install_post(
+        self,
+        parameters,
+        components,
+        operation_context=None,
+    ):
+        self.node.get_logger().info(
+            "========== POST INSTALL START =========="
+        )
+
+        try:
+            self.pick_post(
+                parameters,
+                components,
+                operation_context=operation_context,
+            )
+
+            retreat_distance = self.place_post(
+                parameters,
+                components,
+                operation_context=operation_context,
+            )
+
+            if not self.check_post(
+                parameters,
+                operation_context=operation_context,
+            ):
+                raise PostPlaceError(
+                    "Post 설치 확인 실패"
+                )
+
+            self.node.get_logger().info(
+                "Post Check 완료 -> Gripper Release"
+            )
+            self.motion.release()
+            self.wait(0.5)
+
+            speed = self._require_number(
+                parameters, "speed"
+            )
+            acc = self._require_number(
+                parameters, "acceleration"
+            )
+
+            self.node.get_logger().info(
+                f"Post Release 완료 -> "
+                f"BASE +Z {retreat_distance}mm 이탈"
+            )
+            self.motion.move_z(
+                retreat_distance,
+                ref=self.DR_BASE,
+                velocity=speed,
+                acc=acc,
+            )
+
+            self.wait(0.5)
+
+            self.node.get_logger().info(
+                "========== POST INSTALL COMPLETE =========="
+            )
+            return True
+
+        except PostPickError as e:
             self.node.get_logger().error(
-                f"Frame Install 실패 - PLACE 단계: {e}"
+                f"Post Install 실패 - PICK 단계: {e}"
+            )
+            raise
+
+        except PostPlaceError as e:
+            self.node.get_logger().error(
+                "Post Install 실패 - "
+                f"PLACE/CHECK 단계: {e}"
             )
             raise
 
         except Exception as e:
-
             self.node.get_logger().error(
-                f"Frame Install 알 수 없는 오류: {e}"
+                f"Post Install 알 수 없는 오류: {e}"
             )
-
             raise
 
 
     # =========================================================
-    # Lock Pin Pick
+    # Pin Pick
     # =========================================================
 
-    def pick_pin(self):
+    def pick_pin(
+        self,
+        approach_height=180.0,
+    ):
 
         self.node.get_logger().info(
             "========== PIN PICK START =========="
         )
 
-        self.node.get_logger().info(
-            "Pin Pick 대기 위치 이동"
-        )
-
-        self.movel(
-            self.a,
-            vel=self.motion.velocity,
-            acc=self.motion.acc,
-            ref=self.DR_BASE,
-        )
-
-        self.wait(0.5)
-
-        self.node.get_logger().info(
-            "Pin Pick 시작"
-        )
-
-        self.motion.pick()
-
-        self.node.get_logger().info(
-            "Pin Pick 완료"
-        )
-
-        self.wait(0.5)
-
-        self.node.get_logger().info(
-            "========== PIN PICK COMPLETE =========="
-        )
-
-
-    # =========================================================
-    # Lock Pin 1차 삽입
-    # =========================================================
-
-    def first_insert_pin(self):
-
-        self.node.get_logger().info(
-            "========== FIRST PIN INSERT START =========="
-        )
-
-        # -----------------------------------------------------
-        # Hole Front까지 Arc 이동
-        # -----------------------------------------------------
-
-        self.node.get_logger().info(
-            "Hole Front Arc 이동 시작"
-        )
-
-        self.motion.move_arc(
-            self.start,
-            self.b,
-            height=100,
-            steps=6,
-        )
-
-        self.node.get_logger().info(
-            "Hole Front Arc 이동 완료"
-        )
-
-        self.wait(1.0)
-
-        # -----------------------------------------------------
-        # Compliance ON
-        # -----------------------------------------------------
-
-        self.node.get_logger().info(
-            "1차 삽입 Compliance ON"
-        )
-
-        self.force.compliance_on(
-            stiffness={
-                "x": 300,
-                "y": 8000,
-                "z": 8000,
-                "a": 800,
-                "b": 800,
-                "c": 800,
-            },
-            reference="base",
-        )
-
-        self.wait(1.0)
-
-        # -----------------------------------------------------
-        # Force ON
-        # -----------------------------------------------------
-
-        self.node.get_logger().info(
-            "1차 삽입 Force ON"
-        )
-
-        self.force.force_on(
-            forces={
-                "x": 40,
-            },
-            mode="relative",
-            reference="base",
-        )
-
-        # -----------------------------------------------------
-        # 1차 삽입 위치 확인
-        # -----------------------------------------------------
-
-        while True:
-
-            current_pos, _ = self.get_current_posx(
-                ref=self.DR_BASE
+        try:
+            # pin_pick은 실제 파지 위치로 사용한다.
+            # 먼저 BASE +Z approach_height 위의 대기 위치로 이동한 뒤
+            # RobotMotion.pick()으로 하강 -> 파지 -> 상승한다.
+            _, pin_ready = self.motion.make_target_ready(
+                "pin_pick",
+                approach_height,
             )
-
-            current_x = current_pos[0]
-            target_x = self.b[0]
 
             self.node.get_logger().info(
-                f"[1차 삽입] "
-                f"current_x={current_x:.2f}, "
-                f"target_x={target_x:.2f}"
+                f"Pin Pick 대기 위치 이동 - target 위 {approach_height}mm"
             )
 
-            if current_x >= target_x + 40:
-
-                self.node.get_logger().info(
-                    "1차 삽입 목표 위치 도달"
-                )
-
-                break
-
-            self.wait(0.05)
-
-        # -----------------------------------------------------
-        # Force OFF
-        # -----------------------------------------------------
-
-        self.force.force_off()
-
-        self.wait(0.3)
-
-        # -----------------------------------------------------
-        # Compliance OFF
-        # -----------------------------------------------------
-
-        self.force.compliance_off()
-
-        self.wait(0.5)
-
-        self.node.get_logger().info(
-            "========== FIRST PIN INSERT COMPLETE =========="
-        )
-
-
-    # =========================================================
-    # Lock Pin 최종 삽입
-    # =========================================================
-
-    def final_insert_pin(self):
-
-        self.node.get_logger().info(
-            "========== FINAL PIN INSERT START =========="
-        )
-
-        # -----------------------------------------------------
-        # 기존 파지 해제
-        # -----------------------------------------------------
-
-        self.node.get_logger().info(
-            "Pin Release"
-        )
-
-        self.motion.release()
-
-        self.wait(0.5)
-
-        # -----------------------------------------------------
-        # 재파지 위치 이동
-        # -----------------------------------------------------
-
-        self.node.get_logger().info(
-            "Pin 재파지 위치 이동"
-        )
-
-        self.movel(
-            self.c,
-            vel=50,
-            acc=100,
-            ref=self.DR_BASE,
-        )
-
-        self.wait(1.0)
-
-        # -----------------------------------------------------
-        # 다시 파지
-        # -----------------------------------------------------
-
-        self.node.get_logger().info(
-            "Pin Re-Grasp"
-        )
-
-        self.motion.grasp()
-
-        self.wait(0.5)
-
-        # -----------------------------------------------------
-        # Compliance ON
-        # -----------------------------------------------------
-
-        self.node.get_logger().info(
-            "최종 삽입 Compliance ON"
-        )
-
-        self.force.compliance_on(
-            stiffness={
-                "x": 500,
-                "y": 500,
-                "z": 500,
-                "a": 100,
-                "b": 100,
-                "c": 100,
-            },
-            reference="base",
-        )
-
-        self.wait(1.0)
-
-        # -----------------------------------------------------
-        # Force ON
-        # -----------------------------------------------------
-
-        self.node.get_logger().info(
-            "최종 삽입 Force ON"
-        )
-
-        self.force.force_on(
-            forces={
-                "x": 40,
-            },
-            mode="relative",
-            reference="base",
-        )
-
-        # -----------------------------------------------------
-        # 최종 삽입 위치 확인
-        # -----------------------------------------------------
-
-        while True:
-
-            current_pos, _ = self.get_current_posx(
-                ref=self.DR_BASE
+            self.movel(
+                pin_ready,
+                vel=self.motion.velocity,
+                acc=self.motion.acc,
+                ref=self.DR_BASE,
             )
 
-            current_x = current_pos[0]
-            target_x = self.d[0]
+            self.wait(0.5)
 
             self.node.get_logger().info(
-                f"[최종 삽입] "
-                f"current_x={current_x:.2f}, "
-                f"target_x={target_x:.2f}"
+                "Pin Pick 시작"
             )
 
-            if current_x >= target_x:
+            self.motion.pick(
+                distance=approach_height
+            )
 
-                self.node.get_logger().info(
-                    "최종 삽입 목표 위치 도달"
-                )
+            self.node.get_logger().info(
+                "Pin Pick 완료"
+            )
 
-                break
+            self.wait(0.5)
 
-            self.wait(0.05)
+            self.node.get_logger().info(
+                "========== PIN PICK COMPLETE =========="
+            )
 
-        # -----------------------------------------------------
-        # Force OFF
-        # -----------------------------------------------------
+        except Exception as e:
+            self.node.get_logger().error(
+                f"Pin Pick 실패: {e}"
+            )
 
-        self.force.force_off()
-
-        self.wait(0.3)
-
-        # -----------------------------------------------------
-        # Compliance OFF
-        # -----------------------------------------------------
-
-        self.force.compliance_off()
-
-        self.wait(0.5)
-
-        # -----------------------------------------------------
-        # 최종 Pin Release
-        # -----------------------------------------------------
-
-        self.node.get_logger().info(
-            "최종 Pin Release"
-        )
-
-        self.motion.release()
-
-        self.wait(0.5)
-
-        self.node.get_logger().info(
-            "========== FINAL PIN INSERT COMPLETE =========="
-        )
+            raise PinPickError(
+                str(e)
+            ) from e
 
 
     # =========================================================
-    # 전체 Lock Pin 삽입 공정
+    # Pin Force Place
     # =========================================================
 
-    def insert_pin(self):
+    def place_pin(self):
+
+        self.node.get_logger().info(
+            "========== PIN PLACE START =========="
+        )
+
+        try:
+            self.node.get_logger().info(
+                "Pin Place 대기 위치 이동"
+            )
+
+            self.movel(
+                self.pin_place,
+                vel=self.motion.velocity,
+                acc=self.motion.acc,
+                ref=self.DR_BASE,
+            )
+
+            self.wait(0.5)
+
+            self.node.get_logger().info(
+                "Pin Force Place 시작"
+            )
+
+            # post와 동일한 Force Place 사용
+            # 1단계: baseline 대비 |Delta Fz| >= 20N 접촉
+            # 압입: Desired Force / insert_force 확인
+            # 종료 후에도 Gripper는 닫힌 상태를 유지한다.
+            retreat_distance = self.motion.place()
+
+            self.node.get_logger().info(
+                "Pin Force Place 완료 - Gripper 유지"
+            )
+
+            self.wait(0.5)
+
+            self.node.get_logger().info(
+                "========== PIN PLACE COMPLETE =========="
+            )
+
+            return retreat_distance
+
+        except Exception as e:
+            self.node.get_logger().error(
+                f"Pin Place 실패: {e}"
+            )
+
+            raise PinPlaceError(
+                str(e)
+            ) from e
+
+
+    # =========================================================
+    # Pin 최종 삽입
+    # =========================================================
+
+    def insert_pin(
+        self,
+        lift_distance=50.0,
+        insert_distance=50.0,
+        force_threshold=50.0,
+    ):
+        """
+        Force Place가 끝난 Pin을 최종 삽입한다.
+
+        순서:
+            1. Pin Release
+            2. BASE +Z로 lift_distance 상승
+            3. 빈 Gripper Close
+            4. post Check와 동일한 방식으로 TOOL Z 방향 이동
+            5. 이동 중 실제 |F_tool_z| >= force_threshold이면 즉시 정지/성공
+            6. 최대 거리까지 미감지 시 현재 위치에서 ERROR/실패
+
+        현재 post_place / pin_place 자세와 동일하게
+        TOOL +Z가 물리적인 하강 방향이라는 전제로
+        insert_distance는 +값을 사용한다.
+        """
 
         self.node.get_logger().info(
             "========== PIN INSERT START =========="
         )
 
-        self.pick_pin()
+        try:
+            # -------------------------------------------------
+            # 1. Force Place 후 Pin 내려놓기
+            # -------------------------------------------------
 
-        self.first_insert_pin()
+            self.node.get_logger().info(
+                "Pin Release"
+            )
 
-        self.final_insert_pin()
+            self.motion.release()
+            self.wait(0.5)
+
+            # -------------------------------------------------
+            # 2. BASE +Z 50mm 상승
+            # -------------------------------------------------
+
+            self.node.get_logger().info(
+                f"Pin 상부로 BASE +Z {lift_distance}mm 이동"
+            )
+
+            self.motion.move_z(
+                lift_distance,
+                ref=self.DR_BASE,
+            )
+
+            self.wait(0.5)
+
+            # -------------------------------------------------
+            # 3. 빈 Gripper Close
+            # -------------------------------------------------
+
+            self.node.get_logger().info(
+                "Pin 삽입용 Gripper Close"
+            )
+
+            self.motion.grasp()
+            self.wait(0.5)
+
+            # -------------------------------------------------
+            # 4. 아래 방향 이동 + 실제 Force 확인
+            # -------------------------------------------------
+
+            self.node.get_logger().info(
+                f"Pin 삽입 Force Check 시작 - "
+                f"distance={insert_distance}mm, "
+                f"threshold={force_threshold}N"
+            )
+
+            insert_result = self.motion.check_force_move(
+                distance=insert_distance,
+                force_threshold=force_threshold,
+                velocity=10.0,
+                acc=20.0,
+                label="PIN INSERT",
+            )
+
+            if not insert_result:
+                self.node.get_logger().error(
+                    "[PIN INSERT][ERROR] Force threshold 미감지 - "
+                    "현재 위치에서 작업을 중단합니다."
+                )
+
+                raise PinInsertError(
+                    "Pin 최종 삽입 확인 실패"
+                )
+
+            self.node.get_logger().info(
+                "Pin 최종 삽입 성공"
+            )
+
+            self.node.get_logger().info(
+                "========== PIN INSERT COMPLETE =========="
+            )
+
+            return True
+
+        except PinInsertError:
+            raise
+
+        except Exception as e:
+            self.node.get_logger().error(
+                f"Pin Insert 실패: {e}"
+            )
+
+            raise PinInsertError(
+                str(e)
+            ) from e
+
+
+    # =========================================================
+    # 전체 Pin 설치 공정
+    # =========================================================
+
+    def install_pin(self):
 
         self.node.get_logger().info(
-            "========== PIN INSERT COMPLETE =========="
+            "========== PIN INSTALL START =========="
         )
 
-
-    # =========================================================
-    # 전체 Solar 작업
-    # =========================================================
-
-    def run(self):
-
         try:
+            self.pick_pin()
+            self.place_pin()
+            self.insert_pin(
+                lift_distance=50.0,
+                insert_distance=50.0,
+                force_threshold=50.0,
+            )
 
+            self.node.get_logger().info(
+                "========== PIN INSTALL COMPLETE =========="
+            )
+
+            return True
+
+        except PinPickError as e:
+            self.node.get_logger().error(
+                f"Pin Install 실패 - PICK 단계: {e}"
+            )
+            raise
+
+        except PinPlaceError as e:
+            self.node.get_logger().error(
+                f"Pin Install 실패 - PLACE 단계: {e}"
+            )
+            raise
+
+        except PinInsertError as e:
+            self.node.get_logger().error(
+                f"Pin Install 실패 - INSERT 단계: {e}"
+            )
+            raise
+
+        except Exception as e:
+            self.node.get_logger().error(
+                f"Pin Install 알 수 없는 오류: {e}"
+            )
+            raise
+
+
+    # =========================================================
+    # 전체 Solar 작업 - 레거시 직접 테스트용
+    # =========================================================
+
+    def run(
+        self,
+        parameters,
+        components,
+        operation_context=None,
+    ):
+        try:
             self.node.get_logger().info(
                 "========== SOLAR MOTION START =========="
             )
 
-            # -------------------------------------------------
-            # 시작 위치
-            # -------------------------------------------------
-
-            self.node.get_logger().info(
-                "Home 이동"
-            )
-
             self.motion.move_home()
-
             self.wait(1.0)
 
-            # -------------------------------------------------
-            # Frame 설치
-            # -------------------------------------------------
-
-            self.install_frame()
-
+            self.install_post(
+                parameters,
+                components,
+                operation_context=operation_context,
+            )
             self.wait(1.0)
 
-            # -------------------------------------------------
-            # Lock Pin 삽입
-            # -------------------------------------------------
-
-            self.insert_pin()
-
-            # -------------------------------------------------
-            # 작업 완료 후 Home 복귀
-            # -------------------------------------------------
-
-            self.node.get_logger().info(
-                "Home 복귀 시작"
-            )
+            self.install_pin()
 
             self.motion.move_home()
-
-            self.node.get_logger().info(
-                "Home 복귀 완료"
-            )
 
             self.node.get_logger().info(
                 "========== SOLAR MOTION COMPLETE =========="
             )
 
-        except Exception as e:
+            return True
 
+        except Exception as e:
             self.node.get_logger().error(
                 f"Solar Motion 작업 중 오류: {e}"
             )
 
-            # -------------------------------------------------
-            # Force / Compliance가 켜진 상태에서
-            # 오류가 발생했을 경우 안전하게 해제
-            # -------------------------------------------------
-
             try:
-
                 self.force.all_off()
-
             except Exception as force_error:
-
                 self.node.get_logger().error(
                     f"Force 해제 중 오류: {force_error}"
                 )
 
-            # main.py / Action Server까지 오류 전달
             raise

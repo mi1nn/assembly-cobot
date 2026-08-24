@@ -116,6 +116,18 @@ class Ros2BridgeNode(Node):
 
         self.system_event_queue.put({
             "robot_id": int(event.robot_id),
+            "work_execution_id": int(
+                event.work_execution_id
+            ),
+            "operation_execution_id": int(
+                event.operation_execution_id
+            ),
+            "operation_code": (
+                event.operation_code.strip()
+            ),
+            "phase": event.phase.strip(),
+            "status": event.status.strip(),
+            "detail": event.detail.strip(),
             "log_type": "ROBOT",
             "severity": severity,
             "code": event.code.strip(),
@@ -170,9 +182,106 @@ class Ros2BridgeNode(Node):
         }
 
         robot_id = event.get("robot_id")
+        if (
+            robot_id is not None
+            and int(robot_id) > 0
+        ):
+            request_data["robot_id"] = int(
+                robot_id
+            )
 
-        if robot_id is not None:
-            request_data["robot_id"] = robot_id
+        work_execution_id = event.get(
+            "work_execution_id"
+        )
+        if (
+            work_execution_id is not None
+            and int(work_execution_id) > 0
+        ):
+            request_data["work_execution_id"] = int(
+                work_execution_id
+            )
+
+        operation_execution_id = event.get(
+            "operation_execution_id"
+        )
+        if (
+            operation_execution_id is not None
+            and int(operation_execution_id) > 0
+        ):
+            request_data[
+                "operation_execution_id"
+            ] = int(operation_execution_id)
+
+        detail_data = {}
+
+        detail_raw = str(
+            event.get("detail", "")
+        ).strip()
+
+        if detail_raw:
+            try:
+                parsed_detail = json.loads(
+                    detail_raw
+                )
+                if isinstance(
+                    parsed_detail,
+                    dict,
+                ):
+                    detail_data.update(
+                        parsed_detail
+                    )
+                else:
+                    detail_data["value"] = (
+                        parsed_detail
+                    )
+
+            except (
+                json.JSONDecodeError,
+                TypeError,
+            ):
+                detail_data["raw_detail"] = (
+                    detail_raw
+                )
+
+        operation_code = str(
+            event.get(
+                "operation_code",
+                "",
+            )
+        ).strip()
+        phase = str(
+            event.get(
+                "phase",
+                "",
+            )
+        ).strip()
+        status = str(
+            event.get(
+                "status",
+                "",
+            )
+        ).strip()
+
+        if operation_code:
+            detail_data.setdefault(
+                "operation_code",
+                operation_code,
+            )
+        if phase:
+            detail_data.setdefault(
+                "phase",
+                phase,
+            )
+        if status:
+            detail_data.setdefault(
+                "status",
+                status,
+            )
+
+        if detail_data:
+            request_data["detail"] = (
+                detail_data
+            )
 
         response = requests.post(
             callback_url,
@@ -242,6 +351,9 @@ class Ros2BridgeNode(Node):
                 ),
                 "operation_id": (
                     operation["operation_id"]
+                ),
+                "operation_code": (
+                    operation["operation_code"]
                 ),
                 "sequence": operation["sequence"],
                 "parameters": (
@@ -337,6 +449,7 @@ class Ros2BridgeNode(Node):
             f"bridge_work_id={job['bridge_work_id']}, "
             f"work_order_id={job['work_order_id']}, "
             f"operation_id={job['operation_id']}, "
+            f"operation_code={job['operation_code']}, "
             f"work_execution_id="
             f"{job['work_execution_id']}, "
             f"operation_execution_id="
@@ -356,6 +469,10 @@ class Ros2BridgeNode(Node):
 
         goal.operation_id = int(
             job["operation_id"]
+        )
+
+        goal.operation_code = str(
+            job["operation_code"]
         )
 
         goal.operation_execution_id = int(
@@ -998,6 +1115,7 @@ def validate_operation_item(
     required_fields = (
         "operation_execution_id",
         "operation_id",
+        "operation_code",
         "sequence",
         "parameters",
         "components",
@@ -1035,6 +1153,20 @@ def validate_operation_item(
                     "must be a positive integer."
                 ),
             )
+
+    operation_code = operation["operation_code"]
+
+    if (
+        not isinstance(operation_code, str)
+        or not operation_code.strip()
+    ):
+        return (
+            "INVALID_OPERATION_CODE",
+            (
+                f"operations[{index}].operation_code "
+                "must be a non-empty string."
+            ),
+        )
 
     if not isinstance(
         operation["parameters"],
