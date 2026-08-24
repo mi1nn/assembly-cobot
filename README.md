@@ -145,7 +145,7 @@ Doosan이 제공하는 ROS2 패키지(`dsr_bringup2` 등, 이 저장소에는 �
 source /opt/ros/jazzy/setup.bash
 source ~/ws_cobot_pjt/ws_dsr/install/setup.bash   # Doosan Robotics 패키지 워크스페이스
 
-ros2 launch dsr_bringup2 dsr_bringup2.launch.py \
+ros2 launch m0609_rg2_bringup bringup.launch.py \
     mode:=virtual \
     name:=dsr01 \
     model:=m0609 \
