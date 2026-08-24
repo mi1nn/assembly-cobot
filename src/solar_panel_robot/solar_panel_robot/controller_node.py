@@ -56,10 +56,20 @@ ACTION_NAME = "/execute_operation"
 # Controller가 실행 가능한 Operation Code
 # =============================================================
 
-SUPPORTED_OPERATION_CODES = {
-    "FRAME_PICK",
-    "FRAME_PLACE",
-    "FRAME_INSTALL",
+POST_OPERATION_CODES = {
+    "postA",
+    "postB",
+    "postC",
+    "postD",
+    "postE",
+    "postF",
+}
+
+# DB operation code와 별개로 직접 Action 테스트에 사용할 수 있는 코드.
+SUPPORTED_OPERATION_CODES = POST_OPERATION_CODES | {
+    "POST_PICK",
+    "POST_PLACE",
+    "POST_INSTALL",
     "PIN_PICK",
     "PIN_PLACE",
     "PIN_INSERT",
@@ -67,34 +77,6 @@ SUPPORTED_OPERATION_CODES = {
     "SOLAR_FULL",
 }
 
-
-# =============================================================
-# DB Operation ID -> Robot Operation Code
-#
-# Bridge는 DB의 operation_id를 uint64로 전달함.
-#
-# 실제 DB ID가 확정되면 아래에 등록 가능.
-#
-# 예:
-#
-# OPERATION_ID_MAP = {
-#     "12": "FRAME_PICK",
-#     "13": "FRAME_PLACE",
-# }
-#
-#
-# 현재는 임의의 DB ID를 만들지 않기 위해 비워둠.
-#
-# 대신 Backend가 parameters에:
-#
-# {
-#     "operation_code": "FRAME_PICK"
-# }
-#
-# 를 넣으면 이 Mapping 없이도 실행 가능.
-# =============================================================
-
-OPERATION_ID_MAP = {}
 
 
 class SolarPanelControllerNode(Node):
@@ -245,18 +227,84 @@ class SolarPanelControllerNode(Node):
         severity,
         code,
         message,
+        *,
+        work_execution_id=0,
+        operation_execution_id=0,
+        operation_code="",
+        phase="",
+        status="",
+        detail=None,
     ):
+        """
+        Controller -> /system_event 공통 이벤트 발행.
+
+        Operation과 무관한 초기화/Bridge 상태 이벤트는
+        기존처럼 severity/code/message만 넘겨도 된다.
+
+        Operation 관련 이벤트는 work_execution_id,
+        operation_execution_id, operation_code, phase, status를
+        함께 전달한다. detail은 JSON object 형태로 보낸다.
+        """
+        if detail is None:
+            detail_data = {}
+        elif isinstance(detail, dict):
+            detail_data = dict(detail)
+        else:
+            detail_data = {
+                "value": detail,
+            }
+
+        operation_code = str(operation_code).strip()
+        phase = str(phase).strip().upper()
+        status = str(status).strip().upper()
+
+        if operation_code:
+            detail_data.setdefault(
+                "operation_code",
+                operation_code,
+            )
+        if phase:
+            detail_data.setdefault(
+                "phase",
+                phase,
+            )
+        if status:
+            detail_data.setdefault(
+                "status",
+                status,
+            )
+
         msg = SystemEvent()
-        msg.robot_id = self.backend_robot_id
+        msg.robot_id = int(self.backend_robot_id)
+        msg.work_execution_id = int(
+            work_execution_id or 0
+        )
+        msg.operation_execution_id = int(
+            operation_execution_id or 0
+        )
+        msg.operation_code = operation_code
+        msg.phase = phase
+        msg.status = status
         msg.severity = int(severity)
         msg.code = str(code)
         msg.message = str(message)
+        msg.detail = json.dumps(
+            detail_data,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
 
         self.system_event_publisher.publish(msg)
 
         self.get_logger().info(
             f"[SYSTEM EVENT] "
             f"robot_id={msg.robot_id}, "
+            f"work_execution_id={msg.work_execution_id}, "
+            f"operation_execution_id="
+            f"{msg.operation_execution_id}, "
+            f"operation_code={msg.operation_code}, "
+            f"phase={msg.phase}, "
+            f"status={msg.status}, "
             f"severity={msg.severity}, "
             f"code={msg.code}, "
             f"message={msg.message}"
@@ -415,103 +463,33 @@ class SolarPanelControllerNode(Node):
 
 
     # =========================================================
-    # DB Operation ID -> Robot Operation Code 결정
+    # DB Operation Code 검증
     #
-    # 우선순위:
-    #
-    # 1. operation_id 자체가 FRAME_PICK 등의 Code
-    #    -> 기존 CLI 테스트 호환
-    #
-    # 2. parameters["operation_code"]
-    #    -> Bridge/Backend 권장 방식
-    #
-    # 3. OPERATION_ID_MAP
-    #    -> DB ID가 고정된 경우 사용
+    # operation_id는 DB 추적용, operation_code는 동작 선택용이다.
+    # Backend -> Bridge -> ExecuteOperation.operation_code 경로로
+    # DB의 operation.code(postA, postB, ...)를 그대로 전달한다.
     # =========================================================
 
     def resolve_operation_code(
         self,
-        operation_id,
-        parameters,
+        operation_code,
     ):
+        operation_code = str(
+            operation_code
+        ).strip()
 
-        operation_id = str(
-            operation_id
-        )
+        if not operation_code:
+            raise ValueError(
+                "operation_code가 비어 있습니다."
+            )
 
-        # -----------------------------------------------------
-        # 기존 직접 Action 테스트 호환
-        #
-        # operation_id="FRAME_PICK"
-        # -----------------------------------------------------
-
-        if (
-            operation_id
-            in SUPPORTED_OPERATION_CODES
-        ):
-
-            return operation_id
-
-        # -----------------------------------------------------
-        # Bridge Parameters에서 operation_code 확인
-        # -----------------------------------------------------
-
-        operation_code = parameters.get(
-            "operation_code"
-        )
-
-        if operation_code is not None:
-
-            operation_code = str(
-                operation_code
-            ).strip()
-
-            if (
-                operation_code
-                in SUPPORTED_OPERATION_CODES
-            ):
-
-                return operation_code
-
+        if operation_code not in SUPPORTED_OPERATION_CODES:
             raise ValueError(
                 "지원하지 않는 operation_code: "
                 f"{operation_code}"
             )
 
-        # -----------------------------------------------------
-        # DB Operation ID Mapping
-        # -----------------------------------------------------
-
-        mapped_code = OPERATION_ID_MAP.get(
-            operation_id
-        )
-
-        if mapped_code is not None:
-
-            if (
-                mapped_code
-                not in SUPPORTED_OPERATION_CODES
-            ):
-
-                raise ValueError(
-                    "OPERATION_ID_MAP에 잘못된 "
-                    f"Operation Code가 있습니다: "
-                    f"{mapped_code}"
-                )
-
-            return mapped_code
-
-        # -----------------------------------------------------
-        # Mapping 불가능
-        # -----------------------------------------------------
-
-        raise ValueError(
-            "DB operation_id를 Robot Operation으로 "
-            f"변환할 수 없습니다. "
-            f"operation_id={operation_id}. "
-            "Backend parameters에 operation_code를 "
-            "전달하거나 OPERATION_ID_MAP을 설정하세요."
-        )
+        return operation_code
 
 
     # =========================================================
@@ -528,6 +506,7 @@ class SolarPanelControllerNode(Node):
             f"work_order_id={goal_request.work_order_id}, "
             f"work_execution_id={goal_request.work_execution_id}, "
             f"operation_id={goal_request.operation_id}, "
+            f"operation_code={goal_request.operation_code}, "
             f"operation_execution_id={goal_request.operation_execution_id}, "
             f"robot_id={goal_request.robot_id}"
         )
@@ -550,6 +529,14 @@ class SolarPanelControllerNode(Node):
                 f"expected={self.backend_robot_id}, "
                 f"received={goal_request.robot_id}"
             )
+            return GoalResponse.REJECT
+
+        try:
+            self.resolve_operation_code(
+                goal_request.operation_code
+            )
+        except ValueError as e:
+            self.get_logger().warning(str(e))
             return GoalResponse.REJECT
 
         with self.operation_lock:
@@ -627,105 +614,68 @@ class SolarPanelControllerNode(Node):
         operation_code,
         parameters,
         components,
+        operation_context,
     ):
-
         if self.solar is None:
-
             raise RuntimeError(
                 "SolarMotion이 준비되지 않았습니다."
             )
 
-        # =====================================================
-        # Frame Pick
-        # =====================================================
-
-        if operation_code == "FRAME_PICK":
-
-            self.solar.pick_frame()
-
-        # =====================================================
-        # Frame Place
-        # =====================================================
-
-        elif operation_code == "FRAME_PLACE":
-
-            self.solar.place_frame()
-
-        # =====================================================
-        # Frame 전체 설치
-        # =====================================================
-
-        elif operation_code == "FRAME_INSTALL":
-
-            self.solar.install_frame()
-
-        # =====================================================
-        # Pin Pick
-        # =====================================================
-
-        elif operation_code == "PIN_PICK":
-
-            self.solar.pick_pin()
-
-        # =====================================================
-        # Pin Force Place
-        # =====================================================
-
-        elif operation_code == "PIN_PLACE":
-
-            self.solar.place_pin()
-
-        # =====================================================
-        # Pin 최종 삽입
-        # =====================================================
-
-        elif operation_code == "PIN_INSERT":
-
-            self.solar.insert_pin()
-
-        # =====================================================
-        # 전체 Pin 설치
-        # =====================================================
-
-        elif operation_code == "PIN_INSTALL":
-
-            self.solar.install_pin()
-
-        # =====================================================
-        # 전체 Solar 공정
-        # =====================================================
-
-        elif operation_code == "SOLAR_FULL":
-
-            self.solar.run()
-
-        # =====================================================
-        # 정의되지 않은 Operation
-        # =====================================================
-
-        else:
-
-            raise ValueError(
-                "지원하지 않는 Operation Code: "
-                f"{operation_code}"
+        # DB postA~postF는 모두 동일한 Post 설치 시퀀스를 사용한다.
+        # 어떤 Post인지(operation_code)와 어떤 실행인지
+        # (operation_execution_id)는 operation_context로 전달한다.
+        if operation_code in POST_OPERATION_CODES:
+            return self.solar.install_post(
+                parameters,
+                components,
+                operation_context=operation_context,
             )
 
-        # =====================================================
-        # parameters / components
-        #
-        # 현재 SolarMotion에서는 아직 직접 사용하지 않음.
-        #
-        # 이후:
-        #
-        # pose
-        # velocity
-        # acceleration
-        # force
-        # stiffness
-        # component
-        #
-        # 등을 SolarMotion에 전달할 수 있음.
-        # =====================================================
+        # 직접 Action 테스트용 세부 Post 동작.
+        if operation_code == "POST_PICK":
+            return self.solar.pick_post(
+                parameters,
+                components,
+                operation_context=operation_context,
+            )
+
+        if operation_code == "POST_PLACE":
+            return self.solar.place_post(
+                parameters,
+                components,
+                operation_context=operation_context,
+            )
+
+        if operation_code == "POST_INSTALL":
+            return self.solar.install_post(
+                parameters,
+                components,
+                operation_context=operation_context,
+            )
+
+        if operation_code == "PIN_PICK":
+            return self.solar.pick_pin()
+
+        if operation_code == "PIN_PLACE":
+            return self.solar.place_pin()
+
+        if operation_code == "PIN_INSERT":
+            return self.solar.insert_pin()
+
+        if operation_code == "PIN_INSTALL":
+            return self.solar.install_pin()
+
+        if operation_code == "SOLAR_FULL":
+            return self.solar.run(
+                parameters,
+                components,
+                operation_context=operation_context,
+            )
+
+        raise ValueError(
+            "지원하지 않는 Operation Code: "
+            f"{operation_code}"
+        )
 
 
     # =========================================================
@@ -742,6 +692,9 @@ class SolarPanelControllerNode(Node):
         work_order_id = int(request.work_order_id)
         work_execution_id = int(request.work_execution_id)
         operation_id = int(request.operation_id)
+        operation_code = self.resolve_operation_code(
+            request.operation_code
+        )
         operation_execution_id = int(
             request.operation_execution_id
         )
@@ -754,14 +707,20 @@ class SolarPanelControllerNode(Node):
             request.components
         )
 
+        operation_context = {
+            "work_order_id": work_order_id,
+            "work_execution_id": work_execution_id,
+            "operation_id": operation_id,
+            "operation_code": operation_code,
+            "operation_execution_id": (
+                operation_execution_id
+            ),
+            "robot_id": robot_id,
+        }
+
         result = ExecuteOperation.Result()
 
         try:
-            operation_code = self.resolve_operation_code(
-                operation_id,
-                parameters,
-            )
-
             self.get_logger().info(
                 "========== OPERATION START =========="
             )
@@ -793,6 +752,23 @@ class SolarPanelControllerNode(Node):
 
             self.set_status("RUNNING")
 
+            self.publish_system_event(
+                self.SEVERITY_INFO,
+                "OPERATION_STARTED",
+                f"[{operation_code}] Operation started",
+                work_execution_id=work_execution_id,
+                operation_execution_id=(
+                    operation_execution_id
+                ),
+                operation_code=operation_code,
+                phase="OPERATION",
+                status="STARTED",
+                detail={
+                    "work_order_id": work_order_id,
+                    "operation_id": operation_id,
+                },
+            )
+
             self.publish_feedback(
                 goal_handle,
                 operation_execution_id,
@@ -804,6 +780,7 @@ class SolarPanelControllerNode(Node):
                 operation_code,
                 parameters,
                 components,
+                operation_context,
             )
 
             self.publish_feedback(
@@ -828,7 +805,20 @@ class SolarPanelControllerNode(Node):
             self.publish_system_event(
                 self.SEVERITY_INFO,
                 "OPERATION_COMPLETED",
-                result.message,
+                f"[{operation_code}] "
+                "Operation completed successfully",
+                work_execution_id=work_execution_id,
+                operation_execution_id=(
+                    operation_execution_id
+                ),
+                operation_code=operation_code,
+                phase="OPERATION",
+                status="COMPLETED",
+                detail={
+                    "work_order_id": work_order_id,
+                    "operation_id": operation_id,
+                    "success": True,
+                },
             )
 
             self.set_status("READY")
@@ -872,7 +862,21 @@ class SolarPanelControllerNode(Node):
             self.publish_system_event(
                 self.SEVERITY_ERROR,
                 "OPERATION_FAILED",
-                error_message,
+                f"[{operation_code}] "
+                f"Operation failed: {error_message}",
+                work_execution_id=work_execution_id,
+                operation_execution_id=(
+                    operation_execution_id
+                ),
+                operation_code=operation_code,
+                phase="OPERATION",
+                status="FAILED",
+                detail={
+                    "work_order_id": work_order_id,
+                    "operation_id": operation_id,
+                    "success": False,
+                    "error": error_message,
+                },
             )
 
             self.set_status("ERROR")

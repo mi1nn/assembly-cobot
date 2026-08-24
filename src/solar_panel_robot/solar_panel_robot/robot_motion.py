@@ -269,8 +269,20 @@ class RobotMotion:
     def move_z(
         self,
         distance,
-        ref=DR_BASE
+        ref=DR_BASE,
+        velocity=None,
+        acc=None,
     ):
+        velocity = (
+            self.velocity
+            if velocity is None
+            else float(velocity)
+        )
+        acc = (
+            self.acc
+            if acc is None
+            else float(acc)
+        )
 
         movel(
             posx(
@@ -281,8 +293,8 @@ class RobotMotion:
                 0,
                 0,
             ),
-            vel=self.velocity,
-            acc=self.acc,
+            vel=velocity,
+            acc=acc,
             ref=ref,
             mod=DR_MV_MOD_REL,
         )
@@ -441,27 +453,38 @@ class RobotMotion:
     def pick(
         self,
         distance=50,
+        velocity=None,
+        acc=None,
     ):
+        velocity = (
+            self.velocity
+            if velocity is None
+            else float(velocity)
+        )
+        acc = (
+            self.acc
+            if acc is None
+            else float(acc)
+        )
 
         print(
             f"[PICK] "
-            f"velocity={self.velocity}, "
-            f"acc={self.acc}, "
+            f"velocity={velocity}, "
+            f"acc={acc}, "
             f"distance={distance}",
             flush=True,
         )
 
-        # 하강
         self.move_z(
-            -distance
+            -distance,
+            velocity=velocity,
+            acc=acc,
         )
-
-        # 파지
         self.grasp()
-
-        # 상승
         self.move_z(
-            distance
+            distance,
+            velocity=velocity,
+            acc=acc,
         )
 
         print(
@@ -499,14 +522,14 @@ class RobotMotion:
         9. 압입 Force 확인
         10. 2단계 Force 값 터미널 1회 출력
         11. Force / Compliance OFF
-        12. Gripper를 닫은 상태로 Frame Check 단계에 제어권 반환
+        12. Gripper를 닫은 상태로 Post Check 단계에 제어권 반환
 
         주의:
             Gripper Release와 BASE +Z 이탈은 이 함수에서 수행하지 않는다.
-            상위 SolarMotion.place_frame()에서 Frame Check 성공 후 수행한다.
+            상위 SolarMotion.install_post()에서 Frame Check 성공 후 수행한다.
 
         distance:
-            Frame Check 성공 후 사용할 권장 이탈 거리(mm).
+            Post Check 성공 후 사용할 권장 이탈 거리(mm).
             이 함수 내부에서는 상승하지 않고 값을 반환한다.
 
         search_limit_z:
@@ -1074,7 +1097,7 @@ class RobotMotion:
         # Place Force 단계 완료
         #
         # Frame Check가 끝날 때까지 Gripper는 닫힌 상태를 유지한다.
-        # Gripper Release와 BASE +Z 이탈은 SolarMotion.place_frame()
+        # Gripper Release와 BASE +Z 이탈은 SolarMotion.install_post()
         # 에서 Frame Check 성공 후 수행한다.
         # =====================================================
 
@@ -1084,7 +1107,7 @@ class RobotMotion:
         )
 
         print(
-            "[PLACE] Frame Check 단계 대기",
+            "[PLACE] Post Check 단계 대기",
             flush=True,
         )
 
@@ -1096,7 +1119,7 @@ class RobotMotion:
         force_threshold=50.0,
         velocity=10.0,
         acc=20.0,
-        label="FRAME CHECK",
+        label="POST CHECK",
     ):
         """
         TOOL Z 방향으로 최대 distance만큼 비동기 이동하면서
@@ -1112,7 +1135,7 @@ class RobotMotion:
 
         label:
             터미널 로그 구분용 이름.
-            예: "FRAME CHECK", "PIN INSERT"
+            예: "POST CHECK", "PIN INSERT"
 
         return:
             True  -> 이동 중 |F_tool_z| >= force_threshold 감지
