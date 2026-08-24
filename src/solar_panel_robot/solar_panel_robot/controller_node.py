@@ -33,9 +33,9 @@ OPERATION_ID_MAP = {
     "2": "FRAME_PLACE",
     "3": "FRAME_INSTALL",
     "4": "PIN_PICK",
-    "5": "PIN_INSERT_1",
-    "6": "PIN_INSERT_FINAL",
-    "7": "PIN_INSERT",
+    "5": "PIN_PLACE",
+    "6": "PIN_INSERT",
+    "7": "PIN_INSTALL",
     "8": "SOLAR_FULL",
 }
 
@@ -70,9 +70,9 @@ SUPPORTED_OPERATION_CODES = {
     "FRAME_PLACE",
     "FRAME_INSTALL",
     "PIN_PICK",
-    "PIN_INSERT_1",
-    "PIN_INSERT_FINAL",
+    "PIN_PLACE",
     "PIN_INSERT",
+    "PIN_INSTALL",
     "SOLAR_FULL",
 }
 
@@ -283,6 +283,32 @@ class SolarPanelControllerNode(Node):
 
         self.solar = SolarMotion(
             self
+        )
+
+        # =====================================================
+        # 초기 동작
+        #
+        # Controller가 READY 상태가 되기 전에:
+        # 1. Gripper Open
+        # 2. Home 이동
+        #
+        # 을 수행하여 초기 상태를 일정하게 맞춘다.
+        # =====================================================
+
+        self.get_logger().info(
+            "초기 Gripper Open"
+        )
+
+        self.solar.motion.release()
+
+        self.get_logger().info(
+            "초기 Home 이동"
+        )
+
+        self.solar.motion.move_home()
+
+        self.get_logger().info(
+            "초기 자세 설정 완료"
         )
 
         self.get_logger().info(
@@ -658,28 +684,28 @@ class SolarPanelControllerNode(Node):
             self.solar.pick_pin()
 
         # =====================================================
-        # Pin 1차 삽입
+        # Pin Force Place
         # =====================================================
 
-        elif operation_code == "PIN_INSERT_1":
+        elif operation_code == "PIN_PLACE":
 
-            self.solar.first_insert_pin()
+            self.solar.place_pin()
 
         # =====================================================
         # Pin 최종 삽입
         # =====================================================
 
-        elif operation_code == "PIN_INSERT_FINAL":
-
-            self.solar.final_insert_pin()
-
-        # =====================================================
-        # 전체 Pin 삽입
-        # =====================================================
-
         elif operation_code == "PIN_INSERT":
 
             self.solar.insert_pin()
+
+        # =====================================================
+        # 전체 Pin 설치
+        # =====================================================
+
+        elif operation_code == "PIN_INSTALL":
+
+            self.solar.install_pin()
 
         # =====================================================
         # 전체 Solar 공정
