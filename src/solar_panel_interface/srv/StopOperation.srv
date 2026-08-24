@@ -1,0 +1,11 @@
+# 강제 정지 기능 : 현재 작업 중인 로봇의 정지를 요청
+
+# Request
+uint64 work_execution_id
+uint64 operation_execution_id
+uint64 robot_id
+---
+# Response
+bool accepted
+string error_code
+string message
