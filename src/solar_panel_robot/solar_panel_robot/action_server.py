@@ -21,6 +21,17 @@ MOCK_FAIL_OPERATION_ID = (
     else None
 )
 
+mock_reject_operation_id = os.getenv(
+    "MOCK_REJECT_OPERATION_ID",
+    "",
+).strip()
+
+MOCK_REJECT_OPERATION_ID = (
+    int(mock_reject_operation_id)
+    if mock_reject_operation_id
+    else None
+)
+
 class ExecuteOperationServer(Node):
 
     def __init__(self):
@@ -66,6 +77,19 @@ class ExecuteOperationServer(Node):
             self.get_logger().warning(
                 "Goal contains an invalid ID."
             )
+            return GoalResponse.REJECT
+
+        if (
+            MOCK_REJECT_OPERATION_ID
+            and goal_request.operation_id
+            == MOCK_REJECT_OPERATION_ID
+        ):
+            self.get_logger().warning(
+                "Mock Goal rejection requested: "
+                f"operation_id="
+                f"{goal_request.operation_id}"
+            )
+
             return GoalResponse.REJECT
 
         for parameter in goal_request.parameters:

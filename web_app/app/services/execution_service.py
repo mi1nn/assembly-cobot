@@ -214,9 +214,9 @@ def get_robot_by_id(
 
 def mark_operation_running(
     operation_execution: OperationExecution,
-) -> None:
+) -> bool:
     if operation_execution.status == "RUNNING":
-        return
+        return False
 
     if operation_execution.status != "PENDING":
         raise ValueError(
@@ -225,12 +225,11 @@ def mark_operation_running(
         )
 
     operation_execution.status = "RUNNING"
-
-    operation_execution.start_time = (
-        datetime.now()
-    )
+    operation_execution.start_time = datetime.now()
 
     db.session.commit()
+
+    return True
 
 def mark_execution_submission_failed(
     work_execution: WorkExecution,

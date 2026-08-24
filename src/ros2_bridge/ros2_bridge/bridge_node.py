@@ -43,6 +43,7 @@ class Ros2BridgeNode(Node):
         self._status = "IDLE"
         self._last_job = None
         self._stopped_work_execution_ids = set()
+        self._accepted_work_execution_ids = set()
 
         self.create_timer(
             0.1,
@@ -56,7 +57,22 @@ class Ros2BridgeNode(Node):
     def enqueue_work(
         self,
         work: dict,
-    ) -> None:
+    ) -> bool:
+        work_execution_id = work[
+            "work_execution_id"
+        ]
+
+        with self._state_lock:
+            if (
+                work_execution_id
+                in self._accepted_work_execution_ids
+            ):
+                return False
+
+            self._accepted_work_execution_ids.add(
+                work_execution_id
+            )
+
         for operation in work["operations"]:
             job = {
                 "bridge_work_id": (
@@ -66,7 +82,7 @@ class Ros2BridgeNode(Node):
                     work["work_order_id"]
                 ),
                 "work_execution_id": (
-                    work["work_execution_id"]
+                    work_execution_id
                 ),
                 "robot_id": work["robot_id"],
                 "operation_execution_id": (
@@ -77,21 +93,19 @@ class Ros2BridgeNode(Node):
                 "operation_id": (
                     operation["operation_id"]
                 ),
-                "sequence": (
-                    operation["sequence"]
-                ),
+                "sequence": operation["sequence"],
                 "parameters": (
                     operation["parameters"]
                 ),
                 "components": (
                     operation["components"]
                 ),
-                "received_at": (
-                    work["received_at"]
-                ),
+                "received_at": work["received_at"],
             }
 
             self.job_queue.put(job)
+
+        return True
 
     def stop_current_work(
         self,
@@ -743,12 +757,17 @@ def create_http_app(
             ).isoformat(),
         }
 
-        node.enqueue_work(work)
+        newly_accepted = node.enqueue_work(
+            work
+        )
 
         return jsonify({
             "success": True,
             "data": {
                 "accepted": True,
+                "duplicate": (
+                    not newly_accepted
+                ),
                 "bridge_work_id": (
                     work["bridge_work_id"]
                 ),

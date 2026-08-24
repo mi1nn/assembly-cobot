@@ -161,7 +161,7 @@ CREATE TABLE IF NOT EXISTS log (
     work_execution_id BIGINT REFERENCES work_execution(work_execution_id),
     operation_execution_id BIGINT REFERENCES operation_execution(operation_execution_id),
     robot_id BIGINT REFERENCES robot(robot_id),
-    log_type VARCHAR(50) NOT NULL
+    log_type VARCHAR(50) NOT NULL,
     CONSTRAINT chk_log_type
     CHECK (log_type IN (
         'EVENT',
