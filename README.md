@@ -101,34 +101,87 @@ Flask Backend의 HTTP 요청을 큐에 쌓았다가 ROS2 Action Goal로 변환�
 
 ## 6. 빌드 및 실행
 
-### ROS2 워크스페이스
+전체 구성 요소(DB → Backend/Frontend → ROS2 Bridge/Controller → M0609 Virtual + rviz2)를 처음부터 띄우는 순서입니다. 터미널을 여러 개 열어 각 단계를 순서대로 실행하세요.
+
+### 6.1 PostgreSQL (DB)
 
 ```bash
-source /opt/ros/jazzy/setup.bash
-colcon build --symlink-install
-source install/setup.bash
+cd web_app
+cp .env.example .env             # DB_USER/DB_PASSWORD 등 접속정보를 채운다
 
-# 로봇 Controller (실제 장비 연동)
-ros2 run solar_panel_robot controller
-
-# ROS2 Bridge (Flask HTTP 서버 내장, 포트 8001)
-ros2 run ros2_bridge bridge_node
+./database/setup_db.sh --seed    # 스키마 생성 + 데모 시드 데이터 적용
 ```
 
-### Flask Backend
+`web_app/database/README.md`에 계정/권한(`grant.sql`) 및 초기화(`reset_db.sh`) 절차가 별도로 정리되어 있습니다.
+
+### 6.2 Flask Backend + Frontend
+
+Backend가 정적 프론트엔드도 같이 서빙하므로 별도 Frontend 서버는 필요 없습니다.
 
 ```bash
 cd web_app
 python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
 
-cp .env.example .env   # DB 접속정보, BRIDGE_BASE_URL 등을 채운다
-
 source .venv/bin/activate
-python run.py           # http://localhost:5000
+python run.py                    # http://localhost:5000 (API + Dashboard)
 ```
 
-상세 검증 절차는 `web_app/app/README.md`, `web_app/database/README.md`를 참조하세요.
+브라우저에서 `http://localhost:5000`에 접속하면 Work Order 대시보드가 보입니다. 상세 검증 절차는 `web_app/app/README.md`, `web_app/frontend/README.md`를 참조하세요.
+
+### 6.3 ROS2 워크스페이스 빌드
+
+```bash
+source /opt/ros/jazzy/setup.bash
+colcon build --symlink-install
+source install/setup.bash
+```
+
+### 6.4 M0609 Virtual 로봇 + rviz2
+
+Doosan이 제공하는 ROS2 패키지(`dsr_bringup2` 등, 이 저장소에는 포함되어 있지 않고 별도 설치가 필요합니다)로 가상 로봇을 띄웁니다. `namespace`/`model`은 `controller_node.py`의 `ROBOT_ID = "dsr01"`, `ROBOT_MODEL = "m0609"`와 반드시 일치해야 합니다.
+
+```bash
+source /opt/ros/jazzy/setup.bash
+source ~/ws_cobot_pjt/ws_dsr/install/setup.bash   # Doosan Robotics 패키지 워크스페이스
+
+ros2 launch dsr_bringup2 dsr_bringup2.launch.py \
+    mode:=virtual \
+    name:=dsr01 \
+    model:=m0609 \
+    host:=127.0.0.1 \
+    port:=12345
+```
+
+가상 로봇과 함께 rviz2가 자동으로 뜨지 않으면 별도 터미널에서 실행합니다.
+
+```bash
+rviz2
+```
+
+### 6.5 이 프로젝트의 Controller + Bridge
+
+가상 로봇이 떠 있는 상태에서 이 저장소의 `solar_panel_robot`/`ros2_bridge` 노드를 실행합니다.
+
+```bash
+ros2 launch solar_panel_robot solar_robot.launch.py \
+    robot_id:=1 \
+    backend_base_url:=http://127.0.0.1:5000
+```
+
+`controller` Action Server(`/dsr01/execute_operation`)와 `ros2_bridge`(Flask HTTP 서버, 포트 8001)가 함께 실행됩니다. `robot_id`는 6.2에서 접속한 DB의 `robot.robot_id`와 일치해야 합니다.
+
+### 6.6 로봇 조종 (Dashboard → rviz2)
+
+1. `http://localhost:5000` 대시보드에서 Work Order를 생성하고 `READY` 상태로 전환합니다.
+2. `robot_id`를 지정해 실행(`POST /<id>/execute`)하면 Backend → Bridge → Controller 순서로 Action Goal이 전달되고, 가상 로봇이 움직이는 모습을 rviz2에서 확인할 수 있습니다.
+3. 진행 상태는 대시보드의 `/<id>/progress` 조회 또는 각 터미널의 ROS2 로그(`[STATUS]`, `[IF-15]` 등)로 확인합니다.
+
+> ⚠️ **현재 알려진 제약**: `controller_node.py`가 `ExecuteOperation.action`의 최신 Feedback 스키마와 Operation 이름 체계에 맞춰져 있지 않아, 위 순서대로 실행해도 Goal 전달 이후 단계에서 실패할 수 있습니다 (§3 `src/solar_panel_robot` 하단 각주 참조). 통신 흐름만 먼저 검증하려면 6.5의 `controller` 대신 Mock Server를 띄우세요.
+>
+> ```bash
+> ros2 run solar_panel_robot action_server
+> ```
 
 ## 7. 문서
 
@@ -148,4 +201,4 @@ python run.py           # http://localhost:5000
 | `docs/architecture/시스템_구성도_및_작업순서_v2.md` | 실제 구현 기준 시스템 구성도 (최신) |
 | `docs/architecture/시스템_구성도_및_작업순서.md` | 초기 구상 초안 (참고용, 실제 구현과 다름) |
 
-> `docs/`는 `.gitignore`에 등록되어 있어 로컬에만 존재합니다 (§6 참조). `ws_backend/docs/TIL.md`(Step별 구현 기록)는 `ws_backend/` → `web_app/` 리네임 과정에서 사라졌습니다.
+> `docs/`는 `.gitignore`에 등록되어 있어 로컬에만 존재합니다. `ws_backend/docs/TIL.md`(Step별 구현 기록)는 `ws_backend/` → `web_app/` 리네임 과정에서 사라졌습니다.
