@@ -25,7 +25,6 @@ class SolarMotion:
         )
 
         from .robot_motion import RobotMotion
-        from .force_control import ForceController
         from .config_loader import PoseLoader
 
         self.movel = movel
@@ -35,7 +34,7 @@ class SolarMotion:
 
         self.config = PoseLoader()
         self.motion = RobotMotion()
-        self.force = ForceController()
+        self.force = self.motion.force
 
         # =====================================================
         # 현재 테스트용 좌표
@@ -154,10 +153,69 @@ class SolarMotion:
                 "Frame Place 시작"
             )
 
-            self.motion.place()
+            retreat_distance = self.motion.place()
 
             self.node.get_logger().info(
-                "Frame Place 완료"
+                "Frame Place Force 단계 완료 - Gripper 유지"
+            )
+
+            self.wait(0.5)
+
+            # =====================================================
+            # Frame 설치 확인
+            # =====================================================
+
+            self.node.get_logger().info(
+                "Frame 설치 상태 확인 시작"
+            )
+
+            check_result = self.check_frame(
+                distance=50.0,
+                force_threshold=50.0,
+            )
+
+            if not check_result:
+
+                self.node.get_logger().error(
+                    "[FRAME INSTALL][ERROR] Frame Check 실패 - "
+                    "현재 위치에서 작업을 중단합니다. "
+                    "Gripper는 파지 상태를 유지합니다."
+                )
+
+                raise FramePlaceError(
+                    "Frame Check 실패: 이동 범위 내 "
+                    f"|F_tool_z| >= 50.00N 미감지"
+                )
+
+            self.node.get_logger().info(
+                "Frame 설치 확인 성공"
+            )
+
+            self.wait(0.5)
+
+            # =====================================================
+            # 2단계 확인 완료 후 Gripper Release
+            # =====================================================
+
+            self.node.get_logger().info(
+                "2단계 확인 완료 -> Gripper Release"
+            )
+
+            self.motion.release()
+
+            self.wait(0.5)
+
+            # =====================================================
+            # Release 이후 BASE +Z 방향 안전 이탈
+            # =====================================================
+
+            self.node.get_logger().info(
+                f"Frame Release 완료 -> BASE +Z {retreat_distance}mm 이탈"
+            )
+
+            self.motion.move_z(
+                retreat_distance,
+                ref=self.DR_BASE,
             )
 
             self.wait(0.5)
@@ -175,6 +233,50 @@ class SolarMotion:
             raise FramePlaceError(
                 str(e)
             ) from e
+
+
+    # =========================================================
+    # Frame 설치 확인
+    # =========================================================
+
+    def check_frame(
+        self,
+        distance=50.0,
+        force_threshold=50.0,
+    ):
+
+        self.node.get_logger().info(
+            "========== FRAME CHECK START =========="
+        )
+
+        result = self.motion.check_force_move(
+            distance=distance,
+            force_threshold=force_threshold,
+            velocity=10.0,
+            acc=20.0,
+        )
+
+        if result:
+
+            self.node.get_logger().info(
+                "Frame Check 성공"
+            )
+
+            self.node.get_logger().info(
+                "========== FRAME CHECK COMPLETE =========="
+            )
+
+            return True
+
+        self.node.get_logger().error(
+            "Frame Check 실패"
+        )
+
+        self.node.get_logger().info(
+            "========== FRAME CHECK FAILED =========="
+        )
+
+        return False
 
 
     # =========================================================
