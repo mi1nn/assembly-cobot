@@ -293,7 +293,7 @@ def mark_execution_failed(
         current_time
     )
 
-    robot.status = "IDLE"
+    robot.status = "ERROR"
 
     db.session.commit()
 
@@ -330,7 +330,7 @@ def mark_execution_cancelled(
         pending_operation.status = "CANCELLED"
         pending_operation.end_time = current_time
 
-    robot.status = "IDLE"
+    robot.status = "ERROR"
 
     db.session.commit()
 
@@ -435,5 +435,66 @@ def mark_work_submission_failed(
             operation_execution.end_time = (
                 current_time
             )
+
+    db.session.commit()
+
+def mark_execution_force_stopped(
+    work_order: WorkOrder,
+    work_execution: WorkExecution,
+    operation_execution: OperationExecution,
+    robot: Robot,
+) -> None:
+    current_time = datetime.now()
+
+    work_order.status = "CANCELLED"
+
+    work_execution.status = "CANCELLED"
+    work_execution.end_time = current_time
+
+    if operation_execution.status in {
+        "PENDING",
+        "RUNNING",
+    }:
+        operation_execution.status = (
+            "CANCELLED"
+        )
+        operation_execution.end_time = (
+            current_time
+        )
+
+    pending_statement = (
+        db.select(OperationExecution)
+        .where(
+            OperationExecution.work_execution_id
+            == work_execution.work_execution_id,
+            OperationExecution.status
+            == "PENDING",
+        )
+    )
+
+    pending_operations = db.session.scalars(
+        pending_statement
+    ).all()
+
+    for pending_operation in pending_operations:
+        pending_operation.status = "CANCELLED"
+        pending_operation.end_time = current_time
+
+    # 강제 정지 이후에는 복구 전까지
+    # 새 Work를 실행하지 못하게 한다.
+    robot.status = "ERROR"
+
+    db.session.commit()
+
+def mark_robot_recovered(
+    robot: Robot,
+) -> None:
+    if robot.status != "ERROR":
+        raise ValueError(
+            "Only an ERROR Robot can "
+            "transition to IDLE."
+        )
+
+    robot.status = "IDLE"
 
     db.session.commit()

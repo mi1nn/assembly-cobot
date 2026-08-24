@@ -1,0 +1,7 @@
+# 강제 정지 이후 Robot 복구 요청
+
+uint64 robot_id
+---
+bool recovered
+string error_code
+string message
