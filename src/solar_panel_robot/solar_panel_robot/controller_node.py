@@ -16,6 +16,7 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from std_msgs.msg import String
 
 from solar_panel_interface.action import ExecuteOperation
+from solar_panel_interface.msg import SystemEvent
 
 import DR_init
 
@@ -28,16 +29,6 @@ ROBOT_ID = "dsr01"
 ROBOT_MODEL = "m0609"
 
 
-OPERATION_ID_MAP = {
-    "1": "FRAME_PICK",
-    "2": "FRAME_PLACE",
-    "3": "FRAME_INSTALL",
-    "4": "PIN_PICK",
-    "5": "PIN_PLACE",
-    "6": "PIN_INSERT",
-    "7": "PIN_INSTALL",
-    "8": "SOLAR_FULL",
-}
 
 
 # =============================================================
@@ -80,17 +71,7 @@ SUPPORTED_OPERATION_CODES = {
 # =============================================================
 # DB Operation ID -> Robot Operation Code
 #
-# Bridge는 DB의 operation_id를 숫자로 받고,
-# Controller에는 문자열로 전달함.
-#
-# 예:
-#
-# Backend:
-# operation_id = 12
-#
-# Bridge:
-# goal.operation_id = "12"
-#
+# Bridge는 DB의 operation_id를 uint64로 전달함.
 #
 # 실제 DB ID가 확정되면 아래에 등록 가능.
 #
@@ -118,10 +99,10 @@ OPERATION_ID_MAP = {}
 
 class SolarPanelControllerNode(Node):
 
-    SEVERITY_INFO = 0
-    SEVERITY_WARNING = 1
-    SEVERITY_ERROR = 2
-    SEVERITY_CRITICAL = 3
+    SEVERITY_INFO = SystemEvent.SEVERITY_INFO
+    SEVERITY_WARNING = SystemEvent.SEVERITY_WARNING
+    SEVERITY_ERROR = SystemEvent.SEVERITY_ERROR
+    SEVERITY_CRITICAL = SystemEvent.SEVERITY_CRITICAL
 
     def __init__(self):
 
@@ -177,8 +158,8 @@ class SolarPanelControllerNode(Node):
         )
 
         self.system_event_publisher = self.create_publisher(
-            String,
-            "system_event",
+            SystemEvent,
+            "/system_event",
             10,
         )
 
@@ -265,23 +246,20 @@ class SolarPanelControllerNode(Node):
         code,
         message,
     ):
-        event = {
-            "robot_id": self.backend_robot_id,
-            "severity": int(severity),
-            "code": str(code),
-            "message": str(message),
-        }
-
-        msg = String()
-        msg.data = json.dumps(
-            event,
-            ensure_ascii=False,
-        )
+        msg = SystemEvent()
+        msg.robot_id = self.backend_robot_id
+        msg.severity = int(severity)
+        msg.code = str(code)
+        msg.message = str(message)
 
         self.system_event_publisher.publish(msg)
 
         self.get_logger().info(
-            f"[SYSTEM EVENT] {msg.data}"
+            f"[SYSTEM EVENT] "
+            f"robot_id={msg.robot_id}, "
+            f"severity={msg.severity}, "
+            f"code={msg.code}, "
+            f"message={msg.message}"
         )
 
 
@@ -547,54 +525,43 @@ class SolarPanelControllerNode(Node):
 
         self.get_logger().info(
             f"[IF-14] Goal 요청 수신 "
-            f"work_order={goal_request.work_order_id}, "
-            f"operation_id={goal_request.operation_id}"
+            f"work_order_id={goal_request.work_order_id}, "
+            f"work_execution_id={goal_request.work_execution_id}, "
+            f"operation_id={goal_request.operation_id}, "
+            f"operation_execution_id={goal_request.operation_execution_id}, "
+            f"robot_id={goal_request.robot_id}"
         )
 
-        # =====================================================
-        # SolarMotion 준비 확인
-        # =====================================================
-
         if self.solar is None:
-
             self.get_logger().warning(
                 "Controller가 아직 준비되지 않았습니다."
             )
-
             return GoalResponse.REJECT
 
-        # =====================================================
-        # ERROR 상태에서는 새 작업 거부
-        # =====================================================
-
         if self.current_status == "ERROR":
-
             self.get_logger().warning(
                 "Controller가 ERROR 상태입니다."
             )
-
             return GoalResponse.REJECT
 
-        # =====================================================
-        # Operation 중복 실행 방지
-        # =====================================================
+        if int(goal_request.robot_id) != self.backend_robot_id:
+            self.get_logger().warning(
+                "Goal robot_id가 Controller robot_id와 다릅니다. "
+                f"expected={self.backend_robot_id}, "
+                f"received={goal_request.robot_id}"
+            )
+            return GoalResponse.REJECT
 
         with self.operation_lock:
-
             if self.operation_running:
-
                 self.get_logger().warning(
                     "현재 다른 Operation이 실행 중입니다."
                 )
-
                 return GoalResponse.REJECT
 
             self.operation_running = True
 
-        self.get_logger().info(
-            "Action Goal 수락"
-        )
-
+        self.get_logger().info("Action Goal 수락")
         return GoalResponse.ACCEPT
 
 
@@ -628,32 +595,26 @@ class SolarPanelControllerNode(Node):
     def publish_feedback(
         self,
         goal_handle,
-        operation,
+        operation_execution_id,
         status,
-        progress,
+        message,
     ):
 
         feedback = ExecuteOperation.Feedback()
-
-        feedback.current_operation = str(
-            operation
+        feedback.operation_execution_id = int(
+            operation_execution_id
         )
+        feedback.status = int(status)
+        feedback.message = str(message)
 
-        feedback.status = status
-
-        feedback.progress = float(
-            progress
-        )
-
-        goal_handle.publish_feedback(
-            feedback
-        )
+        goal_handle.publish_feedback(feedback)
 
         self.get_logger().info(
             f"[IF-15] "
-            f"operation={operation}, "
-            f"status={status}, "
-            f"progress={progress:.1f}%"
+            f"operation_execution_id="
+            f"{feedback.operation_execution_id}, "
+            f"status={feedback.status}, "
+            f"message={feedback.message}"
         )
 
 
@@ -778,103 +739,66 @@ class SolarPanelControllerNode(Node):
 
         request = goal_handle.request
 
-        # =====================================================
-        # Bridge에서 받은 원본 값
-        # =====================================================
+        work_order_id = int(request.work_order_id)
+        work_execution_id = int(request.work_execution_id)
+        operation_id = int(request.operation_id)
+        operation_execution_id = int(
+            request.operation_execution_id
+        )
+        robot_id = int(request.robot_id)
 
-        work_order_id = request.work_order_id
-
-        # 이 값은 DB의 Operation ID
-        operation_id = request.operation_id
-
-        # Parameter[] -> dict
         parameters = self.parse_parameters(
             request.parameters
         )
-
-        # =====================================================
-        # components
-        #
-        # Bridge 기준 ExecuteOperation.action에
-        # components 필드가 존재해야 함.
-        # =====================================================
-
-        components_raw = getattr(
-            request,
-            "components",
-            "",
-        )
-
         components = self.parse_components(
-            components_raw
+            request.components
         )
 
         result = ExecuteOperation.Result()
 
         try:
-
-            # =================================================
-            # Robot Operation Code 결정
-            # =================================================
-
-            operation_code = (
-                self.resolve_operation_code(
-                    operation_id,
-                    parameters,
-                )
+            operation_code = self.resolve_operation_code(
+                operation_id,
+                parameters,
             )
-
-            # =================================================
-            # 로그
-            # =================================================
 
             self.get_logger().info(
                 "========== OPERATION START =========="
             )
-
             self.get_logger().info(
-                f"Work Order ID       : "
-                f"{work_order_id}"
+                f"Work Order ID          : {work_order_id}"
             )
-
             self.get_logger().info(
-                f"DB Operation ID     : "
-                f"{operation_id}"
+                f"Work Execution ID      : {work_execution_id}"
             )
-
             self.get_logger().info(
-                f"Robot Operation Code: "
-                f"{operation_code}"
+                f"DB Operation ID        : {operation_id}"
             )
-
             self.get_logger().info(
-                f"Parameter 개수      : "
-                f"{len(parameters)}"
+                "Operation Execution ID : "
+                f"{operation_execution_id}"
             )
-
             self.get_logger().info(
-                f"Component 개수      : "
-                f"{len(components)}"
+                f"Robot ID               : {robot_id}"
+            )
+            self.get_logger().info(
+                f"Robot Operation Code   : {operation_code}"
+            )
+            self.get_logger().info(
+                f"Parameter 개수         : {len(parameters)}"
+            )
+            self.get_logger().info(
+                f"Component 개수         : {len(components)}"
             )
 
-            # =================================================
-            # RUNNING
-            # =================================================
-
-            self.set_status(
-                "RUNNING"
-            )
+            self.set_status("RUNNING")
 
             self.publish_feedback(
                 goal_handle,
-                operation_code,
-                "RUNNING",
-                0.0,
+                operation_execution_id,
+                ExecuteOperation.Feedback.STATUS_RUNNING,
+                f"{operation_code} started",
             )
-
-            # =================================================
-            # 실제 Robot 동작
-            # =================================================
 
             self.execute_operation(
                 operation_code,
@@ -882,30 +806,19 @@ class SolarPanelControllerNode(Node):
                 components,
             )
 
-            # =================================================
-            # DONE Feedback
-            # =================================================
-
             self.publish_feedback(
                 goal_handle,
-                operation_code,
-                "DONE",
-                100.0,
+                operation_execution_id,
+                ExecuteOperation.Feedback.STATUS_COMPLETED,
+                f"{operation_code} completed successfully",
             )
-
-            # =================================================
-            # Action 성공
-            # =================================================
 
             goal_handle.succeed()
 
             result.success = True
-
             result.error_code = ""
-
             result.message = (
-                f"{operation_code} "
-                "completed successfully"
+                f"{operation_code} completed successfully"
             )
 
             self.get_logger().info(
@@ -915,101 +828,58 @@ class SolarPanelControllerNode(Node):
             self.publish_system_event(
                 self.SEVERITY_INFO,
                 "OPERATION_COMPLETED",
-                f"{operation_code} completed successfully",
+                result.message,
             )
 
-            # =================================================
-            # 다음 작업 대기
-            # =================================================
-
-            self.set_status(
-                "READY"
-            )
-
+            self.set_status("READY")
             return result
 
-
         except Exception as e:
-
-            # =================================================
-            # Operation 실패
-            # =================================================
+            error_message = str(e)
 
             self.get_logger().error(
-                f"Operation 실행 오류: {e}"
+                f"Operation 실행 오류: {error_message}"
             )
 
-            # =================================================
-            # Force / Compliance 안전 해제
-            # =================================================
-
             if self.solar is not None:
-
                 try:
-
                     self.solar.force.all_off()
-
                 except Exception as force_error:
-
                     self.get_logger().error(
                         "Force 해제 오류: "
                         f"{force_error}"
                     )
 
-            # =================================================
-            # ERROR Feedback
-            # =================================================
-
             try:
-
                 self.publish_feedback(
                     goal_handle,
-                    str(operation_id),
-                    "ERROR",
-                    0.0,
+                    operation_execution_id,
+                    ExecuteOperation.Feedback.STATUS_FAILED,
+                    error_message,
                 )
-
-            except Exception:
-
-                pass
-
-            # =================================================
-            # Action 실패
-            # =================================================
+            except Exception as feedback_error:
+                self.get_logger().warning(
+                    "실패 Feedback 전송 오류: "
+                    f"{feedback_error}"
+                )
 
             goal_handle.abort()
 
             result.success = False
-
-            result.error_code = (
-                "OPERATION_FAILED"
-            )
-
-            result.message = str(
-                e
-            )
+            result.error_code = "OPERATION_FAILED"
+            result.message = error_message
 
             self.publish_system_event(
                 self.SEVERITY_ERROR,
                 "OPERATION_FAILED",
-                str(e),
+                error_message,
             )
 
-            self.set_status(
-                "ERROR"
-            )
-
+            self.set_status("ERROR")
             return result
 
-
         finally:
-
-            # =================================================
-            # 다음 Goal 허용
-            # =================================================
-
             with self.operation_lock:
-
                 self.operation_running = False
 
             self.get_logger().info(
