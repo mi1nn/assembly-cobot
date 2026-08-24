@@ -118,6 +118,11 @@ OPERATION_ID_MAP = {}
 
 class SolarPanelControllerNode(Node):
 
+    SEVERITY_INFO = 0
+    SEVERITY_WARNING = 1
+    SEVERITY_ERROR = 2
+    SEVERITY_CRITICAL = 3
+
     def __init__(self):
 
         super().__init__(
@@ -163,6 +168,17 @@ class SolarPanelControllerNode(Node):
         self.status_publisher = self.create_publisher(
             String,
             "status",
+            10,
+        )
+
+        self.declare_parameter("robot_id", 1)
+        self.backend_robot_id = int(
+            self.get_parameter("robot_id").value
+        )
+
+        self.system_event_publisher = self.create_publisher(
+            String,
+            "system_event",
             10,
         )
 
@@ -243,80 +259,87 @@ class SolarPanelControllerNode(Node):
         )
 
 
+    def publish_system_event(
+        self,
+        severity,
+        code,
+        message,
+    ):
+        event = {
+            "robot_id": self.backend_robot_id,
+            "severity": int(severity),
+            "code": str(code),
+            "message": str(message),
+        }
+
+        msg = String()
+        msg.data = json.dumps(
+            event,
+            ensure_ascii=False,
+        )
+
+        self.system_event_publisher.publish(msg)
+
+        self.get_logger().info(
+            f"[SYSTEM EVENT] {msg.data}"
+        )
+
+
     # =========================================================
     # Robot / Motion 준비
     # =========================================================
 
     def setup_components(self):
-
-        # 중요:
-        #
-        # DR_init.__dsr__node 설정 이후 호출되어야 함.
-        #
-        # DSR_ROBOT2를 사용하는 모듈은
-        # 이 시점 이후 import.
-
         from .robot_controller import RobotController
         from .solar_motion import SolarMotion
 
-        # =====================================================
-        # Robot 초기화
-        # =====================================================
+        self.set_status("INITIALIZING")
 
-        self.set_status(
-            "INITIALIZING"
-        )
-
-        self.robot = RobotController(
-            self
-        )
-
-        # Manual
-        # Tool
-        # TCP
-        # Auto
+        self.robot = RobotController(self)
         self.robot.initialize()
 
-        # =====================================================
-        # SolarMotion 생성
-        # =====================================================
-
-        self.solar = SolarMotion(
-            self
+        self.publish_system_event(
+            self.SEVERITY_INFO,
+            "ROBOT_INITIALIZED",
+            "Robot 초기 설정이 완료되었습니다.",
         )
 
-        # =====================================================
-        # 초기 동작
-        #
-        # Controller가 READY 상태가 되기 전에:
-        # 1. Gripper Open
-        # 2. Home 이동
-        #
-        # 을 수행하여 초기 상태를 일정하게 맞춘다.
-        # =====================================================
+        self.solar = SolarMotion(self)
 
-        self.get_logger().info(
-            "초기 Gripper Open"
-        )
+        try:
+            self.get_logger().info("초기 Gripper Open")
+            self.solar.motion.release()
+        except Exception as e:
+            self.get_logger().warning(
+                f"초기 Gripper Open 실패 - 계속 진행: {e}"
+            )
+            self.publish_system_event(
+                self.SEVERITY_WARNING,
+                "INITIAL_GRIPPER_OPEN_FAILED",
+                str(e),
+            )
 
-        self.solar.motion.release()
+        try:
+            self.get_logger().info("초기 Home 이동")
+            self.solar.motion.move_home()
+        except Exception as e:
+            self.get_logger().warning(
+                f"초기 Home 이동 실패 - 계속 진행: {e}"
+            )
+            self.publish_system_event(
+                self.SEVERITY_WARNING,
+                "INITIAL_HOME_FAILED",
+                str(e),
+            )
 
-        self.get_logger().info(
-            "초기 Home 이동"
-        )
+        self.get_logger().info("초기 자세 설정 완료")
+        self.get_logger().info("Robot 및 Solar Motion 준비 완료")
+        self.set_status("READY")
 
-        self.solar.motion.move_home()
-
-        self.get_logger().info(
-            "초기 자세 설정 완료"
-        )
-
-        self.get_logger().info(
-            "Robot 및 Solar Motion 준비 완료"
-        )
-
-        self.set_status(
-            "READY"
+        self.publish_system_event(
+            self.SEVERITY_INFO,
+            "ROBOT_READY",
+            "Robot controller is ready.",
         )
 
 
@@ -889,6 +912,12 @@ class SolarPanelControllerNode(Node):
                 "========== OPERATION COMPLETE =========="
             )
 
+            self.publish_system_event(
+                self.SEVERITY_INFO,
+                "OPERATION_COMPLETED",
+                f"{operation_code} completed successfully",
+            )
+
             # =================================================
             # 다음 작업 대기
             # =================================================
@@ -958,6 +987,12 @@ class SolarPanelControllerNode(Node):
 
             result.message = str(
                 e
+            )
+
+            self.publish_system_event(
+                self.SEVERITY_ERROR,
+                "OPERATION_FAILED",
+                str(e),
             )
 
             self.set_status(
@@ -1093,6 +1128,12 @@ def main(args=None):
 
         controller_node.get_logger().error(
             f"Controller 프로그램 오류: {e}"
+        )
+
+        controller_node.publish_system_event(
+            controller_node.SEVERITY_CRITICAL,
+            "CONTROLLER_STARTUP_FAILED",
+            str(e),
         )
 
         controller_node.set_status(
