@@ -15,7 +15,10 @@ from rclpy.node import Node
 from rclpy.action import ActionClient
 
 from solar_panel_interface.action import ExecuteOperation
-from solar_panel_interface.msg import Parameter
+from solar_panel_interface.msg import (
+    Parameter,
+    SystemEvent,
+)
 
 BRIDGE_HOST = "0.0.0.0"
 BRIDGE_PORT = 8001
@@ -26,6 +29,12 @@ BACKEND_BASE_URL = os.getenv(
 )
 BACKEND_CALLBACK_TIMEOUT = 3.0
 
+SYSTEM_EVENT_SEVERITIES = {
+    SystemEvent.SEVERITY_INFO: "INFO",
+    SystemEvent.SEVERITY_WARNING: "WARNING",
+    SystemEvent.SEVERITY_ERROR: "ERROR",
+    SystemEvent.SEVERITY_CRITICAL: "CRITICAL",
+}
 
 class Ros2BridgeNode(Node):
     def __init__(self):
@@ -44,6 +53,22 @@ class Ros2BridgeNode(Node):
         self._last_job = None
         self._stopped_work_execution_ids = set()
         self._accepted_work_execution_ids = set()
+        self.system_event_queue = Queue()
+
+        self.system_event_subscription = (
+            self.create_subscription(
+                SystemEvent,
+                "/system_event",
+                self.system_event_callback,
+                10,
+            )
+        )
+
+        self.system_event_thread = Thread(
+            target=self.process_system_events,
+            daemon=True,
+        )
+        self.system_event_thread.start()
 
         self.create_timer(
             0.1,
@@ -53,6 +78,112 @@ class Ros2BridgeNode(Node):
         self.get_logger().info(
             "ROS2 Bridge Node started."
         )
+
+    def system_event_callback(
+        self,
+        event: SystemEvent,
+    ) -> None:
+        severity = SYSTEM_EVENT_SEVERITIES.get(
+            event.severity
+        )
+
+        if severity is None:
+            self.get_logger().warning(
+                "Ignored SystemEvent with invalid "
+                f"severity: {event.severity}"
+            )
+            return
+
+        if event.robot_id <= 0:
+            self.get_logger().warning(
+                "Ignored SystemEvent with invalid "
+                f"robot_id: {event.robot_id}"
+            )
+            return
+
+        if not event.code.strip():
+            self.get_logger().warning(
+                "Ignored SystemEvent without code."
+            )
+            return
+
+        if not event.message.strip():
+            self.get_logger().warning(
+                "Ignored SystemEvent without message."
+            )
+            return
+
+        self.system_event_queue.put({
+            "robot_id": int(event.robot_id),
+            "severity": severity,
+            "code": event.code.strip(),
+            "message": event.message.strip(),
+        })
+
+
+    def process_system_events(self) -> None:
+        while True:
+            event = self.system_event_queue.get()
+
+            try:
+                self.notify_backend_system_event(
+                    event
+                )
+
+            except Exception as error:
+                self.get_logger().error(
+                    "Could not forward SystemEvent "
+                    f"to Backend: {error}"
+                )
+
+            finally:
+                self.system_event_queue.task_done()
+
+    def notify_backend_system_event(
+        self,
+        event: dict,
+    ) -> dict:
+        callback_url = (
+            f"{BACKEND_BASE_URL}/api/v1/logs"
+        )
+
+        request_data = {
+            "robot_id": event["robot_id"],
+            "log_type": "ROBOT",
+            "severity": event["severity"],
+            "code": event["code"],
+            "message": event["message"],
+        }
+
+        response = requests.post(
+            callback_url,
+            json=request_data,
+            timeout=BACKEND_CALLBACK_TIMEOUT,
+        )
+
+        if response.status_code != 201:
+            raise RuntimeError(
+                "Backend SystemEvent callback "
+                "failed with "
+                f"HTTP {response.status_code}: "
+                f"{response.text}"
+            )
+
+        try:
+            response_data = response.json()
+
+        except ValueError as error:
+            raise RuntimeError(
+                "Backend SystemEvent callback "
+                "returned invalid JSON."
+            ) from error
+
+        if not response_data.get("success"):
+            raise RuntimeError(
+                "Backend rejected SystemEvent."
+            )
+
+        return response_data
 
     def enqueue_work(
         self,
