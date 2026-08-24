@@ -1,6 +1,7 @@
 "use strict";
 
 const WORK_ORDER_POLL_INTERVAL_MS = 3000;
+const LOGS_API_URL = "/api/v1/logs";
 
 const WORK_ORDERS_API_URL =
     "/api/v1/work-orders";
@@ -18,9 +19,19 @@ document.addEventListener(
                 "work-order-form",
             );
 
+        const historyRefreshButton =
+            document.getElementById(
+                "history-refresh-button",
+            );
+
         refreshButton.addEventListener(
             "click",
             () => loadWorkOrders(true),
+        );
+
+        historyRefreshButton.addEventListener(
+            "click",
+            () => loadSystemLogs(true),
         );
 
         workOrderForm.addEventListener(
@@ -29,9 +40,13 @@ document.addEventListener(
         );
 
         loadWorkOrders();
+        loadSystemLogs();
 
         window.setInterval(
-            () => loadWorkOrders(false),
+            () => {
+                loadWorkOrders(false);
+                loadSystemLogs(false);
+            },
             WORK_ORDER_POLL_INTERVAL_MS,
         );
     },
@@ -668,4 +683,152 @@ async function handleWorkExecution(
         button.textContent =
             originalText;
     }
+}
+
+async function loadSystemLogs(
+    showLoading = true,
+) {
+    const listElement =
+        document.getElementById(
+            "history-list",
+        );
+
+    const refreshButton =
+        document.getElementById(
+            "history-refresh-button",
+        );
+
+    if (showLoading) {
+        listElement.textContent =
+            "로그를 불러오는 중입니다.";
+    }
+
+    refreshButton.disabled = true;
+
+    try {
+        const response = await fetch(
+            `${LOGS_API_URL}?limit=100`,
+            {
+                headers: {
+                    "Accept": "application/json",
+                },
+            },
+        );
+
+        const responseData =
+            await response.json();
+
+        if (
+            !response.ok
+            || !responseData.success
+        ) {
+            throw new Error(
+                responseData.error?.message
+                ?? "로그 조회에 실패했습니다.",
+            );
+        }
+
+        renderSystemLogs(responseData.data);
+    } catch (error) {
+        console.error(
+            "Failed to load system logs:",
+            error,
+        );
+
+        listElement.textContent =
+            "로그를 불러오지 못했습니다.";
+    } finally {
+        refreshButton.disabled = false;
+    }
+}
+
+function renderSystemLogs(logs) {
+    const listElement =
+        document.getElementById(
+            "history-list",
+        );
+
+    listElement.replaceChildren();
+
+    if (!Array.isArray(logs)) {
+        listElement.textContent =
+            "올바르지 않은 로그 응답입니다.";
+        return;
+    }
+
+    if (logs.length === 0) {
+        listElement.textContent =
+            "저장된 로그가 없습니다.";
+        return;
+    }
+
+    for (const log of logs) {
+        const item =
+            document.createElement("article");
+
+        item.className = "history-item";
+        item.dataset.severity =
+            log.severity ?? "INFO";
+
+        const header =
+            document.createElement("div");
+
+        header.className = "history-header";
+
+        const code =
+            document.createElement("strong");
+
+        code.textContent =
+            log.code ?? log.log_type ?? "LOG";
+
+        const timestamp =
+            document.createElement("time");
+
+        timestamp.textContent =
+            formatLogTimestamp(log.timestamp);
+
+        header.append(code, timestamp);
+
+        const message =
+            document.createElement("p");
+
+        message.textContent =
+            log.message ?? "-";
+
+        const metadata =
+            document.createElement("small");
+
+        metadata.textContent = [
+            log.log_type,
+            log.severity,
+            log.robot_id
+                ? `Robot ${log.robot_id}`
+                : null,
+            log.operation_execution_id
+                ? `Operation Execution ${log.operation_execution_id}`
+                : null,
+        ].filter(Boolean).join(" · ");
+
+        item.append(
+            header,
+            message,
+            metadata,
+        );
+
+        listElement.appendChild(item);
+    }
+}
+
+function formatLogTimestamp(value) {
+    if (!value) {
+        return "-";
+    }
+
+    const timestamp = new Date(value);
+
+    if (Number.isNaN(timestamp.getTime())) {
+        return value;
+    }
+
+    return timestamp.toLocaleString("ko-KR");
 }
