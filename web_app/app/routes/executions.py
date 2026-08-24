@@ -3,6 +3,7 @@ from flask import Blueprint, jsonify, request
 from app.extensions import db
 from app.models import Robot, WorkOrder
 
+from app.services.log_service import create_system_log
 from app.services.execution_service import (
     get_next_pending_operation_execution,
     get_operation_execution_by_id,
@@ -164,8 +165,10 @@ def receive_action_feedback():
 
     if status_name == "RUNNING":
         try:
-            mark_operation_running(
-                operation_execution
+            operation_started = (
+                mark_operation_running(
+                    operation_execution
+                )
             )
 
         except ValueError as error:
@@ -179,6 +182,28 @@ def receive_action_feedback():
                     "message": str(error),
                 },
             }), 409
+
+        if operation_started:
+            create_system_log(
+                log_type="EVENT",
+                severity="INFO",
+                code="OPERATION_STARTED",
+                message=(
+                    request_data.get("message")
+                    or "Operation started."
+                ),
+                work_execution_id=(
+                    work_execution.work_execution_id
+                ),
+                operation_execution_id=(
+                    operation_execution
+                    .operation_execution_id
+                ),
+                robot_id=work_execution.robot_id,
+                detail={
+                    "feedback_status": status_name,
+                },
+            )
 
     return jsonify({
         "success": True,
@@ -441,6 +466,32 @@ def receive_action_result():
             robot=robot,
         )
 
+        error_code = (
+            request_data.get("error_code")
+            or "OPERATION_FAILED"
+        )
+
+        create_system_log(
+            log_type="ERROR",
+            severity="ERROR",
+            code=error_code,
+            message=(
+                request_data.get("message")
+                or "Operation failed."
+            ),
+            work_execution_id=(
+                work_execution.work_execution_id
+            ),
+            operation_execution_id=(
+                operation_execution
+                .operation_execution_id
+            ),
+            robot_id=work_execution.robot_id,
+            detail={
+                "action_success": False,
+            },
+        )
+
         return jsonify({
             "success": True,
             "data": {
@@ -472,6 +523,27 @@ def receive_action_result():
     # 현재 Operation만 완료 처리한다.
     mark_operation_completed(
         operation_execution
+    )
+
+    create_system_log(
+        log_type="EVENT",
+        severity="INFO",
+        code="OPERATION_COMPLETED",
+        message=(
+            request_data.get("message")
+            or "Operation completed."
+        ),
+        work_execution_id=(
+            work_execution.work_execution_id
+        ),
+        operation_execution_id=(
+            operation_execution
+            .operation_execution_id
+        ),
+        robot_id=work_execution.robot_id,
+        detail={
+            "action_success": True,
+        },
     )
 
     next_operation_execution = (
