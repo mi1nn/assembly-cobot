@@ -238,11 +238,8 @@ class ForceController:
             flush=True,
         )
 
-        # 기준 좌표계 설정
-        set_ref_coord(
-            self.REFERENCE_MAP[reference]
-        )
-
+        # 기준 좌표계는 compliance_on()에서 설정한 값을 유지한다.
+        # Compliance 활성화 이후 set_ref_coord()를 다시 호출하지 않는다.
         result = set_desired_force(
             fd=desired_force,
             dir=direction,

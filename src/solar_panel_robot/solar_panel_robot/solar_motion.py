@@ -10,6 +10,22 @@ class FramePlaceError(Exception):
     pass
 
 
+# =========================================================
+# Pin 작업 예외
+# =========================================================
+
+class PinPickError(Exception):
+    pass
+
+
+class PinPlaceError(Exception):
+    pass
+
+
+class PinInsertError(Exception):
+    pass
+
+
 class SolarMotion:
 
     def __init__(self, node):
@@ -25,7 +41,6 @@ class SolarMotion:
         )
 
         from .robot_motion import RobotMotion
-        from .force_control import ForceController
         from .config_loader import PoseLoader
 
         self.movel = movel
@@ -35,33 +50,12 @@ class SolarMotion:
 
         self.config = PoseLoader()
         self.motion = RobotMotion()
-        self.force = ForceController()
+        self.force = self.motion.force
 
         # =====================================================
         # 현재 테스트용 좌표
         # 추후 DB에서 전달받는 구조로 변경 예정
         # =====================================================
-
-        # Lock Pin 관련 좌표
-        self.start = posx(
-            self.config.get("start")["position"]
-        )
-
-        self.a = posx(
-            self.config.get("a")["position"]
-        )
-
-        self.b = posx(
-            self.config.get("b")["position"]
-        )
-
-        self.c = posx(
-            self.config.get("c")["position"]
-        )
-
-        self.d = posx(
-            self.config.get("d")["position"]
-        )
 
         # Frame 관련 좌표
         self.frame_pick = posx(
@@ -70,6 +64,15 @@ class SolarMotion:
 
         self.frame_place = posx(
             self.config.get("frame_place")["position"]
+        )
+
+        # Pin 관련 좌표
+        self.pin_pick = posx(
+            self.config.get("pin_pick")["position"]
+        )
+
+        self.pin_place = posx(
+            self.config.get("pin_place")["position"]
         )
 
 
@@ -154,10 +157,68 @@ class SolarMotion:
                 "Frame Place 시작"
             )
 
-            self.motion.place()
+            retreat_distance = self.motion.place()
 
             self.node.get_logger().info(
-                "Frame Place 완료"
+                "Frame Place Force 단계 완료 - Gripper 유지"
+            )
+
+            self.wait(0.5)
+
+            # =====================================================
+            # Frame 설치 확인
+            # =====================================================
+
+            self.node.get_logger().info(
+                "Frame 설치 상태 확인 시작"
+            )
+
+            check_result = self.check_frame(
+                distance=50.0,
+                force_threshold=50.0,
+            )
+
+            if not check_result:
+
+                self.node.get_logger().error(
+                    "[FRAME INSTALL][ERROR] Frame Check 실패 - "
+                    "현재 위치에서 작업을 중단합니다. "
+                    "Gripper는 파지 상태를 유지합니다."
+                )
+
+                raise FramePlaceError(
+                    "Frame 설치 확인 실패"
+                )
+
+            self.node.get_logger().info(
+                "Frame 설치 확인 성공"
+            )
+
+            self.wait(0.5)
+
+            # =====================================================
+            # 2단계 확인 완료 후 Gripper Release
+            # =====================================================
+
+            self.node.get_logger().info(
+                "2단계 확인 완료 -> Gripper Release"
+            )
+
+            self.motion.release()
+
+            self.wait(0.5)
+
+            # =====================================================
+            # Release 이후 BASE +Z 방향 안전 이탈
+            # =====================================================
+
+            self.node.get_logger().info(
+                f"Frame Release 완료 -> BASE +Z {retreat_distance}mm 이탈"
+            )
+
+            self.motion.move_z(
+                retreat_distance,
+                ref=self.DR_BASE,
             )
 
             self.wait(0.5)
@@ -175,6 +236,51 @@ class SolarMotion:
             raise FramePlaceError(
                 str(e)
             ) from e
+
+
+    # =========================================================
+    # Frame 설치 확인
+    # =========================================================
+
+    def check_frame(
+        self,
+        distance=50.0,
+        force_threshold=50.0,
+    ):
+
+        self.node.get_logger().info(
+            "========== FRAME CHECK START =========="
+        )
+
+        result = self.motion.check_force_move(
+            distance=distance,
+            force_threshold=force_threshold,
+            velocity=10.0,
+            acc=20.0,
+            label="FRAME CHECK",
+        )
+
+        if result:
+
+            self.node.get_logger().info(
+                "Frame Check 성공"
+            )
+
+            self.node.get_logger().info(
+                "========== FRAME CHECK COMPLETE =========="
+            )
+
+            return True
+
+        self.node.get_logger().error(
+            "Frame Check 실패"
+        )
+
+        self.node.get_logger().info(
+            "========== FRAME CHECK FAILED =========="
+        )
+
+        return False
 
 
     # =========================================================
@@ -221,334 +327,291 @@ class SolarMotion:
 
 
     # =========================================================
-    # Lock Pin Pick
+    # Pin Pick
     # =========================================================
 
-    def pick_pin(self):
+    def pick_pin(
+        self,
+        approach_height=180.0,
+    ):
 
         self.node.get_logger().info(
             "========== PIN PICK START =========="
         )
 
-        self.node.get_logger().info(
-            "Pin Pick 대기 위치 이동"
-        )
-
-        self.movel(
-            self.a,
-            vel=self.motion.velocity,
-            acc=self.motion.acc,
-            ref=self.DR_BASE,
-        )
-
-        self.wait(0.5)
-
-        self.node.get_logger().info(
-            "Pin Pick 시작"
-        )
-
-        self.motion.pick()
-
-        self.node.get_logger().info(
-            "Pin Pick 완료"
-        )
-
-        self.wait(0.5)
-
-        self.node.get_logger().info(
-            "========== PIN PICK COMPLETE =========="
-        )
-
-
-    # =========================================================
-    # Lock Pin 1차 삽입
-    # =========================================================
-
-    def first_insert_pin(self):
-
-        self.node.get_logger().info(
-            "========== FIRST PIN INSERT START =========="
-        )
-
-        # -----------------------------------------------------
-        # Hole Front까지 Arc 이동
-        # -----------------------------------------------------
-
-        self.node.get_logger().info(
-            "Hole Front Arc 이동 시작"
-        )
-
-        self.motion.move_arc(
-            self.start,
-            self.b,
-            height=100,
-            steps=6,
-        )
-
-        self.node.get_logger().info(
-            "Hole Front Arc 이동 완료"
-        )
-
-        self.wait(1.0)
-
-        # -----------------------------------------------------
-        # Compliance ON
-        # -----------------------------------------------------
-
-        self.node.get_logger().info(
-            "1차 삽입 Compliance ON"
-        )
-
-        self.force.compliance_on(
-            stiffness={
-                "x": 300,
-                "y": 8000,
-                "z": 8000,
-                "a": 800,
-                "b": 800,
-                "c": 800,
-            },
-            reference="base",
-        )
-
-        self.wait(1.0)
-
-        # -----------------------------------------------------
-        # Force ON
-        # -----------------------------------------------------
-
-        self.node.get_logger().info(
-            "1차 삽입 Force ON"
-        )
-
-        self.force.force_on(
-            forces={
-                "x": 40,
-            },
-            mode="relative",
-            reference="base",
-        )
-
-        # -----------------------------------------------------
-        # 1차 삽입 위치 확인
-        # -----------------------------------------------------
-
-        while True:
-
-            current_pos, _ = self.get_current_posx(
-                ref=self.DR_BASE
+        try:
+            # pin_pick은 실제 파지 위치로 사용한다.
+            # 먼저 BASE +Z approach_height 위의 대기 위치로 이동한 뒤
+            # RobotMotion.pick()으로 하강 -> 파지 -> 상승한다.
+            _, pin_ready = self.motion.make_target_ready(
+                "pin_pick",
+                approach_height,
             )
-
-            current_x = current_pos[0]
-            target_x = self.b[0]
 
             self.node.get_logger().info(
-                f"[1차 삽입] "
-                f"current_x={current_x:.2f}, "
-                f"target_x={target_x:.2f}"
+                f"Pin Pick 대기 위치 이동 - target 위 {approach_height}mm"
             )
 
-            if current_x >= target_x + 40:
-
-                self.node.get_logger().info(
-                    "1차 삽입 목표 위치 도달"
-                )
-
-                break
-
-            self.wait(0.05)
-
-        # -----------------------------------------------------
-        # Force OFF
-        # -----------------------------------------------------
-
-        self.force.force_off()
-
-        self.wait(0.3)
-
-        # -----------------------------------------------------
-        # Compliance OFF
-        # -----------------------------------------------------
-
-        self.force.compliance_off()
-
-        self.wait(0.5)
-
-        self.node.get_logger().info(
-            "========== FIRST PIN INSERT COMPLETE =========="
-        )
-
-
-    # =========================================================
-    # Lock Pin 최종 삽입
-    # =========================================================
-
-    def final_insert_pin(self):
-
-        self.node.get_logger().info(
-            "========== FINAL PIN INSERT START =========="
-        )
-
-        # -----------------------------------------------------
-        # 기존 파지 해제
-        # -----------------------------------------------------
-
-        self.node.get_logger().info(
-            "Pin Release"
-        )
-
-        self.motion.release()
-
-        self.wait(0.5)
-
-        # -----------------------------------------------------
-        # 재파지 위치 이동
-        # -----------------------------------------------------
-
-        self.node.get_logger().info(
-            "Pin 재파지 위치 이동"
-        )
-
-        self.movel(
-            self.c,
-            vel=50,
-            acc=100,
-            ref=self.DR_BASE,
-        )
-
-        self.wait(1.0)
-
-        # -----------------------------------------------------
-        # 다시 파지
-        # -----------------------------------------------------
-
-        self.node.get_logger().info(
-            "Pin Re-Grasp"
-        )
-
-        self.motion.grasp()
-
-        self.wait(0.5)
-
-        # -----------------------------------------------------
-        # Compliance ON
-        # -----------------------------------------------------
-
-        self.node.get_logger().info(
-            "최종 삽입 Compliance ON"
-        )
-
-        self.force.compliance_on(
-            stiffness={
-                "x": 500,
-                "y": 500,
-                "z": 500,
-                "a": 100,
-                "b": 100,
-                "c": 100,
-            },
-            reference="base",
-        )
-
-        self.wait(1.0)
-
-        # -----------------------------------------------------
-        # Force ON
-        # -----------------------------------------------------
-
-        self.node.get_logger().info(
-            "최종 삽입 Force ON"
-        )
-
-        self.force.force_on(
-            forces={
-                "x": 40,
-            },
-            mode="relative",
-            reference="base",
-        )
-
-        # -----------------------------------------------------
-        # 최종 삽입 위치 확인
-        # -----------------------------------------------------
-
-        while True:
-
-            current_pos, _ = self.get_current_posx(
-                ref=self.DR_BASE
+            self.movel(
+                pin_ready,
+                vel=self.motion.velocity,
+                acc=self.motion.acc,
+                ref=self.DR_BASE,
             )
 
-            current_x = current_pos[0]
-            target_x = self.d[0]
+            self.wait(0.5)
 
             self.node.get_logger().info(
-                f"[최종 삽입] "
-                f"current_x={current_x:.2f}, "
-                f"target_x={target_x:.2f}"
+                "Pin Pick 시작"
             )
 
-            if current_x >= target_x:
+            self.motion.pick(
+                distance=approach_height
+            )
 
-                self.node.get_logger().info(
-                    "최종 삽입 목표 위치 도달"
-                )
+            self.node.get_logger().info(
+                "Pin Pick 완료"
+            )
 
-                break
+            self.wait(0.5)
 
-            self.wait(0.05)
+            self.node.get_logger().info(
+                "========== PIN PICK COMPLETE =========="
+            )
 
-        # -----------------------------------------------------
-        # Force OFF
-        # -----------------------------------------------------
+        except Exception as e:
+            self.node.get_logger().error(
+                f"Pin Pick 실패: {e}"
+            )
 
-        self.force.force_off()
-
-        self.wait(0.3)
-
-        # -----------------------------------------------------
-        # Compliance OFF
-        # -----------------------------------------------------
-
-        self.force.compliance_off()
-
-        self.wait(0.5)
-
-        # -----------------------------------------------------
-        # 최종 Pin Release
-        # -----------------------------------------------------
-
-        self.node.get_logger().info(
-            "최종 Pin Release"
-        )
-
-        self.motion.release()
-
-        self.wait(0.5)
-
-        self.node.get_logger().info(
-            "========== FINAL PIN INSERT COMPLETE =========="
-        )
+            raise PinPickError(
+                str(e)
+            ) from e
 
 
     # =========================================================
-    # 전체 Lock Pin 삽입 공정
+    # Pin Force Place
     # =========================================================
 
-    def insert_pin(self):
+    def place_pin(self):
+
+        self.node.get_logger().info(
+            "========== PIN PLACE START =========="
+        )
+
+        try:
+            self.node.get_logger().info(
+                "Pin Place 대기 위치 이동"
+            )
+
+            self.movel(
+                self.pin_place,
+                vel=self.motion.velocity,
+                acc=self.motion.acc,
+                ref=self.DR_BASE,
+            )
+
+            self.wait(0.5)
+
+            self.node.get_logger().info(
+                "Pin Force Place 시작"
+            )
+
+            # Frame과 동일한 Force Place 사용
+            # 1단계: baseline 대비 |Delta Fz| >= 20N 접촉
+            # 압입: Desired Force / insert_force 확인
+            # 종료 후에도 Gripper는 닫힌 상태를 유지한다.
+            retreat_distance = self.motion.place()
+
+            self.node.get_logger().info(
+                "Pin Force Place 완료 - Gripper 유지"
+            )
+
+            self.wait(0.5)
+
+            self.node.get_logger().info(
+                "========== PIN PLACE COMPLETE =========="
+            )
+
+            return retreat_distance
+
+        except Exception as e:
+            self.node.get_logger().error(
+                f"Pin Place 실패: {e}"
+            )
+
+            raise PinPlaceError(
+                str(e)
+            ) from e
+
+
+    # =========================================================
+    # Pin 최종 삽입
+    # =========================================================
+
+    def insert_pin(
+        self,
+        lift_distance=50.0,
+        insert_distance=50.0,
+        force_threshold=50.0,
+    ):
+        """
+        Force Place가 끝난 Pin을 최종 삽입한다.
+
+        순서:
+            1. Pin Release
+            2. BASE +Z로 lift_distance 상승
+            3. 빈 Gripper Close
+            4. Frame Check와 동일한 방식으로 TOOL Z 방향 이동
+            5. 이동 중 실제 |F_tool_z| >= force_threshold이면 즉시 정지/성공
+            6. 최대 거리까지 미감지 시 현재 위치에서 ERROR/실패
+
+        현재 frame_place / pin_place 자세와 동일하게
+        TOOL +Z가 물리적인 하강 방향이라는 전제로
+        insert_distance는 +값을 사용한다.
+        """
 
         self.node.get_logger().info(
             "========== PIN INSERT START =========="
         )
 
-        self.pick_pin()
+        try:
+            # -------------------------------------------------
+            # 1. Force Place 후 Pin 내려놓기
+            # -------------------------------------------------
 
-        self.first_insert_pin()
+            self.node.get_logger().info(
+                "Pin Release"
+            )
 
-        self.final_insert_pin()
+            self.motion.release()
+            self.wait(0.5)
+
+            # -------------------------------------------------
+            # 2. BASE +Z 50mm 상승
+            # -------------------------------------------------
+
+            self.node.get_logger().info(
+                f"Pin 상부로 BASE +Z {lift_distance}mm 이동"
+            )
+
+            self.motion.move_z(
+                lift_distance,
+                ref=self.DR_BASE,
+            )
+
+            self.wait(0.5)
+
+            # -------------------------------------------------
+            # 3. 빈 Gripper Close
+            # -------------------------------------------------
+
+            self.node.get_logger().info(
+                "Pin 삽입용 Gripper Close"
+            )
+
+            self.motion.grasp()
+            self.wait(0.5)
+
+            # -------------------------------------------------
+            # 4. 아래 방향 이동 + 실제 Force 확인
+            # -------------------------------------------------
+
+            self.node.get_logger().info(
+                f"Pin 삽입 Force Check 시작 - "
+                f"distance={insert_distance}mm, "
+                f"threshold={force_threshold}N"
+            )
+
+            insert_result = self.motion.check_force_move(
+                distance=insert_distance,
+                force_threshold=force_threshold,
+                velocity=10.0,
+                acc=20.0,
+                label="PIN INSERT",
+            )
+
+            if not insert_result:
+                self.node.get_logger().error(
+                    "[PIN INSERT][ERROR] Force threshold 미감지 - "
+                    "현재 위치에서 작업을 중단합니다."
+                )
+
+                raise PinInsertError(
+                    "Pin 최종 삽입 확인 실패"
+                )
+
+            self.node.get_logger().info(
+                "Pin 최종 삽입 성공"
+            )
+
+            self.node.get_logger().info(
+                "========== PIN INSERT COMPLETE =========="
+            )
+
+            return True
+
+        except PinInsertError:
+            raise
+
+        except Exception as e:
+            self.node.get_logger().error(
+                f"Pin Insert 실패: {e}"
+            )
+
+            raise PinInsertError(
+                str(e)
+            ) from e
+
+
+    # =========================================================
+    # 전체 Pin 설치 공정
+    # =========================================================
+
+    def install_pin(self):
 
         self.node.get_logger().info(
-            "========== PIN INSERT COMPLETE =========="
+            "========== PIN INSTALL START =========="
         )
+
+        try:
+            self.pick_pin()
+            self.place_pin()
+            self.insert_pin(
+                lift_distance=50.0,
+                insert_distance=50.0,
+                force_threshold=50.0,
+            )
+
+            self.node.get_logger().info(
+                "========== PIN INSTALL COMPLETE =========="
+            )
+
+            return True
+
+        except PinPickError as e:
+            self.node.get_logger().error(
+                f"Pin Install 실패 - PICK 단계: {e}"
+            )
+            raise
+
+        except PinPlaceError as e:
+            self.node.get_logger().error(
+                f"Pin Install 실패 - PLACE 단계: {e}"
+            )
+            raise
+
+        except PinInsertError as e:
+            self.node.get_logger().error(
+                f"Pin Install 실패 - INSERT 단계: {e}"
+            )
+            raise
+
+        except Exception as e:
+            self.node.get_logger().error(
+                f"Pin Install 알 수 없는 오류: {e}"
+            )
+            raise
 
 
     # =========================================================
@@ -587,7 +650,7 @@ class SolarMotion:
             # Lock Pin 삽입
             # -------------------------------------------------
 
-            self.insert_pin()
+            self.install_pin()
 
             # -------------------------------------------------
             # 작업 완료 후 Home 복귀
