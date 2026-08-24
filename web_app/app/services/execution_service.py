@@ -297,6 +297,43 @@ def mark_execution_failed(
 
     db.session.commit()
 
+def mark_execution_cancelled(
+    work_order: WorkOrder,
+    work_execution: WorkExecution,
+    operation_execution: OperationExecution,
+    robot: Robot,
+) -> None:
+    current_time = datetime.now()
+
+    work_order.status = "CANCELLED"
+
+    work_execution.status = "CANCELLED"
+    work_execution.end_time = current_time
+
+    operation_execution.status = "CANCELLED"
+    operation_execution.end_time = current_time
+
+    pending_statement = (
+        db.select(OperationExecution)
+        .where(
+            OperationExecution.work_execution_id
+            == work_execution.work_execution_id,
+            OperationExecution.status == "PENDING",
+        )
+    )
+
+    pending_operations = db.session.scalars(
+        pending_statement
+    ).all()
+
+    for pending_operation in pending_operations:
+        pending_operation.status = "CANCELLED"
+        pending_operation.end_time = current_time
+
+    robot.status = "IDLE"
+
+    db.session.commit()
+
 def get_next_pending_operation_execution(
     work_execution_id: int,
 ) -> OperationExecution | None:

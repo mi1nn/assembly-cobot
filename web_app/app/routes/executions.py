@@ -10,6 +10,7 @@ from app.services.execution_service import (
     get_work_execution_by_id,
     mark_execution_completed,
     mark_execution_failed,
+    mark_execution_cancelled,
     mark_operation_completed,
     mark_operation_running,
 )
@@ -408,12 +409,41 @@ def receive_action_result():
             "error": None,
         }), 200
 
+    result_error_code = (
+        request_data.get("error_code") or ""
+    )
+
+    action_cancelled = (
+        not action_success
+        and result_error_code == "CANCELLED"
+    )
+
+    if (
+        action_cancelled
+        and operation_execution.status
+        == "CANCELLED"
+        and work_execution.status
+        == "CANCELLED"
+    ):
+        return jsonify({
+            "success": True,
+            "data": {
+                "already_processed": True,
+                "work_execution": (
+                    work_execution.to_dict()
+                ),
+                "operation_execution": (
+                    operation_execution.to_dict()
+                ),
+            },
+            "error": None,
+        }), 200
+
     if (
         not action_success
-        and operation_execution.status
-        == "FAILED"
-        and work_execution.status
-        == "FAILED"
+        and not action_cancelled
+        and operation_execution.status == "FAILED"
+        and work_execution.status == "FAILED"
     ):
         return jsonify({
             "success": True,
@@ -454,6 +484,63 @@ def receive_action_result():
                 ),
             },
         }), 409
+
+
+    # 현재 Operation이 취소된 경우
+    if action_cancelled:
+        mark_execution_cancelled(
+            work_order=work_order,
+            work_execution=work_execution,
+            operation_execution=(
+                operation_execution
+            ),
+            robot=robot,
+        )
+
+        create_system_log(
+            log_type="EVENT",
+            severity="INFO",
+            code="OPERATION_CANCELLED",
+            message=(
+                request_data.get("message")
+                or "Operation cancelled."
+            ),
+            work_execution_id=(
+                work_execution.work_execution_id
+            ),
+            operation_execution_id=(
+                operation_execution
+                .operation_execution_id
+            ),
+            robot_id=work_execution.robot_id,
+            detail={
+                "action_success": False,
+                "action_cancelled": True,
+            },
+        )
+
+        return jsonify({
+            "success": True,
+            "data": {
+                "already_processed": False,
+                "workflow_status": "CANCELLED",
+                "action_result": {
+                    "success": False,
+                    "error_code": "CANCELLED",
+                    "message": request_data.get(
+                        "message",
+                        "",
+                    ),
+                },
+                "work_execution": (
+                    work_execution.to_dict()
+                ),
+                "operation_execution": (
+                    operation_execution.to_dict()
+                ),
+            },
+            "error": None,
+        }), 200
 
     # 현재 Operation이 실패한 경우
     if not action_success:
