@@ -89,14 +89,17 @@ Flask Backend의 HTTP 요청을 큐에 쌓았다가 ROS2 Action Goal로 변환�
 | `database/schema.sql` | PostgreSQL 스키마 (9개 테이블) |
 | `frontend/` | 정적 HTML/CSS/JS 대시보드 |
 
-## 4. 의존성
+## 4. DB 구조
+![alt text](image.png)
+
+## 5. 의존성
 
 - ROS2 Jazzy (`rclpy`)
 - Python 3 (`setuptools`, `pytest` for test)
 - Flask, Flask-SQLAlchemy, SQLAlchemy, python-dotenv, psycopg2, requests (`web_app/requirements.txt`)
 - PostgreSQL 16 (로컬 설치)
 
-## 5. 빌드 및 실행
+## 6. 빌드 및 실행
 
 ### ROS2 워크스페이스
 
@@ -126,15 +129,6 @@ python run.py           # http://localhost:5000
 ```
 
 상세 검증 절차는 `web_app/app/README.md`, `web_app/database/README.md`를 참조하세요.
-
-## 6. 알려진 미해결 이슈
-
-- **`controller_node.py`가 현재 `ExecuteOperation.action` 인터페이스와 맞지 않습니다.** Feedback 필드(`current_operation`/`status`(문자열)/`progress`)가 최신 스키마(`operation_execution_id`/`status`(uint8 enum)/`message`)로 갱신되지 않아, 실제 로봇 Controller로는 Goal을 정상 처리할 수 없습니다. Mock Action Server(`action_server.py`)는 최신 스키마에 맞춰져 있어 Mock 테스트와 실기 연동 결과가 다릅니다.
-- **DB Operation과 Controller가 실행 가능한 Operation의 이름 체계가 다릅니다.** DB(`postA`, `frameA`, `solarpanelA`...)/`operation_ids.py`(`POST_A`...`SOLAR_PANEL_A`) 쪽과, `controller_node.py`의 `SUPPORTED_OPERATION_CODES`(`FRAME_PICK`, `PIN_INSERT_1`...) 쪽이 서로 다르고, 둘을 잇는 `OPERATION_ID_MAP`은 비어 있습니다.
-- `src/ros2_bridge/bridge_node.py`(Backend와 연결된 브릿지)와 `src/solar_panel_robot/ros_bridge_node.py`(Controller를 직접 호출하는 별도 브릿지)가 중복 구현되어 있습니다. 어느 쪽을 canonical bridge로 삼을지 정리가 필요합니다.
-- Robot 배정 시 `IDLE` 확인과 상태 변경 사이에 잠금이 없어, 동시에 같은 로봇으로 실행 요청이 들어오면 중복 배정될 수 있습니다.
-- `/api/v1/executions/action-result`, `/action-feedback` 콜백에는 아직 인증이 없습니다.
-- `.gitignore`에 `docs/`와 `CLAUDE.md`가 등록되어 있어 요구사항 문서와 프로젝트 지침이 git에 커밋되지 않습니다. 새로 clone하면 이 파일들을 받을 수 없습니다.
 
 ## 7. 문서
 
