@@ -504,6 +504,18 @@ button:hover {
     .section-actions button {
         flex: 1;
     }
+
+    .dashboard-work-card-header {
+        flex-direction: column;
+    }
+
+    .dashboard-work-actions {
+        grid-template-columns: 1fr;
+    }
+
+    .dashboard-action-button:only-child {
+        grid-column: auto;
+    }
 }
 
 #success-rate-value {
@@ -771,4 +783,70 @@ body.modal-open {
     display: flex;
     align-items: center;
     gap: 8px;
+}
+
+#dashboard-work-list {
+    display: grid;
+    gap: 16px;
+}
+
+.dashboard-work-card {
+    padding: 20px;
+    border: 2px solid #dbeafe;
+    border-radius: 10px;
+    background-color: #eff6ff;
+}
+
+.dashboard-work-card[data-status="RUNNING"] {
+    border-color: #fbbf24;
+    background-color: #fffbeb;
+}
+
+.dashboard-work-card-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+}
+
+.dashboard-work-card-header h3 {
+    margin: 5px 0 0;
+    font-size: 22px;
+}
+
+.dashboard-work-information {
+    display: grid;
+    grid-template-columns:
+        repeat(auto-fit, minmax(150px, 1fr));
+    gap: 14px;
+    margin-top: 18px;
+}
+
+.dashboard-work-actions {
+    display: grid;
+    grid-template-columns:
+        minmax(180px, 1fr)
+        minmax(220px, 1.4fr);
+    gap: 12px;
+    margin-top: 20px;
+}
+
+.dashboard-robot-select {
+    min-height: 52px;
+    padding: 10px 14px;
+    border: 1px solid #9ca3af;
+    border-radius: 8px;
+    background-color: white;
+    font: inherit;
+}
+
+.dashboard-action-button {
+    min-height: 52px;
+    padding: 12px 20px;
+    font-size: 18px;
+    font-weight: bold;
+}
+
+.dashboard-action-button:only-child {
+    grid-column: 1 / -1;
 }

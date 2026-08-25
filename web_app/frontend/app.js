@@ -37,6 +37,11 @@ document.addEventListener(
                 "history-refresh-button",
             );
 
+        const dashboardWorkRefreshButton =
+            document.getElementById(
+                "dashboard-work-refresh-button",
+            );
+
         refreshButton.addEventListener(
             "click",
             () => loadWorkOrders(true),
@@ -45,6 +50,11 @@ document.addEventListener(
         historyRefreshButton.addEventListener(
             "click",
             () => loadSystemLogs(true),
+        );
+
+        dashboardWorkRefreshButton.addEventListener(
+            "click",
+            () => loadWorkOrders(true),
         );
 
         workOrderForm.addEventListener(
@@ -67,6 +77,7 @@ async function loadInitialData() {
     await Promise.all([
         loadWorkOrders(),
         loadSystemLogs(),
+        loadRecentLogs(),
         loadHistoryWorkExecutions(),
     ]);
 }
@@ -77,6 +88,7 @@ async function refreshApplicationData() {
     await Promise.all([
         loadWorkOrders(false),
         loadSystemLogs(false),
+        loadRecentLogs(false),
     ]);
 }
 
@@ -190,15 +202,24 @@ function initializeHistorySelectors() {
             const workExecutionId =
                 Number(workSelect.value);
 
+            selectedHistoryWorkExecutionId =
+                workExecutionId || null;
+
+            selectedHistoryOperationExecutionId =
+                null;
+
             if (!workExecutionId) {
                 resetHistoryOperationSelect();
                 renderOperationSummary(null);
+                loadSystemLogs();
                 return;
             }
 
             loadHistoryOperationExecutions(
                 workExecutionId,
             );
+
+            loadSystemLogs();
         },
     );
 
@@ -209,8 +230,13 @@ function initializeHistorySelectors() {
                 operationSelect
                     .selectedOptions[0];
 
+            selectedHistoryOperationExecutionId =
+                Number(selectedOption?.value)
+                || null;
+
             if (!selectedOption?.value) {
                 renderOperationSummary(null);
+                loadSystemLogs();
                 return;
             }
 
@@ -223,6 +249,8 @@ function initializeHistorySelectors() {
             renderOperationSummary(
                 operationData,
             );
+
+            loadSystemLogs();
         },
     );
 }
@@ -930,7 +958,19 @@ async function loadWorkOrders(
             workOrdersWithProgress,
         );
 
+        renderDashboardWorkOrders(
+            workOrdersWithProgress,
+        );
+
     } catch (error) {
+        const dashboardList =
+            document.getElementById(
+                "dashboard-work-list",
+            );
+
+        dashboardList.textContent =
+            "현재 작업을 불러오지 못했습니다.";
+
         console.error(
             "Failed to load work orders:",
             error,
@@ -942,6 +982,320 @@ async function loadWorkOrders(
     } finally {
         refreshButton.disabled = false;
     }
+}
+
+function renderDashboardWorkOrders(
+    workOrders,
+) {
+    const listElement =
+        document.getElementById(
+            "dashboard-work-list",
+        );
+
+    listElement.replaceChildren();
+
+    if (!Array.isArray(workOrders)) {
+        listElement.textContent =
+            "올바르지 않은 Work Order 응답입니다.";
+        return;
+    }
+
+    const actionableWorkOrders =
+        workOrders.filter(
+            (workOrder) =>
+                workOrder.status === "READY"
+                || workOrder.status === "RUNNING",
+        );
+
+    if (actionableWorkOrders.length === 0) {
+        const emptyMessage =
+            document.createElement("p");
+
+        emptyMessage.className =
+            "empty-message";
+
+        emptyMessage.textContent =
+            "시작 대기 또는 진행 중인 작업이 없습니다.";
+
+        listElement.appendChild(
+            emptyMessage,
+        );
+
+        return;
+    }
+
+    actionableWorkOrders.sort(
+        (left, right) => {
+            if (
+                left.status === "RUNNING"
+                && right.status !== "RUNNING"
+            ) {
+                return -1;
+            }
+
+            if (
+                right.status === "RUNNING"
+                && left.status !== "RUNNING"
+            ) {
+                return 1;
+            }
+
+            return (
+                Number(left.priority ?? 999)
+                - Number(right.priority ?? 999)
+            );
+        },
+    );
+
+    for (
+        const workOrder
+        of actionableWorkOrders
+    ) {
+        const card =
+            createDashboardWorkCard(
+                workOrder,
+            );
+
+        listElement.appendChild(card);
+    }
+}
+
+function createDashboardWorkCard(workOrder) {
+    const card =
+        document.createElement("article");
+
+    card.className =
+        "dashboard-work-card";
+
+    card.dataset.status =
+        workOrder.status;
+
+    const header =
+        document.createElement("div");
+
+    header.className =
+        "dashboard-work-card-header";
+
+    const titleArea =
+        document.createElement("div");
+
+    const orderNumber =
+        document.createElement("span");
+
+    orderNumber.className =
+        "order-number";
+
+    orderNumber.textContent =
+        workOrder.order_number ?? "-";
+
+    const title =
+        document.createElement("h3");
+
+    title.textContent =
+        workOrder.title ?? "-";
+
+    titleArea.append(
+        orderNumber,
+        title,
+    );
+
+    const status =
+        document.createElement("span");
+
+    status.className = "status-badge";
+    status.dataset.status =
+        workOrder.status;
+
+    status.textContent =
+        workOrder.status;
+
+    header.append(
+        titleArea,
+        status,
+    );
+
+    const information =
+        document.createElement("div");
+
+    information.className =
+        "dashboard-work-information";
+
+    information.append(
+        createDetail(
+            "Work Order ID",
+            workOrder.work_order_id,
+        ),
+        createDetail(
+            "Priority",
+            workOrder.priority,
+        ),
+        createDetail(
+            "진행",
+            workOrder.progress?.progress
+                ?? "0/0",
+        ),
+    );
+
+    if (
+        workOrder.progress
+            ?.current_operation
+    ) {
+        const operation =
+            workOrder.progress
+                .current_operation;
+
+        information.append(
+            createDetail(
+                "현재 Operation",
+                [
+                    `단계 ${operation.sequence}`,
+                    operation.name
+                        ?? operation.code
+                        ?? operation.operation_id,
+                    operation.status,
+                ].join(" · "),
+            ),
+        );
+    }
+
+    const controls =
+        document.createElement("div");
+
+    controls.className =
+        "dashboard-work-actions";
+
+    if (workOrder.status === "RUNNING") {
+        const stopButton =
+            document.createElement("button");
+
+        stopButton.type = "button";
+
+        stopButton.className =
+            "dashboard-action-button danger-button";
+
+        stopButton.textContent =
+            "작업 중지";
+
+        stopButton.addEventListener(
+            "click",
+            () => {
+                handleWorkStop(
+                    workOrder.work_order_id,
+                    stopButton,
+                );
+            },
+        );
+
+        controls.appendChild(stopButton);
+    }
+
+    if (workOrder.status === "READY") {
+        appendDashboardStartControls(
+            controls,
+            workOrder,
+        );
+    }
+
+    card.append(
+        header,
+        information,
+        controls,
+    );
+
+    return card;
+}
+
+function appendDashboardStartControls(
+    controls,
+    workOrder,
+) {
+    const robotSelect =
+        document.createElement("select");
+
+    robotSelect.className =
+        "dashboard-robot-select";
+
+    robotSelect.setAttribute(
+        "aria-label",
+        "작업에 사용할 Robot 선택",
+    );
+
+    const idleRobots =
+        dashboardRobots.filter(
+            (robot) =>
+                robot.status === "IDLE",
+        );
+
+    const placeholder =
+        document.createElement("option");
+
+    placeholder.value = "";
+    placeholder.selected = true;
+    placeholder.disabled = true;
+
+    placeholder.textContent =
+        idleRobots.length > 0
+            ? "Robot을 선택하세요"
+            : "사용 가능한 Robot 없음";
+
+    robotSelect.appendChild(
+        placeholder,
+    );
+
+    for (const robot of idleRobots) {
+        const option =
+            document.createElement("option");
+
+        option.value =
+            String(robot.robot_id);
+
+        option.textContent = [
+            `Robot ${robot.robot_id}`,
+            robot.name ?? robot.robot_code,
+        ]
+            .filter(Boolean)
+            .join(" · ");
+
+        robotSelect.appendChild(option);
+    }
+
+    const startButton =
+        document.createElement("button");
+
+    startButton.type = "button";
+
+    startButton.className =
+        "dashboard-action-button";
+
+    startButton.textContent =
+        "작업 시작";
+
+    startButton.disabled = true;
+
+    robotSelect.addEventListener(
+        "change",
+        () => {
+            startButton.disabled =
+                !robotSelect.value;
+        },
+    );
+
+    startButton.addEventListener(
+        "click",
+        () => {
+            handleWorkExecution(
+                workOrder.work_order_id,
+                Number(robotSelect.value),
+                startButton,
+                robotSelect,
+            );
+        },
+    );
+
+    controls.append(
+        robotSelect,
+        startButton,
+    );
 }
 
 function renderWorkOrders(workOrders) {
@@ -1619,6 +1973,56 @@ async function handleWorkExecution(
     }
 }
 
+async function loadRecentLogs(
+    showLoading = true,
+) {
+    const listElement =
+        document.getElementById(
+            "recent-log-list",
+        );
+
+    if (showLoading) {
+        listElement.textContent =
+            "최근 로그를 불러오는 중입니다.";
+    }
+
+    try {
+        const response = await fetch(
+            `${LOGS_API_URL}?limit=5`,
+            {
+                headers: {
+                    "Accept": "application/json",
+                },
+            },
+        );
+
+        const responseData =
+            await response.json();
+
+        if (
+            !response.ok
+            || !responseData.success
+        ) {
+            throw new Error(
+                responseData.error?.message
+                ?? "최근 로그 조회에 실패했습니다.",
+            );
+        }
+
+        renderRecentLogs(
+            responseData.data,
+        );
+    } catch (error) {
+        console.error(
+            "Failed to load recent logs:",
+            error,
+        );
+
+        listElement.textContent =
+            "최근 로그를 불러오지 못했습니다.";
+    }
+}
+
 async function loadSystemLogs(
     showLoading = true,
 ) {
@@ -1640,8 +2044,29 @@ async function loadSystemLogs(
     refreshButton.disabled = true;
 
     try {
+        const query =
+            new URLSearchParams({
+                limit: "100",
+            });
+
+        if (selectedHistoryOperationExecutionId) {
+            query.set(
+                "operation_execution_id",
+                String(
+                    selectedHistoryOperationExecutionId,
+                ),
+            );
+        } else if (selectedHistoryWorkExecutionId) {
+            query.set(
+                "work_execution_id",
+                String(
+                    selectedHistoryWorkExecutionId,
+                ),
+            );
+        }
+
         const response = await fetch(
-            `${LOGS_API_URL}?limit=100`,
+            `${LOGS_API_URL}?${query.toString()}`,
             {
                 headers: {
                     "Accept": "application/json",
@@ -1663,7 +2088,6 @@ async function loadSystemLogs(
         }
 
         renderSystemLogs(responseData.data);
-        renderRecentLogs(responseData.data);
 
     } catch (error) {
         console.error(
@@ -1674,13 +2098,6 @@ async function loadSystemLogs(
         listElement.textContent =
             "로그를 불러오지 못했습니다.";
 
-        const recentList =
-            document.getElementById(
-                "recent-log-list",
-            );
-
-        recentList.textContent =
-            "최근 로그를 불러오지 못했습니다.";
     } finally {
         refreshButton.disabled = false;
     }
