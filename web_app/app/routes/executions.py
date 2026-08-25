@@ -1,13 +1,19 @@
 from flask import Blueprint, jsonify, request
 
 from app.extensions import db
-from app.models import Robot, WorkOrder
+from app.models import (
+    Robot,
+    WorkOrder,
+    Operation,
+)
 
 from app.services.log_service import create_system_log
 from app.services.execution_service import (
     get_next_pending_operation_execution,
     get_operation_execution_by_id,
+    get_operation_executions,
     get_work_execution_by_id,
+    get_work_executions,
     mark_execution_completed,
     mark_execution_failed,
     mark_execution_cancelled,
@@ -28,6 +34,112 @@ executions_bp = Blueprint(
     __name__,
     url_prefix="/api/v1/executions",
 )
+
+@executions_bp.get("/work-executions")
+def list_work_executions():
+    limit_value = request.args.get(
+        "limit",
+        "100",
+    )
+
+    try:
+        limit = int(limit_value)
+    except (TypeError, ValueError):
+        return jsonify({
+            "success": False,
+            "data": None,
+            "error": {
+                "code": "INVALID_LIMIT",
+                "message": (
+                    "limit must be an integer."
+                ),
+            },
+        }), 400
+
+    if limit < 1 or limit > 500:
+        return jsonify({
+            "success": False,
+            "data": None,
+            "error": {
+                "code": "INVALID_LIMIT",
+                "message": (
+                    "limit must be between "
+                    "1 and 500."
+                ),
+            },
+        }), 400
+
+    executions = get_work_executions(
+        limit=limit,
+    )
+
+    return jsonify({
+        "success": True,
+        "data": [
+            execution.to_dict()
+            for execution in executions
+        ],
+        "error": None,
+    }), 200
+
+@executions_bp.get(
+    "/work-executions/"
+    "<int:work_execution_id>/operations"
+)
+def list_operation_executions(
+    work_execution_id: int,
+):
+    work_execution = (
+        get_work_execution_by_id(
+            work_execution_id
+        )
+    )
+
+    if work_execution is None:
+        return jsonify({
+            "success": False,
+            "data": None,
+            "error": {
+                "code": (
+                    "WORK_EXECUTION_NOT_FOUND"
+                ),
+                "message": (
+                    f"Work execution "
+                    f"{work_execution_id} "
+                    "was not found."
+                ),
+            },
+        }), 404
+
+    operation_executions = (
+        get_operation_executions(
+            work_execution_id
+        )
+    )
+
+    response_data = []
+
+    for execution in operation_executions:
+        item = execution.to_dict()
+
+        operation = db.session.get(
+            Operation,
+            execution.operation_id,
+        )
+
+        item["operation"] = (
+            operation.to_dict()
+            if operation
+            else None
+        )
+
+        response_data.append(item)
+
+    return jsonify({
+        "success": True,
+        "data": response_data,
+        "error": None,
+    }), 200
 
 @executions_bp.post("/action-feedback")
 def receive_action_feedback():

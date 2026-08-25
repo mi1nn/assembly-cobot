@@ -70,6 +70,7 @@
             <div class="view-actions">
                 <button
                     id="open-work-order-modal"
+                    class="open-work-order-modal-button"
                     type="button"
                 >
                     + Work Order
@@ -115,12 +116,22 @@
             </div>
 
             <section class="dashboard-section">
-                <h2>최근 로그</h2>
+                <div class="section-header">
+                    <h2>최근 로그</h2>
 
-                <p class="empty-message">
-                    전체 로그는 History 화면에서 확인할 수 있습니다.
-                </p>
+                    <button
+                        id="open-history-button"
+                        type="button"
+                    >
+                        전체 보기
+                    </button>
+                </div>
+
+                <div id="recent-log-list">
+                    로그를 불러오는 중입니다.
+                </div>
             </section>
+
         </section>
 
         <section
@@ -130,41 +141,77 @@
             data-description="Work Order와 Operation 실행 관리"
             hidden
         >
+
+            <section class="dashboard-section">
+                <div class="section-header">
+                    <h2>Work Orders</h2>
+
+                    <div class="section-actions">
+                        <button
+                            class="open-work-order-modal-button"
+                            type="button"
+                        >
+                            + Work Order
+                        </button>
+
+                        <button
+                            id="refresh-button"
+                            type="button"
+                        >
+                            새로고침
+                        </button>
+                    </div>
+                </div>
+
+                <div id="work-order-list">
+                    Work Order를 불러오는 중입니다.
+                </div>
+            </section>
         </section>
 
+    <section
+        id="history-view"
+        class="app-view"
+        data-title="History"
+        data-description="작업 이벤트와 오류 기록"
+        hidden
+    >
 
         <section class="dashboard-section">
-            <div class="section-header">
-                <h2>Work Orders</h2>
+            <h2>Execution 선택</h2>
 
-                <button
-                    id="refresh-button"
-                    type="button"
-                >
-                    새로고침
-                </button>
+            <div class="history-filter-grid">
+                <label class="form-field">
+                    <span>Work Execution</span>
+
+                    <select id="history-work-execution">
+                        <option value="">
+                            Work Execution 선택
+                        </option>
+                    </select>
+                </label>
+
+                <label class="form-field">
+                    <span>Operation Execution</span>
+
+                    <select
+                        id="history-operation-execution"
+                        disabled
+                    >
+                        <option value="">
+                            Operation Execution 선택
+                        </option>
+                    </select>
+                </label>
             </div>
 
-            <div id="work-order-list">
-                Work Order를 불러오는 중입니다.
+            <div
+                id="history-operation-summary"
+                class="operation-summary"
+            >
+                Operation을 선택하면 실행 정보가 표시됩니다.
             </div>
         </section>
-
-        <section class="dashboard-section">
-            <h2>Robot Status</h2>
-
-            <p id="robot-status">
-                IDLE
-            </p>
-        </section>
-
-        <section
-            id="history-view"
-            class="app-view"
-            data-title="History"
-            data-description="작업 이벤트와 오류 기록"
-            hidden
-        >
 
         <section class="dashboard-section">
             <div class="section-header">
@@ -182,8 +229,7 @@
                 로그를 불러오는 중입니다.
             </div>
         </section>
-
-        </section>
+    </section>
 
             </main>
 

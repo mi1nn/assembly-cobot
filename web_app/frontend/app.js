@@ -8,11 +8,19 @@ const DASHBOARD_API_URL =
 const WORK_ORDERS_API_URL =
     "/api/v1/work-orders";
 
+const WORK_EXECUTIONS_API_URL =
+    "/api/v1/executions/work-executions";
+
+let dashboardRobots = [];
+let selectedHistoryWorkExecutionId = null;
+let selectedHistoryOperationExecutionId = null;
+
 document.addEventListener(
     "DOMContentLoaded",
     () => {
         initializeNavigation();
         initializeWorkOrderModal();
+        initializeHistorySelectors();
 
         const refreshButton =
             document.getElementById(
@@ -44,20 +52,33 @@ document.addEventListener(
             handleWorkOrderSubmit,
         );
 
-        loadWorkOrders();
-        loadSystemLogs();
-        loadDashboard();
+        loadInitialData();
 
         window.setInterval(
-            () => {
-                loadWorkOrders(false);
-                loadSystemLogs(false);
-                loadDashboard(false);
-            },
+            refreshApplicationData,
             WORK_ORDER_POLL_INTERVAL_MS,
         );
     },
 );
+
+async function loadInitialData() {
+    await loadDashboard();
+
+    await Promise.all([
+        loadWorkOrders(),
+        loadSystemLogs(),
+        loadHistoryWorkExecutions(),
+    ]);
+}
+
+async function refreshApplicationData() {
+    await loadDashboard(false);
+
+    await Promise.all([
+        loadWorkOrders(false),
+        loadSystemLogs(false),
+    ]);
+}
 
 function initializeNavigation() {
     const navigationButtons =
@@ -73,6 +94,17 @@ function initializeNavigation() {
             },
         );
     }
+    const openHistoryButton =
+        document.getElementById(
+            "open-history-button",
+        );
+
+    openHistoryButton.addEventListener(
+        "click",
+        () => {
+            showView("history-view");
+        },
+    );
 }
 
 function showView(viewId) {
@@ -141,10 +173,141 @@ function showView(viewId) {
         ?? "";
 }
 
-function initializeWorkOrderModal() {
-    const openButton =
+function initializeHistorySelectors() {
+    const workSelect =
         document.getElementById(
-            "open-work-order-modal",
+            "history-work-execution",
+        );
+
+    const operationSelect =
+        document.getElementById(
+            "history-operation-execution",
+        );
+
+    workSelect.addEventListener(
+        "change",
+        () => {
+            const workExecutionId =
+                Number(workSelect.value);
+
+            if (!workExecutionId) {
+                resetHistoryOperationSelect();
+                renderOperationSummary(null);
+                return;
+            }
+
+            loadHistoryOperationExecutions(
+                workExecutionId,
+            );
+        },
+    );
+
+    operationSelect.addEventListener(
+        "change",
+        () => {
+            const selectedOption =
+                operationSelect
+                    .selectedOptions[0];
+
+            if (!selectedOption?.value) {
+                renderOperationSummary(null);
+                return;
+            }
+
+            const operationData =
+                JSON.parse(
+                    selectedOption.dataset
+                        .operation,
+                );
+
+            renderOperationSummary(
+                operationData,
+            );
+        },
+    );
+}
+
+async function loadHistoryWorkExecutions() {
+    const select =
+        document.getElementById(
+            "history-work-execution",
+        );
+
+    try {
+        const response = await fetch(
+            `${WORK_EXECUTIONS_API_URL}?limit=100`,
+            {
+                headers: {
+                    "Accept": "application/json",
+                },
+            },
+        );
+
+        const responseData =
+            await response.json();
+
+        if (
+            !response.ok
+            || !responseData.success
+        ) {
+            throw new Error(
+                responseData.error?.message
+                ?? "Work Execution 조회에 실패했습니다.",
+            );
+        }
+
+        select.replaceChildren();
+
+        const placeholder =
+            document.createElement("option");
+
+        placeholder.value = "";
+        placeholder.textContent =
+            "Work Execution 선택";
+
+        select.appendChild(placeholder);
+
+        for (const execution of responseData.data) {
+            const option =
+                document.createElement("option");
+
+            option.value = String(
+                execution.work_execution_id,
+            );
+
+            option.textContent = [
+                execution.execution_number,
+                `Work ${execution.work_order_id}`,
+                `Robot ${execution.robot_id}`,
+                execution.status,
+            ].join(" · ");
+
+            select.appendChild(option);
+        }
+    } catch (error) {
+        console.error(
+            "Failed to load work executions:",
+            error,
+        );
+
+        select.replaceChildren();
+
+        const option =
+            document.createElement("option");
+
+        option.value = "";
+        option.textContent =
+            "Work Execution 조회 실패";
+
+        select.appendChild(option);
+    }
+}
+
+
+function initializeWorkOrderModal() {
+    const openButtons =
+        document.querySelectorAll(
+            ".open-work-order-modal-button",
         );
 
     const closeButton =
@@ -162,10 +325,12 @@ function initializeWorkOrderModal() {
             "work-order-modal",
         );
 
-    openButton.addEventListener(
-        "click",
-        openWorkOrderModal,
-    );
+    for (const openButton of openButtons) {
+        openButton.addEventListener(
+            "click",
+            openWorkOrderModal,
+        );
+    }
 
     closeButton.addEventListener(
         "click",
@@ -267,9 +432,13 @@ async function loadDashboard(
             );
         }
 
-        renderRobots(
+        dashboardRobots = Array.isArray(
             responseData.data?.robots,
-        );
+        )
+            ? responseData.data.robots
+            : [];
+
+        renderRobots(dashboardRobots);
 
         renderSuccessRate(
             responseData.data
@@ -356,9 +525,257 @@ function renderRobots(robots) {
             card.appendChild(execution);
         }
 
+        if (robot.status === "ERROR") {
+            const recoverButton =
+                document.createElement("button");
+
+            recoverButton.type = "button";
+            recoverButton.className =
+                "robot-recover-button";
+
+            recoverButton.textContent =
+                "Robot 복구";
+
+            recoverButton.addEventListener(
+                "click",
+                () => {
+                    recoverRobot(
+                        robot.robot_id,
+                        recoverButton,
+                    );
+                },
+            );
+
+            card.appendChild(recoverButton);
+        }
+
         robotList.appendChild(card);
     }
 }
+
+async function loadHistoryOperationExecutions(
+    workExecutionId,
+) {
+    const select =
+        document.getElementById(
+            "history-operation-execution",
+        );
+
+    select.disabled = true;
+    select.replaceChildren();
+
+    const loadingOption =
+        document.createElement("option");
+
+    loadingOption.value = "";
+    loadingOption.textContent =
+        "Operation을 불러오는 중입니다.";
+
+    select.appendChild(loadingOption);
+
+    renderOperationSummary(null);
+
+    try {
+        const response = await fetch(
+            `${WORK_EXECUTIONS_API_URL}/${workExecutionId}/operations`,
+            {
+                headers: {
+                    "Accept": "application/json",
+                },
+            },
+        );
+
+        const responseData =
+            await response.json();
+
+        if (
+            !response.ok
+            || !responseData.success
+        ) {
+            throw new Error(
+                responseData.error?.message
+                ?? "Operation Execution 조회에 실패했습니다.",
+            );
+        }
+
+        select.replaceChildren();
+
+        const placeholder =
+            document.createElement("option");
+
+        placeholder.value = "";
+        placeholder.textContent =
+            "Operation Execution 선택";
+
+        select.appendChild(placeholder);
+
+        for (const execution of responseData.data) {
+            const option =
+                document.createElement("option");
+
+            option.value = String(
+                execution.operation_execution_id,
+            );
+
+            option.textContent = [
+                `단계 ${execution.sequence}`,
+                execution.operation?.name
+                    ?? execution.operation?.code
+                    ?? `Operation ${execution.operation_id}`,
+                execution.status,
+            ].join(" · ");
+
+            option.dataset.operation =
+                JSON.stringify(execution);
+
+            select.appendChild(option);
+        }
+
+        select.disabled =
+            responseData.data.length === 0;
+    } catch (error) {
+        console.error(
+            "Failed to load operation executions:",
+            error,
+        );
+
+        select.replaceChildren();
+
+        const option =
+            document.createElement("option");
+
+        option.value = "";
+        option.textContent =
+            "Operation Execution 조회 실패";
+
+        select.appendChild(option);
+        select.disabled = true;
+    }
+}
+
+function resetHistoryOperationSelect() {
+    const select =
+        document.getElementById(
+            "history-operation-execution",
+        );
+
+    select.replaceChildren();
+
+    const option =
+        document.createElement("option");
+
+    option.value = "";
+    option.textContent =
+        "Operation Execution 선택";
+
+    select.appendChild(option);
+    select.disabled = true;
+}
+
+async function recoverRobot(
+    robotId,
+    button,
+) {
+    const confirmed = window.confirm(
+        `Robot ${robotId}을 복구하시겠습니까?`,
+    );
+
+    if (!confirmed) {
+        return;
+    }
+
+    const originalText =
+        button.textContent;
+
+    button.disabled = true;
+    button.textContent = "복구 중...";
+
+    try {
+        const response = await fetch(
+            `/api/v1/robots/${robotId}/recover`,
+            {
+                method: "POST",
+                headers: {
+                    "Accept": "application/json",
+                },
+            },
+        );
+
+        const responseData =
+            await response.json();
+
+        if (
+            !response.ok
+            || !responseData.success
+        ) {
+            throw new Error(
+                responseData.error?.message
+                ?? "Robot 복구에 실패했습니다.",
+            );
+        }
+
+        await Promise.all([
+            loadDashboard(false),
+            loadSystemLogs(false),
+        ]);
+    } catch (error) {
+        console.error(
+            "Failed to recover robot:",
+            error,
+        );
+
+        window.alert(error.message);
+
+        button.disabled = false;
+        button.textContent =
+            originalText;
+    }
+}
+
+function renderOperationSummary(execution) {
+    const summary =
+        document.getElementById(
+            "history-operation-summary",
+        );
+
+    if (!execution) {
+        summary.textContent =
+            "Operation을 선택하면 실행 정보가 표시됩니다.";
+        return;
+    }
+
+    summary.replaceChildren();
+
+    summary.append(
+        createDetail(
+            "Operation Execution ID",
+            execution.operation_execution_id,
+        ),
+        createDetail(
+            "Sequence",
+            execution.sequence,
+        ),
+        createDetail(
+            "Operation",
+            execution.operation?.name
+                ?? execution.operation?.code
+                ?? execution.operation_id,
+        ),
+        createDetail(
+            "Status",
+            execution.status,
+        ),
+        createDetail(
+            "Start Time",
+            execution.start_time ?? "-",
+        ),
+        createDetail(
+            "End Time",
+            execution.end_time ?? "-",
+        ),
+    );
+}
+
 
 function renderSuccessRate(summary) {
     const value =
@@ -870,34 +1287,125 @@ function createWorkOrderActions(workOrder) {
     }
 
     if (workOrder.status === "READY") {
-        const robotInput =
-            document.createElement("input");
+        const robotSelect =
+            document.createElement("select");
 
-        robotInput.type = "number";
-        robotInput.min = "1";
-        robotInput.value = "1";
-        robotInput.className =
+        robotSelect.className =
             "robot-id-input";
+
+        robotSelect.setAttribute(
+            "aria-label",
+            "Robot 선택",
+        );
+
+        const idleRobots =
+            dashboardRobots.filter(
+                (robot) =>
+                    robot.status === "IDLE",
+            );
+
+        const placeholder =
+            document.createElement("option");
+
+        placeholder.value = "";
+
+        placeholder.textContent =
+            idleRobots.length > 0
+                ? "Robot 선택"
+                : "사용 가능한 Robot 없음";
+
+        placeholder.selected = true;
+        placeholder.disabled = true;
+
+        robotSelect.appendChild(placeholder);
+
+        for (const robot of idleRobots) {
+            const option =
+                document.createElement("option");
+
+            option.value =
+                String(robot.robot_id);
+
+            option.textContent = [
+                `Robot ${robot.robot_id}`,
+                robot.name ?? robot.robot_code,
+                robot.status,
+            ]
+                .filter(Boolean)
+                .join(" · ");
+
+            robotSelect.appendChild(option);
+        }
 
         const button =
             document.createElement("button");
 
         button.type = "button";
         button.textContent = "작업 시작";
+        button.disabled =
+            idleRobots.length === 0;
+
+        robotSelect.addEventListener(
+            "change",
+            () => {
+                button.disabled =
+                    !robotSelect.value;
+            },
+        );
 
         button.addEventListener(
             "click",
-            () => handleWorkExecution(
-                workOrder.work_order_id,
-                Number(robotInput.value),
-                button,
-                robotInput,
-            ),
+            () => {
+                handleWorkExecution(
+                    workOrder.work_order_id,
+                    Number(robotSelect.value),
+                    button,
+                    robotSelect,
+                );
+            },
         );
 
         actions.append(
-            robotInput,
+            robotSelect,
             button,
+        );
+
+        return actions;
+    }
+
+    if (workOrder.status === "RUNNING") {
+        const stateMessage =
+            document.createElement("span");
+
+        stateMessage.className =
+            "action-state-message";
+
+        stateMessage.textContent =
+            "작업 실행 중";
+
+        const stopButton =
+            document.createElement("button");
+
+        stopButton.type = "button";
+        stopButton.className =
+            "danger-button";
+
+        stopButton.textContent =
+            "작업 중지";
+
+        stopButton.addEventListener(
+            "click",
+            () => {
+                handleWorkStop(
+                    workOrder.work_order_id,
+                    stopButton,
+                );
+            },
+        );
+
+        actions.append(
+            stateMessage,
+            stopButton,
         );
 
         return actions;
@@ -924,6 +1432,71 @@ function createWorkOrderActions(workOrder) {
     actions.appendChild(message);
 
     return actions;
+}
+
+async function handleWorkStop(
+    workOrderId,
+    stopButton,
+) {
+    const confirmed = window.confirm(
+        "현재 로봇 동작을 강제로 중지하시겠습니까?",
+    );
+
+    if (!confirmed) {
+        return;
+    }
+
+    const originalText =
+        stopButton.textContent;
+
+    stopButton.disabled = true;
+    stopButton.textContent =
+        "중지 요청 중...";
+
+    try {
+        const response = await fetch(
+            `${WORK_ORDERS_API_URL}/${workOrderId}/stop`,
+            {
+                method: "POST",
+                headers: {
+                    "Accept": "application/json",
+                },
+            },
+        );
+
+        const responseData =
+            await response.json();
+
+        if (
+            !response.ok
+            || !responseData.success
+        ) {
+            throw new Error(
+                responseData.error?.message
+                ?? "작업 중지 요청에 실패했습니다.",
+            );
+        }
+
+        stopButton.textContent =
+            "취소 결과 대기 중...";
+
+        await Promise.all([
+            loadWorkOrders(false),
+            loadDashboard(false),
+            loadSystemLogs(false),
+        ]);
+    } catch (error) {
+        console.error(
+            "Failed to stop work order:",
+            error,
+        );
+
+        window.alert(error.message);
+
+        stopButton.disabled = false;
+        stopButton.textContent =
+            originalText;
+    }
 }
 
 async function handleStatusUpdate(
@@ -1090,6 +1663,8 @@ async function loadSystemLogs(
         }
 
         renderSystemLogs(responseData.data);
+        renderRecentLogs(responseData.data);
+
     } catch (error) {
         console.error(
             "Failed to load system logs:",
@@ -1098,8 +1673,84 @@ async function loadSystemLogs(
 
         listElement.textContent =
             "로그를 불러오지 못했습니다.";
+
+        const recentList =
+            document.getElementById(
+                "recent-log-list",
+            );
+
+        recentList.textContent =
+            "최근 로그를 불러오지 못했습니다.";
     } finally {
         refreshButton.disabled = false;
+    }
+}
+
+function renderRecentLogs(logs) {
+    const listElement =
+        document.getElementById(
+            "recent-log-list",
+        );
+
+    listElement.replaceChildren();
+
+    if (
+        !Array.isArray(logs)
+        || logs.length === 0
+    ) {
+        const emptyMessage =
+            document.createElement("p");
+
+        emptyMessage.className =
+            "empty-message";
+
+        emptyMessage.textContent =
+            "저장된 로그가 없습니다.";
+
+        listElement.appendChild(
+            emptyMessage,
+        );
+
+        return;
+    }
+
+    for (const log of logs.slice(0, 5)) {
+        const item =
+            document.createElement("article");
+
+        item.className = "recent-log-item";
+        item.dataset.severity =
+            log.severity ?? "INFO";
+
+        const code =
+            document.createElement("strong");
+
+        code.textContent =
+            log.code
+            ?? log.log_type
+            ?? "LOG";
+
+        const message =
+            document.createElement("span");
+
+        message.textContent =
+            log.message ?? "-";
+
+        const timestamp =
+            document.createElement("time");
+
+        timestamp.textContent =
+            formatLogTimestamp(
+                log.timestamp,
+            );
+
+        item.append(
+            code,
+            message,
+            timestamp,
+        );
+
+        listElement.appendChild(item);
     }
 }
 
