@@ -5,7 +5,7 @@ import requests
 
 from datetime import datetime, timezone
 from queue import Empty, Queue
-from threading import Lock, Thread
+from threading import Event, Lock, Thread
 from uuid import uuid4
 from types import SimpleNamespace
 
@@ -15,6 +15,10 @@ from rclpy.node import Node
 from rclpy.action import ActionClient
 
 from solar_panel_interface.action import ExecuteOperation
+from solar_panel_interface.srv import (
+    RecoverRobot,
+    StopOperation,
+)
 from solar_panel_interface.msg import (
     Parameter,
     SystemEvent,
@@ -28,6 +32,7 @@ BACKEND_BASE_URL = os.getenv(
     "http://127.0.0.1:5000",
 )
 BACKEND_CALLBACK_TIMEOUT = 3.0
+CONTROLLER_SERVICE_TIMEOUT = 3.0
 
 SYSTEM_EVENT_SEVERITIES = {
     SystemEvent.SEVERITY_INFO: "INFO",
@@ -78,6 +83,20 @@ class Ros2BridgeNode(Node):
 
         self.get_logger().info(
             "ROS2 Bridge Node started."
+        )
+
+        self.stop_operation_client = (
+            self.create_client(
+                StopOperation,
+                "stop_operation",
+            )
+        )
+
+        self.recover_robot_client = (
+            self.create_client(
+                RecoverRobot,
+                "recover_robot",
+            )
         )
 
     def system_event_callback(
@@ -721,11 +740,12 @@ class Ros2BridgeNode(Node):
 
             return
 
-        final_status = (
-            "COMPLETED"
-            if result.success
-            else "FAILED"
-        )
+        if result.success:
+            final_status = "COMPLETED"
+        elif result.error_code == "CANCELLED":
+            final_status = "CANCELLED"
+        else:
+            final_status = "FAILED"
 
         if not result.success:
             with self._state_lock:
@@ -986,6 +1006,274 @@ class Ros2BridgeNode(Node):
             ),
         )
 
+    def request_work_stop(
+        self,
+        work_execution_id: int,
+    ) -> dict:
+        with self._state_lock:
+            current_job = (
+                dict(self._last_job)
+                if self._last_job is not None
+                else None
+            )
+
+            goal_in_progress = (
+                self._goal_in_progress
+            )
+
+        if (
+            current_job is None
+            or current_job["work_execution_id"]
+            != work_execution_id
+            or not goal_in_progress
+        ):
+            return {
+                "accepted": False,
+                "error_code": "WORK_NOT_ACTIVE",
+                "message": (
+                    "The requested Work is not "
+                    "currently executing."
+                ),
+            }
+
+        # 중지 요청 이후에는 다음 Operation을 보내지 않는다.
+        with self._state_lock:
+            self._stopped_work_execution_ids.add(
+                work_execution_id
+            )
+            self._status = "STOP_REQUESTED"
+
+        if (
+            not self.stop_operation_client
+            .service_is_ready()
+        ):
+            return {
+                "accepted": False,
+                "error_code": (
+                    "STOP_SERVICE_UNAVAILABLE"
+                ),
+                "message": (
+                    "Controller StopOperation "
+                    "Service is unavailable."
+                ),
+            }
+
+        service_request = StopOperation.Request()
+
+        service_request.work_execution_id = int(
+            current_job["work_execution_id"]
+        )
+        service_request.operation_execution_id = int(
+            current_job["operation_execution_id"]
+        )
+        service_request.robot_id = int(
+            current_job["robot_id"]
+        )
+
+        service_future = (
+            self.stop_operation_client.call_async(
+                service_request
+            )
+        )
+
+        completed = Event()
+        result_holder = {}
+
+        def stop_response_callback(future):
+            try:
+                result_holder["response"] = (
+                    future.result()
+                )
+            except Exception as error:
+                result_holder["error"] = error
+            finally:
+                completed.set()
+
+        service_future.add_done_callback(
+            stop_response_callback
+        )
+
+        if not completed.wait(
+            CONTROLLER_SERVICE_TIMEOUT
+        ):
+            return {
+                "accepted": False,
+                "error_code": "CONTROLLER_SERVICE_TIMEOUT",
+                "message": (
+                    "Controller did not respond to "
+                    "the stop request in time."
+                ),
+            }
+
+        service_error = result_holder.get(
+            "error"
+        )
+
+        if service_error is not None:
+            return {
+                "accepted": False,
+                "error_code": "STOP_SERVICE_FAILED",
+                "message": str(service_error),
+            }
+
+        response = result_holder["response"]
+
+        if not response.accepted:
+            return {
+                "accepted": False,
+                "error_code": (
+                    response.error_code
+                    or "STOP_REJECTED"
+                ),
+                "message": (
+                    response.message
+                    or (
+                        "Controller rejected the "
+                        "stop request."
+                    )
+                ),
+            }
+
+        with self._state_lock:
+            self._status = "STOP_ACCEPTED"
+
+        return {
+            "accepted": True,
+            "error_code": "",
+            "message": (
+                response.message
+                or "Robot motion stop accepted."
+            ),
+            "work_execution_id": (
+                current_job["work_execution_id"]
+            ),
+            "operation_execution_id": (
+                current_job[
+                    "operation_execution_id"
+                ]
+            ),
+            "robot_id": current_job["robot_id"],
+        }
+
+    def request_robot_recovery(
+        self,
+        robot_id: int,
+    ) -> dict:
+        if robot_id <= 0:
+            return {
+                "recovered": False,
+                "error_code": "INVALID_ROBOT_ID",
+                "message": (
+                    "robot_id must be "
+                    "a positive integer."
+                ),
+            }
+
+        if (
+            not self.recover_robot_client
+            .service_is_ready()
+        ):
+            return {
+                "recovered": False,
+                "error_code": (
+                    "RECOVERY_SERVICE_UNAVAILABLE"
+                ),
+                "message": (
+                    "Controller RecoverRobot "
+                    "Service is unavailable."
+                ),
+            }
+
+        service_request = RecoverRobot.Request()
+        service_request.robot_id = int(robot_id)
+
+        service_future = (
+            self.recover_robot_client.call_async(
+                service_request
+            )
+        )
+
+        completed = Event()
+        result_holder = {}
+
+        def recovery_response_callback(future):
+            try:
+                result_holder["response"] = (
+                    future.result()
+                )
+            except Exception as error:
+                result_holder["error"] = error
+            finally:
+                completed.set()
+
+        service_future.add_done_callback(
+            recovery_response_callback
+        )
+
+        if not completed.wait(
+            CONTROLLER_SERVICE_TIMEOUT
+        ):
+            return {
+                "recovered": False,
+                "error_code": (
+                    "RECOVERY_SERVICE_TIMEOUT"
+                ),
+                "message": (
+                    "Controller did not respond to "
+                    "the recovery request in time."
+                ),
+            }
+
+        service_error = result_holder.get(
+            "error"
+        )
+
+        if service_error is not None:
+            return {
+                "recovered": False,
+                "error_code": (
+                    "RECOVERY_SERVICE_FAILED"
+                ),
+                "message": str(service_error),
+            }
+
+        response = result_holder["response"]
+
+        if not response.recovered:
+            return {
+                "recovered": False,
+                "error_code": (
+                    response.error_code
+                    or "RECOVERY_REJECTED"
+                ),
+                "message": (
+                    response.message
+                    or (
+                        "Controller rejected the "
+                        "recovery request."
+                    )
+                ),
+            }
+
+        self.enqueue_bridge_log(
+            severity="INFO",
+            code="BRIDGE_ROBOT_RECOVERED",
+            message=(
+                f"Robot {robot_id} recovery "
+                "was accepted."
+            ),
+        )
+
+        return {
+            "recovered": True,
+            "error_code": "",
+            "message": (
+                response.message
+                or "Robot recovery completed."
+            ),
+            "robot_id": robot_id,
+        }
+
 def create_http_app(
     node: Ros2BridgeNode,
 ) -> Flask:
@@ -1008,6 +1296,80 @@ def create_http_app(
         return jsonify({
             "success": True,
             "data": node.get_bridge_status(),
+            "error": None,
+        }), 200
+
+    @http_app.post(
+        "/works/<int:work_execution_id>/stop"
+    )
+    def stop_work(work_execution_id: int):
+        stop_result = node.request_work_stop(
+            work_execution_id
+        )
+
+        if not stop_result["accepted"]:
+            error_code = stop_result[
+                "error_code"
+            ]
+
+            status_code = (
+                409
+                if error_code == "WORK_NOT_ACTIVE"
+                else 503
+            )
+
+            return jsonify({
+                "success": False,
+                "data": None,
+                "error": {
+                    "code": error_code,
+                    "message": stop_result[
+                        "message"
+                    ],
+                },
+            }), status_code
+
+        return jsonify({
+            "success": True,
+            "data": stop_result,
+            "error": None,
+        }), 202
+
+    @http_app.post(
+        "/robots/<int:robot_id>/recover"
+    )
+    def recover_robot(robot_id: int):
+        recovery_result = (
+            node.request_robot_recovery(
+                robot_id
+            )
+        )
+
+        if not recovery_result["recovered"]:
+            error_code = recovery_result[
+                "error_code"
+            ]
+
+            status_code = (
+                400
+                if error_code == "INVALID_ROBOT_ID"
+                else 503
+            )
+
+            return jsonify({
+                "success": False,
+                "data": None,
+                "error": {
+                    "code": error_code,
+                    "message": recovery_result[
+                        "message"
+                    ],
+                },
+            }), status_code
+
+        return jsonify({
+            "success": True,
+            "data": recovery_result,
             "error": None,
         }), 200
 

@@ -10,6 +10,8 @@ from app.routes.pages import pages_bp
 from app.routes.bridge import bridge_bp
 from app.routes.executions import executions_bp
 from app.routes.logs import logs_bp
+from app.routes.robots import robots_bp
+from app.routes.dashboard import dashboard_bp
 
 def create_app():
     # Flask app 생성
@@ -32,8 +34,7 @@ def create_app():
     app.register_blueprint(bridge_bp)
     app.register_blueprint(executions_bp)
     app.register_blueprint(logs_bp)
-
-    # 오류 처리기 등록
-
+    app.register_blueprint(robots_bp)
+    app.register_blueprint(dashboard_bp)
     
     return app

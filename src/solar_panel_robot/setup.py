@@ -40,6 +40,7 @@ setup(
     entry_points={
         "console_scripts": [
             "controller = solar_panel_robot.controller_node:main",
+            "action_server=solar_panel_robot.action_server:main",
         ],
     },
 )

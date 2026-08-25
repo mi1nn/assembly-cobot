@@ -12,6 +12,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/Parameter.msg"
   "msg/SystemEvent.msg"
   "srv/StopOperation.srv"
+  "srv/RecoverRobot.srv"
   "action/ExecuteOperation.action"
 )
 

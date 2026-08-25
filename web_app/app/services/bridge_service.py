@@ -232,3 +232,163 @@ def submit_bridge_work(
         )
 
     return bridge_data
+
+def stop_bridge_work(
+    work_execution_id: int,
+) -> dict:
+    bridge_base_url = current_app.config[
+        "BRIDGE_BASE_URL"
+    ]
+
+    timeout_seconds = current_app.config[
+        "BRIDGE_TIMEOUT_SECONDS"
+    ]
+
+    stop_url = (
+        f"{bridge_base_url}"
+        f"/works/{work_execution_id}/stop"
+    )
+
+    try:
+        response = requests.post(
+            stop_url,
+            timeout=timeout_seconds + 1.0,
+        )
+
+    except requests.RequestException as error:
+        raise BridgeConnectionError(
+            "Could not connect to ROS2 Bridge "
+            "for the stop request."
+        ) from error
+
+    try:
+        response_data = response.json()
+
+    except ValueError as error:
+        raise BridgeResponseError(
+            "ROS2 Bridge returned invalid JSON "
+            "for the stop request."
+        ) from error
+
+    if response.status_code != 202:
+        bridge_error = response_data.get(
+            "error"
+        )
+
+        bridge_message = None
+
+        if isinstance(bridge_error, dict):
+            bridge_message = bridge_error.get(
+                "message"
+            )
+
+        raise BridgeResponseError(
+            bridge_message
+            or (
+                "ROS2 Bridge rejected the "
+                "stop request with "
+                f"HTTP {response.status_code}."
+            )
+        )
+
+    if not response_data.get("success"):
+        raise BridgeResponseError(
+            "ROS2 Bridge did not accept "
+            "the stop request."
+        )
+
+    bridge_data = response_data.get("data")
+
+    if not isinstance(bridge_data, dict):
+        raise BridgeResponseError(
+            "ROS2 Bridge stop response data "
+            "is invalid."
+        )
+
+    if not bridge_data.get("accepted"):
+        raise BridgeResponseError(
+            "Controller did not accept "
+            "the stop request."
+        )
+
+    return bridge_data
+
+def recover_bridge_robot(
+    robot_id: int,
+) -> dict:
+    bridge_base_url = current_app.config[
+        "BRIDGE_BASE_URL"
+    ]
+
+    timeout_seconds = current_app.config[
+        "BRIDGE_TIMEOUT_SECONDS"
+    ]
+
+    recovery_url = (
+        f"{bridge_base_url}"
+        f"/robots/{robot_id}/recover"
+    )
+
+    try:
+        response = requests.post(
+            recovery_url,
+            timeout=timeout_seconds + 1.0,
+        )
+
+    except requests.RequestException as error:
+        raise BridgeConnectionError(
+            "Could not connect to ROS2 Bridge "
+            "for the recovery request."
+        ) from error
+
+    try:
+        response_data = response.json()
+
+    except ValueError as error:
+        raise BridgeResponseError(
+            "ROS2 Bridge returned invalid JSON "
+            "for the recovery request."
+        ) from error
+
+    if response.status_code != 200:
+        bridge_error = response_data.get(
+            "error"
+        )
+
+        bridge_message = None
+
+        if isinstance(bridge_error, dict):
+            bridge_message = bridge_error.get(
+                "message"
+            )
+
+        raise BridgeResponseError(
+            bridge_message
+            or (
+                "ROS2 Bridge rejected the "
+                "recovery request with "
+                f"HTTP {response.status_code}."
+            )
+        )
+
+    if not response_data.get("success"):
+        raise BridgeResponseError(
+            "ROS2 Bridge did not complete "
+            "the recovery request."
+        )
+
+    bridge_data = response_data.get("data")
+
+    if not isinstance(bridge_data, dict):
+        raise BridgeResponseError(
+            "ROS2 Bridge recovery response "
+            "data is invalid."
+        )
+
+    if not bridge_data.get("recovered"):
+        raise BridgeResponseError(
+            "Controller did not recover "
+            "the Robot."
+        )
+
+    return bridge_data
