@@ -2,13 +2,12 @@
 
 > 두산로보틱스 M0609 협동로봇으로 지상형 태양광 패널 구조물의 조립 공정을 자동화하는 프로젝트
 
-**핵심 공정 순서:** 기둥 설치 → 프레임 설치 → 잠금핀 체결(2단계 삽입) → Frame 좌표계 측정 → 패널 설치
+**핵심 공정 순서:** 기둥 설치 → 프레임 설치 → 잠금핀 체결(2단계 삽입) → 패널 설치
 
 ## 1. 시스템 개요
 
 - **F/T 센서 기반 힘 제어 삽입** — Lock Pin 1차 삽입(설정 깊이) 후 재파지/가압으로 최종 삽입, 저항 과다 시 후퇴
-- **실측 기반 좌표계 생성** — Frame 기준점(P1/P2/P3) 실측으로 Frame Coordinate System 생성
-- **측정 좌표계 기준 후속 동작** — 생성된 Frame Coordinate 기준으로 Panel 위치·자세 제어
+
 
 ```
 현장관리자 ↔ Dashboard(HTML/JS) ↔ Flask Backend ↔ PostgreSQL
@@ -20,7 +19,6 @@
                               Controller ↔ M0609 Robot + Gripper + F/T Sensor
 ```
 
-자세한 구성도와 각 컴포넌트 간 연결 상태는 `docs/architecture/시스템_구성도_및_작업순서_v2.md`를 참조하세요.
 
 ## 2. 운영체제 환경
 
@@ -29,20 +27,20 @@
 - **로봇 프로그래밍:** DART Platform, DART Studio, DRL (Doosan Robot Language, Python 기반)
 - **로봇:** Doosan M0609 (그리퍼 + 내장 F/T 센서)
 - **Backend:** Python / Flask, SQLAlchemy, PostgreSQL
-- **Language:** Python (typing.Protocol / mypy)
+- **Language:** Python 
 
 ## 3. 저장소 구성
 
-이 저장소는 ROS2 colcon 워크스페이스(`src/`)와 Flask 백엔드(`web_app/`)로 구성됩니다. (`web_app/`은 이전 `ws_backend/`를 리네임한 것입니다.)
+이 저장소는 ROS2 colcon 워크스페이스(`src/`)와 Flask 백엔드(`web_app/`)로 구성됩니다. 
 
 ```
 assembly-cobot/
 ├── src/                      # ROS2 colcon 워크스페이스
-│   ├── solar_panel_interface # Action/Msg 인터페이스 정의
+│   ├── solar_panel_interface # Action/Service/Msg 인터페이스 정의
 │   ├── solar_panel_robot     # 로봇 Controller 노드
 │   └── ros2_bridge           # Flask Backend ↔ ROS2 Action HTTP 브릿지
 ├── web_app/                  # Flask Backend + PostgreSQL 스키마 + 정적 프론트엔드
-└── docs/                      # 요구사항 문서 및 아키텍처 문서 (⚠ .gitignore에 등록되어 git에는 커밋되지 않음)
+└── docs/                      # 요구사항 문서 및 아키텍처 문서 
 ```
 
 ### src/solar_panel_interface (ament_cmake)
@@ -56,38 +54,45 @@ assembly-cobot/
 
 | 파일 | 역할 |
 |---|---|
-| `controller_node.py` | 실제 로봇 Controller 노드 (`namespace="dsr01"`, ExecuteOperation Action Server) |
-| `action_server.py` | 실제 장비 없이 통신을 검증하기 위한 Mock Action Server |
+| `controller_node.py` | 실제 로봇 Controller 노드 (`namespace="dsr01"`이지만 Action은 절대 경로 `/execute_operation`으로 등록, ExecuteOperation Action Server) |
+| `action_server.py` | 실제 장비 없이 통신을 검증하기 위한 Mock Action Server. `ExecuteOperation` Action 외에 `StopOperation`/`RecoverRobot` Service도 함께 구현 |
 | `robot_controller.py` / `robot_motion.py` / `solar_motion.py` | 로봇 모션(Pick/Place 등) |
 | `force_control.py` | F/T 센서 기반 힘 제어 삽입 로직 |
+| `coordinate_manager.py` | Frame 좌표계(UCS, P1/P2/P3 기반) 생성 유틸. 현재는 `solar_motion.py` 공정 흐름에 연결되지 않은 독립 모듈 |
 | `config_loader.py` | Recipe/Parameter 설정 로딩 |
-| `ros_bridge_node.py` | Controller를 직접 호출하는 Action Client (현재 Backend와는 분리되어 있음) |
-| `operation_ids.py` | DB Operation ID(1~8) ↔ 이름(`POST_A`...`SOLAR_PANEL_A`) `IntEnum` |
+| `ros_bridge_node.py` | Controller를 직접 호출하는 별도 Action Client (`setup.py` entry_points에 등록되어 있지 않아 실행되지 않는 미사용 코드) |
 | `config/poses.yaml` | 위치/자세 설정값 |
-| `launch/solar_robot.launch.py` | `controller` + `ros_bridge` 노드 실행 |
+| `launch/solar_robot.launch.py` | `controller` 노드 실행 |
 
-> `action_server.py`는 아직 `setup.py`의 `console_scripts`에 등록되어 있지 않아 `ros2 run solar_panel_robot action_server`로 바로 실행할 수 없습니다.
-> `controller_node.py`는 `ExecuteOperation.action`의 현재 Feedback 스키마(`operation_execution_id`/`status`(uint8 enum)/`message`)로 갱신되지 않은 채 이전 필드(`current_operation`/`status`(문자열)/`progress`)를 그대로 사용하고 있어, 지금 상태로는 Goal을 받는 즉시 Feedback 전송에서 실패합니다.
-> `controller_node.py`가 실제로 실행 가능한 Operation 이름(`FRAME_PICK`, `PIN_INSERT_1` 등)은 `operation_ids.py`/DB의 Operation 코드(`postA`, `frameA` 등)와 이름 체계가 다르고 매핑도 비어 있어(`OPERATION_ID_MAP = {}`), DB에서 만든 Operation을 그대로는 실행할 수 없습니다.
+> `controller_node.py`의 `resolve_operation_code()`는 DB `operation.code`(`postA`~`postF` 등)를 그대로 검증·실행하도록 구현되어 있어, Action 이름/Operation 코드 체계는 Backend·Bridge와 일치합니다.
+> 다만 Backend의 강제정지/복구 기능이 호출하는 `StopOperation`/`RecoverRobot` Service는 `action_server.py`(Mock)에만 구현되어 있고, 실제 `controller_node.py`에는 아직 없습니다 — 강제정지/복구는 현재 Mock 기준으로만 end-to-end 검증된 상태입니다.
 
 ### src/ros2_bridge (ament_python)
 
-Flask Backend의 HTTP 요청을 큐에 쌓았다가 ROS2 Action Goal로 변환해 Controller에 전달하는 브릿지 노드입니다. 노드 자체에 Flask HTTP 서버(포트 8001)를 내장합니다.
+Flask Backend의 HTTP 요청을 큐에 쌓았다가 ROS2 Action Goal/Service 호출로 변환해 Controller에 전달하는 브릿지 노드입니다. 노드 자체에 Flask HTTP 서버(포트 8001)를 내장합니다.
 
 - `POST /jobs` — Work Order 하나의 Operation 전체(`operations` 배열)를 한 번에 받아 sequence 순서대로 큐에 쌓고, 하나씩 Action Goal로 전송
+- `POST /works/<id>/stop` — 실행 중인 Work를 `StopOperation` Service로 중지 요청
+- `POST /robots/<id>/recover` — ERROR 상태 로봇을 `RecoverRobot` Service로 복구 요청
 - `GET /health`, `GET /status` — Backend가 호출하는 상태 조회 API
 - Action Feedback을 받을 때마다 Backend의 `POST /api/v1/executions/action-feedback`으로, 완료/실패 시 `POST /api/v1/executions/action-result`로 콜백
+- Controller가 publish하는 `/system_event`를 구독해 Backend의 `POST /api/v1/logs`로 전달
 - Operation 하나가 실패하면 같은 Work Execution의 나머지 대기 중인 Operation은 큐에서 건너뜀
 
 ### web_app (Flask Backend)
 
+프론트엔드·백엔드·DB는 완성 단계로, Work Order/Robot/Dashboard/Log 전 구간이 연동되어 있습니다.
+
 | 위치 | 역할 |
 |---|---|
 | `app/routes`, `app/services`, `app/models` | Work Order / Operation / 실행 이력(Work Execution, Operation Execution) / Robot / Installation API |
-| `app/routes/work_orders.py` | `POST /<id>/execute` — Operation 전체를 한 번에 Bridge에 제출, `GET /<id>/progress` — 진행률 조회 |
+| `app/routes/work_orders.py` | `POST /<id>/execute` — Operation 전체를 한 번에 Bridge에 제출, `GET /<id>/progress` — 진행률 조회, `POST /<id>/stop` — 강제 정지 |
 | `app/routes/executions.py` | `POST /action-feedback`, `POST /action-result` — Bridge 콜백 수신, DB 상태 갱신 |
+| `app/routes/robots.py` | `GET /` — 로봇 목록 + 현재 실행 중인 Work 정보, `POST /<id>/recover` — ERROR 로봇 복구 |
+| `app/routes/dashboard.py` | `GET /` — 대시보드 집계(로봇별 활성 실행, 성공률 등) |
+| `app/routes/logs.py` | 시스템 로그 조회/기록 (`/system_event` → Bridge → 여기로 연결됨) |
 | `database/schema.sql` | PostgreSQL 스키마 (9개 테이블) |
-| `frontend/` | 정적 HTML/CSS/JS 대시보드 |
+| `frontend/` | 정적 HTML/CSS/JS 대시보드 — Work Order 생성/조회/실행/강제정지, 로봇 상태/복구, 시스템 로그 UI |
 
 ## 4. DB 구조
 ![alt text](image.png)
@@ -177,7 +182,7 @@ ros2 launch solar_panel_robot solar_robot.launch.py \
 2. `robot_id`를 지정해 실행(`POST /<id>/execute`)하면 Backend → Bridge → Controller 순서로 Action Goal이 전달되고, 가상 로봇이 움직이는 모습을 rviz2에서 확인할 수 있습니다.
 3. 진행 상태는 대시보드의 `/<id>/progress` 조회 또는 각 터미널의 ROS2 로그(`[STATUS]`, `[IF-15]` 등)로 확인합니다.
 
-> ⚠️ **현재 알려진 제약**: `controller_node.py`가 `ExecuteOperation.action`의 최신 Feedback 스키마와 Operation 이름 체계에 맞춰져 있지 않아, 위 순서대로 실행해도 Goal 전달 이후 단계에서 실패할 수 있습니다 (§3 `src/solar_panel_robot` 하단 각주 참조). 통신 흐름만 먼저 검증하려면 6.5의 `controller` 대신 Mock Server를 띄우세요.
+> ⚠️ **현재 알려진 제약**: Work Order 실행(Action Goal) 흐름은 실제 `controller`로 검증되지만, 대시보드의 강제정지/로봇 복구 버튼은 `controller_node.py`에 `StopOperation`/`RecoverRobot` Service가 아직 구현되어 있지 않아 실패합니다 (§3 각주 참조). 이 두 기능까지 통신 흐름을 검증하려면 6.5의 `controller` 대신 Mock Server를 띄우세요.
 >
 > ```bash
 > ros2 run solar_panel_robot action_server
