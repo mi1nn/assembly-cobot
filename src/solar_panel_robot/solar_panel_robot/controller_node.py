@@ -69,11 +69,9 @@ POST_OPERATION_CODES = {
 SUPPORTED_OPERATION_CODES = POST_OPERATION_CODES | {
     "POST_PICK",
     "POST_PLACE",
+    "POST_PIN_PICK",
+    "POST_PIN_PLACE",
     "POST_INSTALL",
-    "PIN_PICK",
-    "PIN_PLACE",
-    "PIN_INSERT",
-    "PIN_INSTALL",
     "SOLAR_FULL",
 }
 
@@ -621,17 +619,17 @@ class SolarPanelControllerNode(Node):
                 "SolarMotion이 준비되지 않았습니다."
             )
 
-        # DB postA~postF는 모두 동일한 Post 설치 시퀀스를 사용한다.
-        # 어떤 Post인지(operation_code)와 어떤 실행인지
-        # (operation_execution_id)는 operation_context로 전달한다.
+        # DB postA~postF는 모두 하나의 Post Cycle로 실행한다.
+        # 1 Cycle:
+        #   POST PICK -> POST PLACE -> POST PIN PICK -> POST PIN PLACE
         if operation_code in POST_OPERATION_CODES:
-            return self.solar.install_post(
+            return self.solar.install_post_cycle(
                 parameters,
                 components,
                 operation_context=operation_context,
             )
 
-        # 직접 Action 테스트용 세부 Post 동작.
+        # 직접 Action 테스트용 세부 동작.
         if operation_code == "POST_PICK":
             return self.solar.pick_post(
                 parameters,
@@ -646,24 +644,27 @@ class SolarPanelControllerNode(Node):
                 operation_context=operation_context,
             )
 
-        if operation_code == "POST_INSTALL":
-            return self.solar.install_post(
+        if operation_code == "POST_PIN_PICK":
+            return self.solar.pick_post_pin(
                 parameters,
                 components,
                 operation_context=operation_context,
             )
 
-        if operation_code == "PIN_PICK":
-            return self.solar.pick_pin()
+        if operation_code == "POST_PIN_PLACE":
+            return self.solar.place_post_pin(
+                parameters,
+                components,
+                operation_context=operation_context,
+            )
 
-        if operation_code == "PIN_PLACE":
-            return self.solar.place_pin()
-
-        if operation_code == "PIN_INSERT":
-            return self.solar.insert_pin()
-
-        if operation_code == "PIN_INSTALL":
-            return self.solar.install_pin()
+        # POST_INSTALL은 직접 테스트용 Post Cycle 별칭으로 유지한다.
+        if operation_code == "POST_INSTALL":
+            return self.solar.install_post_cycle(
+                parameters,
+                components,
+                operation_context=operation_context,
+            )
 
         if operation_code == "SOLAR_FULL":
             return self.solar.run(

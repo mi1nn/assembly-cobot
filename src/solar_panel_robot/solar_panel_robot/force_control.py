@@ -4,22 +4,13 @@ from DSR_ROBOT2 import (
     set_desired_force,
     release_force,
     set_ref_coord,
-    check_force_condition,
 
     DR_BASE,
     DR_TOOL,
 
-    DR_AXIS_X,
-    DR_AXIS_Y,
-    DR_AXIS_Z,
-    DR_AXIS_A,
-    DR_AXIS_B,
-    DR_AXIS_C,
-
     DR_FC_MOD_REL,
     DR_FC_MOD_ABS,
 )
-
 
 class ForceController:
 
@@ -35,16 +26,6 @@ class ForceController:
         "a": 3,
         "b": 4,
         "c": 5,
-    }
-
-    # check_force_condition()에서 사용하는 축 상수
-    FORCE_AXIS_MAP = {
-        "x": DR_AXIS_X,
-        "y": DR_AXIS_Y,
-        "z": DR_AXIS_Z,
-        "a": DR_AXIS_A,
-        "b": DR_AXIS_B,
-        "c": DR_AXIS_C,
     }
 
     REFERENCE_MAP = {
@@ -270,87 +251,6 @@ class ForceController:
         print(
             f"[FORCE] OFF result={result}",
             flush=True,
-        )
-
-        return result
-
-
-    # =========================================================
-    # Force Condition
-    # =========================================================
-
-    def check(
-        self,
-        axis,
-        min_force=None,
-        max_force=None,
-        reference="base",
-    ):
-        """
-        지정한 축의 Force 조건 확인
-
-        예:
-
-        self.force.check(
-            axis="z",
-            min_force=10,
-            reference="base",
-        )
-
-        -> |Fz| >= 10N 이면 True
-
-        또는
-
-        self.force.check(
-            axis="z",
-            min_force=5,
-            max_force=15,
-        )
-
-        -> 5N <= |Fz| <= 15N 이면 True
-        """
-
-        axis = axis.lower()
-        reference = reference.lower()
-
-        if axis not in self.FORCE_AXIS_MAP:
-            raise ValueError(
-                f"Invalid force axis: {axis}"
-            )
-
-        if reference not in self.REFERENCE_MAP:
-            raise ValueError(
-                f"Invalid reference: {reference}"
-            )
-
-        if min_force is None and max_force is None:
-            raise ValueError(
-                "min_force or max_force must be specified"
-            )
-
-        if min_force is not None and min_force < 0:
-            raise ValueError(
-                "min_force must be >= 0"
-            )
-
-        if max_force is not None and max_force < 0:
-            raise ValueError(
-                "max_force must be >= 0"
-            )
-
-        kwargs = {
-            "axis": self.FORCE_AXIS_MAP[axis],
-            "ref": self.REFERENCE_MAP[reference],
-        }
-
-        if min_force is not None:
-            kwargs["min"] = float(min_force)
-
-        if max_force is not None:
-            kwargs["max"] = float(max_force)
-
-        result = check_force_condition(
-            **kwargs
         )
 
         return result
