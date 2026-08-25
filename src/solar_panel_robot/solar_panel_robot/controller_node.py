@@ -11,12 +11,19 @@ from rclpy.action import (
 )
 
 from rclpy.executors import MultiThreadedExecutor
-from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.callback_groups import (
+    MutuallyExclusiveCallbackGroup,
+    ReentrantCallbackGroup,
+)
 
 from std_msgs.msg import String
 
 from solar_panel_interface.action import ExecuteOperation
 from solar_panel_interface.msg import SystemEvent
+from solar_panel_interface.srv import (
+    StopOperation,
+    RecoverRobot,
+)
 
 import DR_init
 
@@ -99,6 +106,9 @@ class SolarPanelControllerNode(Node):
 
         self.robot = None
         self.solar = None
+        self._active_goal_handle = None
+        self._stop_requested = False
+        self._robot_stopped = False
 
         # =====================================================
         # Controller 상태
@@ -119,6 +129,10 @@ class SolarPanelControllerNode(Node):
         self.action_callback_group = ReentrantCallbackGroup()
 
         self.status_callback_group = ReentrantCallbackGroup()
+
+        self.service_callback_group = (
+            MutuallyExclusiveCallbackGroup()
+        )
 
         # =====================================================
         # Status Publisher
@@ -187,6 +201,27 @@ class SolarPanelControllerNode(Node):
             "STARTING"
         )
 
+        # =====================================================
+        # Service Server
+        #
+        # Bridge와 동일한:
+        #
+        # /execute_operation
+        # =====================================================
+
+        self._stop_service = self.create_service(
+            StopOperation,
+            "/stop_operation",
+            self.stop_operation_callback,
+            callback_group=self.service_callback_group,
+        )
+
+        self._recover_service = self.create_service(
+            RecoverRobot,
+            "/recover_robot",
+            self.recover_robot_callback,
+            callback_group=self.service_callback_group,
+        )
 
     # =========================================================
     # 상태 변경
@@ -517,6 +552,34 @@ class SolarPanelControllerNode(Node):
             )
             return GoalResponse.REJECT
 
+        with self.operation_lock:
+            robot_stopped = self._robot_stopped
+
+        if robot_stopped:
+            self.get_logger().warning(
+                "Robot이 정지 상태이므로 복구가 필요합니다."
+            )
+            return GoalResponse.REJECT
+
+        id_values = (
+            goal_request.work_order_id,
+            goal_request.work_execution_id,
+            goal_request.operation_id,
+            goal_request.operation_execution_id,
+            goal_request.robot_id,
+        )
+        if any(value <= 0 for value in id_values):
+            self.get_logger().warning(
+                "Goal ID는 모두 양수여야 합니다."
+            )
+            return GoalResponse.REJECT
+
+        try:
+            self.parse_components(goal_request.components)
+        except ValueError as error:
+            self.get_logger().warning(str(error))
+            return GoalResponse.REJECT
+
         if self.current_status == "ERROR":
             self.get_logger().warning(
                 "Controller가 ERROR 상태입니다."
@@ -565,14 +628,28 @@ class SolarPanelControllerNode(Node):
             "Operation Cancel 요청 수신"
         )
 
-        # 현재 Robot Motion / Force Control을
-        # 안전하게 중단시키는 로직이 없으므로 Cancel 거부.
+        with self.operation_lock:
+            if self._active_goal_handle is not goal_handle:
+                return CancelResponse.REJECT
+            self._stop_requested = True
 
-        self.get_logger().warning(
-            "현재 버전에서는 Operation Cancel을 지원하지 않습니다."
-        )
+        try:
+            if self.solar is None:
+                raise RuntimeError("SolarMotion is not initialized.")
+            self.solar.motion.stop_motion()
+            self.solar.force.all_off()
+        except Exception as error:
+            self.get_logger().error(
+                f"Action Cancel 중 Robot 정지 실패: {error}"
+            )
+            self.set_status("ERROR")
+            return CancelResponse.REJECT
 
-        return CancelResponse.REJECT
+        with self.operation_lock:
+            self._robot_stopped = True
+
+        self.set_status("STOPPED")
+        return CancelResponse.ACCEPT
 
 
     # =========================================================
@@ -604,6 +681,138 @@ class SolarPanelControllerNode(Node):
             f"message={feedback.message}"
         )
 
+    # =========================================================
+    # Stop/Recover Service 실행
+    # =========================================================
+
+    def stop_operation_callback(self, request, response):
+        with self.operation_lock:
+            goal_handle = self._active_goal_handle
+
+            if goal_handle is None or not goal_handle.is_active:
+                response.accepted = False
+                response.error_code = "OPERATION_NOT_ACTIVE"
+                response.message = "No Operation is currently active."
+                return response
+
+            active_request = goal_handle.request
+            if (
+                request.work_execution_id
+                != active_request.work_execution_id
+                or request.operation_execution_id
+                != active_request.operation_execution_id
+                or request.robot_id != active_request.robot_id
+            ):
+                response.accepted = False
+                response.error_code = "EXECUTION_MISMATCH"
+                response.message = (
+                    "Stop request IDs do not match the active Operation."
+                )
+                return response
+
+            self._stop_requested = True
+
+        try:
+            if self.solar is None:
+                raise RuntimeError("SolarMotion is not initialized.")
+            self.solar.motion.stop_motion()
+            self.solar.force.all_off()
+        except Exception as error:
+            self.set_status("ERROR")
+            response.accepted = False
+            response.error_code = "ROBOT_STOP_FAILED"
+            response.message = str(error)
+            return response
+
+        with self.operation_lock:
+            self._robot_stopped = True
+
+        self.set_status("STOPPED")
+        response.accepted = True
+        response.error_code = ""
+        response.message = "Robot motion stop accepted."
+        return response
+
+    def recover_robot_callback(self, request, response):
+        if int(request.robot_id) != self.backend_robot_id:
+            response.recovered = False
+            response.error_code = "ROBOT_ID_MISMATCH"
+            response.message = "robot_id does not match this Controller."
+            return response
+
+        with self.operation_lock:
+            goal_handle = self._active_goal_handle
+            if goal_handle is not None and goal_handle.is_active:
+                response.recovered = False
+                response.error_code = "OPERATION_ACTIVE"
+                response.message = "An Operation is still active."
+                return response
+
+        try:
+            if self.solar is None:
+                raise RuntimeError("SolarMotion is not initialized.")
+            self.solar.force.all_off()
+        except Exception as error:
+            self.set_status("ERROR")
+            response.recovered = False
+            response.error_code = "ROBOT_RECOVERY_FAILED"
+            response.message = str(error)
+            return response
+
+        with self.operation_lock:
+            self._active_goal_handle = None
+            self._stop_requested = False
+            self._robot_stopped = False
+
+        self.set_status("READY")
+        response.recovered = True
+        response.error_code = ""
+        response.message = "Robot recovery completed."
+        return response
+
+    def complete_cancelled_operation(
+        self,
+        goal_handle,
+        operation_context,
+        message,
+    ):
+        operation_execution_id = operation_context[
+            "operation_execution_id"
+        ]
+        operation_code = operation_context["operation_code"]
+
+        self.publish_feedback(
+            goal_handle,
+            operation_execution_id,
+            ExecuteOperation.Feedback.STATUS_CANCELLED,
+            message,
+        )
+
+        if goal_handle.is_active:
+            goal_handle.canceled()
+
+        result = ExecuteOperation.Result()
+        result.success = False
+        result.error_code = "CANCELLED"
+        result.message = message
+
+        self.publish_system_event(
+            self.SEVERITY_WARNING,
+            "OPERATION_CANCELLED",
+            f"[{operation_code}] {message}",
+            work_execution_id=operation_context["work_execution_id"],
+            operation_execution_id=operation_execution_id,
+            operation_code=operation_code,
+            phase="OPERATION",
+            status="CANCELLED",
+            detail={
+                "work_order_id": operation_context["work_order_id"],
+                "operation_id": operation_context["operation_id"],
+                "success": False,
+            },
+        )
+        self.set_status("STOPPED")
+        return result
 
     # =========================================================
     # 실제 Robot Operation 실행
@@ -686,6 +895,10 @@ class SolarPanelControllerNode(Node):
         self,
         goal_handle,
     ):
+
+        with self.operation_lock:
+            self._active_goal_handle = goal_handle
+            self._stop_requested = False
 
         request = goal_handle.request
 
@@ -776,12 +989,32 @@ class SolarPanelControllerNode(Node):
                 f"{operation_code} started",
             )
 
+            with self.operation_lock:
+                stop_requested = self._stop_requested
+
+            if goal_handle.is_cancel_requested or stop_requested:
+                return self.complete_cancelled_operation(
+                    goal_handle,
+                    operation_context,
+                    "Operation was cancelled before execution.",
+                )
+
             self.execute_operation(
                 operation_code,
                 parameters,
                 components,
                 operation_context,
             )
+
+            with self.operation_lock:
+                stop_requested = self._stop_requested
+
+            if goal_handle.is_cancel_requested or stop_requested:
+                return self.complete_cancelled_operation(
+                    goal_handle,
+                    operation_context,
+                    "Operation was cancelled.",
+                )
 
             self.publish_feedback(
                 goal_handle,
@@ -826,6 +1059,16 @@ class SolarPanelControllerNode(Node):
 
         except Exception as e:
             error_message = str(e)
+
+            with self.operation_lock:
+                stop_requested = self._stop_requested
+
+            if goal_handle.is_cancel_requested or stop_requested:
+                return self.complete_cancelled_operation(
+                    goal_handle,
+                    operation_context,
+                    error_message or "Operation was cancelled.",
+                )
 
             self.get_logger().error(
                 f"Operation 실행 오류: {error_message}"
@@ -884,6 +1127,10 @@ class SolarPanelControllerNode(Node):
 
         finally:
             with self.operation_lock:
+                if self._active_goal_handle is goal_handle:
+                    self._active_goal_handle = None
+                if not self._robot_stopped:
+                    self._stop_requested = False
                 self.operation_running = False
 
             self.get_logger().info(
