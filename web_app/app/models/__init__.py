@@ -8,6 +8,7 @@ from app.models.work_execution import WorkExecution
 from app.models.operation_execution import OperationExecution
 from app.models.installation import Installation
 from app.models.system_log import SystemLog
+from app.models.sensor_data import SensorData
 
 __all__ = [
     "WorkOrder",
@@ -17,4 +18,5 @@ __all__ = [
     "OperationExecution",
     "Installation",
     "SystemLog",
+    "SensorData",
 ]

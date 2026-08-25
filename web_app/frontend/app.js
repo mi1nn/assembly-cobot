@@ -2,6 +2,8 @@
 
 const WORK_ORDER_POLL_INTERVAL_MS = 3000;
 const LOGS_API_URL = "/api/v1/logs";
+const DASHBOARD_API_URL =
+    "/api/v1/dashboard";
 
 const WORK_ORDERS_API_URL =
     "/api/v1/work-orders";
@@ -9,6 +11,9 @@ const WORK_ORDERS_API_URL =
 document.addEventListener(
     "DOMContentLoaded",
     () => {
+        initializeNavigation();
+        initializeWorkOrderModal();
+
         const refreshButton =
             document.getElementById(
                 "refresh-button",
@@ -41,16 +46,371 @@ document.addEventListener(
 
         loadWorkOrders();
         loadSystemLogs();
+        loadDashboard();
 
         window.setInterval(
             () => {
                 loadWorkOrders(false);
                 loadSystemLogs(false);
+                loadDashboard(false);
             },
             WORK_ORDER_POLL_INTERVAL_MS,
         );
     },
 );
+
+function initializeNavigation() {
+    const navigationButtons =
+        document.querySelectorAll(
+            ".nav-button[data-view]",
+        );
+
+    for (const button of navigationButtons) {
+        button.addEventListener(
+            "click",
+            () => {
+                showView(button.dataset.view);
+            },
+        );
+    }
+}
+
+function showView(viewId) {
+    const targetView =
+        document.getElementById(viewId);
+
+    if (!targetView) {
+        console.error(
+            `View를 찾을 수 없습니다: ${viewId}`,
+        );
+        return;
+    }
+
+    const views =
+        document.querySelectorAll(".app-view");
+
+    for (const view of views) {
+        const isActive = view === targetView;
+
+        view.classList.toggle(
+            "active",
+            isActive,
+        );
+
+        view.hidden = !isActive;
+    }
+
+    const navigationButtons =
+        document.querySelectorAll(".nav-button");
+
+    for (const button of navigationButtons) {
+        const isActive =
+            button.dataset.view === viewId;
+
+        button.classList.toggle(
+            "active",
+            isActive,
+        );
+
+        if (isActive) {
+            button.setAttribute(
+                "aria-current",
+                "page",
+            );
+        } else {
+            button.removeAttribute(
+                "aria-current",
+            );
+        }
+    }
+
+    const pageTitle =
+        document.getElementById("page-title");
+
+    const pageDescription =
+        document.getElementById(
+            "page-description",
+        );
+
+    pageTitle.textContent =
+        targetView.dataset.title
+        ?? "Assembly Cobot";
+
+    pageDescription.textContent =
+        targetView.dataset.description
+        ?? "";
+}
+
+function initializeWorkOrderModal() {
+    const openButton =
+        document.getElementById(
+            "open-work-order-modal",
+        );
+
+    const closeButton =
+        document.getElementById(
+            "close-work-order-modal",
+        );
+
+    const cancelButton =
+        document.getElementById(
+            "cancel-work-order-modal",
+        );
+
+    const modal =
+        document.getElementById(
+            "work-order-modal",
+        );
+
+    openButton.addEventListener(
+        "click",
+        openWorkOrderModal,
+    );
+
+    closeButton.addEventListener(
+        "click",
+        closeWorkOrderModal,
+    );
+
+    cancelButton.addEventListener(
+        "click",
+        closeWorkOrderModal,
+    );
+
+    modal.addEventListener(
+        "click",
+        (event) => {
+            if (event.target === modal) {
+                closeWorkOrderModal();
+            }
+        },
+    );
+
+    document.addEventListener(
+        "keydown",
+        (event) => {
+            if (
+                event.key === "Escape"
+                && !modal.hidden
+            ) {
+                closeWorkOrderModal();
+            }
+        },
+    );
+}
+
+function openWorkOrderModal() {
+    const modal =
+        document.getElementById(
+            "work-order-modal",
+        );
+
+    modal.hidden = false;
+
+    document.body.classList.add(
+        "modal-open",
+    );
+
+    document.getElementById(
+        "order-number",
+    ).focus();
+}
+
+function closeWorkOrderModal() {
+    const modal =
+        document.getElementById(
+            "work-order-modal",
+        );
+
+    modal.hidden = true;
+
+    document.body.classList.remove(
+        "modal-open",
+    );
+}
+
+
+async function loadDashboard(
+    showLoading = true,
+) {
+    const robotList =
+        document.getElementById(
+            "robot-status-list",
+        );
+
+    if (showLoading) {
+        robotList.textContent =
+            "Robot 상태를 불러오는 중입니다.";
+    }
+
+    try {
+        const response = await fetch(
+            DASHBOARD_API_URL,
+            {
+                method: "GET",
+                headers: {
+                    "Accept": "application/json",
+                },
+            },
+        );
+
+        const responseData =
+            await response.json();
+
+        if (
+            !response.ok
+            || !responseData.success
+        ) {
+            throw new Error(
+                responseData.error?.message
+                ?? "Dashboard 조회에 실패했습니다.",
+            );
+        }
+
+        renderRobots(
+            responseData.data?.robots,
+        );
+
+        renderSuccessRate(
+            responseData.data
+                ?.work_execution_summary,
+        );
+    } catch (error) {
+        console.error(
+            "Failed to load dashboard:",
+            error,
+        );
+
+        robotList.innerHTML =
+            '<p class="error-message">'
+            + 'Robot 상태를 불러오지 못했습니다.'
+            + '</p>';
+    }
+}
+
+function renderRobots(robots) {
+    const robotList =
+        document.getElementById(
+            "robot-status-list",
+        );
+
+    robotList.replaceChildren();
+
+    if (
+        !Array.isArray(robots)
+        || robots.length === 0
+    ) {
+        const message =
+            document.createElement("p");
+
+        message.className = "empty-message";
+        message.textContent =
+            "등록된 Robot이 없습니다.";
+
+        robotList.appendChild(message);
+        return;
+    }
+
+    for (const robot of robots) {
+        const card =
+            document.createElement("article");
+
+        card.className = "robot-status-card";
+        card.dataset.status =
+            robot.status ?? "UNKNOWN";
+
+        const identity =
+            document.createElement("div");
+
+        const name =
+            document.createElement("strong");
+
+        name.textContent =
+            robot.name
+            ?? `Robot ${robot.robot_id}`;
+
+        const code =
+            document.createElement("span");
+
+        code.textContent =
+            `${robot.robot_code ?? "-"} · ID ${robot.robot_id}`;
+
+        identity.append(name, code);
+
+        const status =
+            document.createElement("span");
+
+        status.className = "robot-status-badge";
+        status.textContent =
+            robot.status ?? "UNKNOWN";
+
+        card.append(identity, status);
+
+        if (robot.work_execution_id) {
+            const execution =
+                document.createElement("small");
+
+            execution.textContent =
+                `Work Execution ${robot.work_execution_id}`;
+
+            card.appendChild(execution);
+        }
+
+        robotList.appendChild(card);
+    }
+}
+
+function renderSuccessRate(summary) {
+    const value =
+        document.getElementById(
+            "success-rate-value",
+        );
+
+    const bar =
+        document.getElementById(
+            "success-rate-bar",
+        );
+
+    const text =
+        document.getElementById(
+            "success-rate-summary",
+        );
+
+    const track =
+        document.querySelector(
+            ".success-rate-track",
+        );
+
+    const successRate = Number(
+        summary?.success_rate ?? 0,
+    );
+
+    const safeRate = Math.min(
+        100,
+        Math.max(0, successRate),
+    );
+
+    value.textContent =
+        `${safeRate.toFixed(1)}%`;
+
+    bar.style.width = `${safeRate}%`;
+
+    track.setAttribute(
+        "aria-valuenow",
+        String(safeRate),
+    );
+
+    if (!summary?.terminal_total) {
+        text.textContent =
+            "종료된 실행이 없습니다.";
+        return;
+    }
+
+    text.textContent =
+        `성공 ${summary.completed}`
+        + ` · 실패 ${summary.failed}`
+        + ` · 취소 ${summary.cancelled}`;
+}
 
 async function loadWorkOrderProgress(
     workOrderId,
@@ -456,6 +816,7 @@ async function handleWorkOrderSubmit(event) {
         ).value = "3";
 
         await loadWorkOrders();
+        closeWorkOrderModal();
     } catch (error) {
         console.error(
             "Failed to create work order:",

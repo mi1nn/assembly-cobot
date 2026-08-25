@@ -16,17 +16,202 @@
     >
 </head>
 <body>
-    <header class="page-header">
-        <h1>Robot Automation Dashboard</h1>
-        <p>로봇 자동화 작업 현황</p>
-    </header>
+    <div class="app-shell">
+        <aside class="sidebar">
+            <div class="sidebar-brand">
+                <strong>Assembly Cobot</strong>
+                <span>작업 관리 시스템</span>
+            </div>
 
-    <main class="dashboard">
+            <nav class="sidebar-nav" aria-label="주요 화면">
+                <button
+                    class="nav-button active"
+                    type="button"
+                    data-view="dashboard-view"
+                    aria-current="page"
+                >
+                    Dashboard
+                </button>
+
+                <button
+                    class="nav-button"
+                    type="button"
+                    data-view="work-detail-view"
+                >
+                    Work Detail
+                </button>
+
+                <button
+                    class="nav-button"
+                    type="button"
+                    data-view="history-view"
+                >
+                    History
+                </button>
+            </nav>
+        </aside>
+
+        <div class="app-content">
+            <header class="page-header">
+                <h1 id="page-title">Dashboard</h1>
+                <p id="page-description">
+                    로봇 자동화 작업 현황
+                </p>
+            </header>
+
+            <main>
+        
+        <section
+            id="dashboard-view"
+            class="app-view active"
+            data-title="Dashboard"
+            data-description="로봇 자동화 작업 현황"
+        >
+            <div class="view-actions">
+                <button
+                    id="open-work-order-modal"
+                    type="button"
+                >
+                    + Work Order
+                </button>
+            </div>
+
+            <div class="dashboard-grid">
+                <section class="dashboard-section">
+                    <h2>Work Execution 성공률</h2>
+
+                    <div id="success-rate-panel">
+                        <strong id="success-rate-value">
+                            0.0%
+                        </strong>
+
+                        <div
+                            class="success-rate-track"
+                            role="progressbar"
+                            aria-label="Work Execution 성공률"
+                            aria-valuemin="0"
+                            aria-valuemax="100"
+                            aria-valuenow="0"
+                        >
+                            <div
+                                id="success-rate-bar"
+                                class="success-rate-bar"
+                            ></div>
+                        </div>
+
+                        <p id="success-rate-summary">
+                            종료된 실행이 없습니다.
+                        </p>
+                    </div>
+                </section>
+
+                <section class="dashboard-section">
+                    <h2>Robot Status</h2>
+
+                    <div id="robot-status-list">
+                        Robot 상태를 불러오는 중입니다.
+                    </div>
+                </section>
+            </div>
+
+            <section class="dashboard-section">
+                <h2>최근 로그</h2>
+
+                <p class="empty-message">
+                    전체 로그는 History 화면에서 확인할 수 있습니다.
+                </p>
+            </section>
+        </section>
+
+        <section
+            id="work-detail-view"
+            class="app-view"
+            data-title="Work Detail"
+            data-description="Work Order와 Operation 실행 관리"
+            hidden
+        >
+        </section>
+
 
         <section class="dashboard-section">
-            <h2>Create Work Order</h2>
+            <div class="section-header">
+                <h2>Work Orders</h2>
 
-            <form id="work-order-form">
+                <button
+                    id="refresh-button"
+                    type="button"
+                >
+                    새로고침
+                </button>
+            </div>
+
+            <div id="work-order-list">
+                Work Order를 불러오는 중입니다.
+            </div>
+        </section>
+
+        <section class="dashboard-section">
+            <h2>Robot Status</h2>
+
+            <p id="robot-status">
+                IDLE
+            </p>
+        </section>
+
+        <section
+            id="history-view"
+            class="app-view"
+            data-title="History"
+            data-description="작업 이벤트와 오류 기록"
+            hidden
+        >
+
+        <section class="dashboard-section">
+            <div class="section-header">
+                <h2>History</h2>
+
+                <button
+                    id="history-refresh-button"
+                    type="button"
+                >
+                    로그 새로고침
+                </button>
+            </div>
+
+            <div id="history-list">
+                로그를 불러오는 중입니다.
+            </div>
+        </section>
+
+        </section>
+
+            </main>
+
+        <div
+            id="work-order-modal"
+            class="modal-backdrop"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="work-order-modal-title"
+            hidden
+        >
+            <div class="modal-panel">
+                <div class="modal-header">
+                    <h2 id="work-order-modal-title">
+                        Create Work Order
+                    </h2>
+
+                    <button
+                        id="close-work-order-modal"
+                        class="modal-close-button"
+                        type="button"
+                        aria-label="닫기"
+                    >
+                        ×
+                    </button>
+                </div>
+
+                <form id="work-order-form">
                 <div class="form-grid">
                     <label class="form-field">
                         <span>Order Number</span>
@@ -113,52 +298,18 @@
                     ></p>
                 </div>
             </form>
-        </section>
 
-
-        <section class="dashboard-section">
-            <div class="section-header">
-                <h2>Work Orders</h2>
-
-                <button
-                    id="refresh-button"
-                    type="button"
-                >
-                    새로고침
-                </button>
+                <div class="modal-footer">
+                    <button
+                        id="cancel-work-order-modal"
+                        class="secondary-button"
+                        type="button"
+                    >
+                        취소
+                    </button>
+                </div>
             </div>
-
-            <div id="work-order-list">
-                Work Order를 불러오는 중입니다.
-            </div>
-        </section>
-
-        <section class="dashboard-section">
-            <h2>Robot Status</h2>
-
-            <p id="robot-status">
-                IDLE
-            </p>
-        </section>
-
-        <section class="dashboard-section">
-            <div class="section-header">
-                <h2>History</h2>
-
-                <button
-                    id="history-refresh-button"
-                    type="button"
-                >
-                    로그 새로고침
-                </button>
-            </div>
-
-            <div id="history-list">
-                로그를 불러오는 중입니다.
-            </div>
-        </section>
-
-    </main>
+        </div>
 
     <script src="/static/app.js"></script>
 </body>
