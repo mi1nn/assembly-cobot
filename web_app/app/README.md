@@ -1,4 +1,4 @@
-# Flask Backend 개발 가이드
+# Flask Backend
 
 ## 1. 개요
 
@@ -97,7 +97,7 @@ Route → Service → Model/Database
 
 ---
 
-## 4. 개발 환경 준비
+## 4. 환경 준비
 
 모든 명령은 `web_app` 디렉토리에서 실행한다.
 
@@ -105,13 +105,6 @@ Route → Service → Model/Database
 cd web_app
 python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
-```
-
-가상환경 활성화와 비활성화:
-
-```bash
-source .venv/bin/activate
-deactivate
 ```
 
 Backend 의존성 확인:
@@ -162,13 +155,13 @@ BRIDGE_BASE_URL=http://127.0.0.1:8001
 BRIDGE_TIMEOUT_SECONDS=3
 ```
 
-필수 DB 변수가 없으면 애플리케이션 import 단계에서 `Required environment variable is missing` 오류가 발생한다. 실제 비밀번호가 들어 있는 `.env`는 공유하거나 Git에 커밋하지 않는다.
+필수 DB 변수가 없으면 애플리케이션 import 단계에서 `Required environment variable is missing` 오류가 발생한다.
 
 ---
 
 ## 6. Database 준비
 
-로컬 개발 DB와 Seed Data를 처음 구축하려면 다음 명령을 실행한다.
+로컬 DB와 Seed Data를 처음 구축하려면 다음 명령을 실행한다.
 
 ```bash
 ./database/setup_db.sh --seed
