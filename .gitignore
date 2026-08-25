@@ -219,6 +219,7 @@ __marimo__/
 
 docs/
 CLAUDE.md
+.claude
 
 build/
 log/
