@@ -64,6 +64,29 @@ robot
 
 상세 컬럼, 제약조건, Index 및 Trigger 정의는 `schema.sql`을 기준으로 한다.
 
+### 실행 상태
+
+| 대상 | 허용 상태 |
+| --- | --- |
+| `installation` | `ACTIVE`, `INACTIVE`, `MAINTENANCE`, `ARCHIVED` |
+| `robot` | `IDLE`, `RUNNING`, `ERROR`, `OFFLINE`, `MAINTENANCE` |
+| `work_order` | `CREATED`, `READY`, `RUNNING`, `COMPLETED`, `FAILED`, `CANCELLED` |
+| `work_execution` | `PENDING`, `RUNNING`, `COMPLETED`, `FAILED`, `CANCELLED` |
+| `operation_execution` | `PENDING`, `RUNNING`, `COMPLETED`, `FAILED`, `CANCELLED` |
+
+Backend는 강제 정지가 접수되면 Robot을 `ERROR`로 전환하고, Action Result에 따라 Work와 Operation Execution의 최종 상태를 확정한다. Robot 복구가 완료되면 `ERROR → IDLE`로 전환한다.
+
+### 화면과 데이터 관계
+
+| 화면 기능 | 주요 Table |
+| --- | --- |
+| Dashboard 성공률 | 종료 상태의 `work_execution` |
+| Dashboard·Work Detail 진행률 | `work_order`, `operation_execution` |
+| Robot 상태와 활성 실행 | `robot`, `work_execution` |
+| History 실행 선택 | `work_execution`, `operation_execution` |
+| 최근·실행별 로그 | `log` |
+| 공정 센서 이력 API | `sensor_data`, `sensor`, `operation_execution` |
+
 ---
 
 ## 3. 디렉토리 구조
@@ -141,7 +164,18 @@ Seed Data 없이 Schema만 구축한다.
 ./database/setup_db.sh --seed
 ```
 
-적용 순서는 `schema.sql` → `grant.sql` → `seed.sql`이다. `seed.sql`은 고정 PK를 사용하는 개발 데이터이므로 빈 Database에 한 번만 적용한다. 이미 Seed가 적용된 DB에서 다시 실행하면 duplicate key 오류가 발생할 수 있다.
+적용 순서는 `schema.sql` → `grant.sql` → `seed.sql`이다. 현재 Seed는 다음과 같은 Dashboard·History·센서 API 확인용 데이터를 제공한다.
+
+- 활성 Installation 1건과 순서가 지정된 Operation 8건
+- `IDLE` Robot과 Force/Torque Sensor 각 1건
+- 완료된 Work Order와 Work Execution 각 1건
+- 완료된 Operation Execution 8건
+- 작업·공정 로그 6건
+- Force/Torque 측정 Sample 5건
+
+`seed.sql`은 고정 PK를 사용하는 개발 데이터이므로 빈 Database에 한 번만 적용한다. 이미 Seed가 적용된 DB에서 다시 실행하면 duplicate key 오류가 발생할 수 있다.
+
+Seed 마지막에는 이후 Backend가 생성하는 Row의 PK 충돌을 방지하도록 9개 `BIGSERIAL` Sequence를 각 Table의 최대 ID로 보정한다.
 
 ---
 
@@ -204,7 +238,7 @@ PGPASSWORD="$DB_PASSWORD" psql \
 
 > `reset_db.sh`는 `.env`의 `DB_HOST`와 `DB_PORT`를 사용해 삭제 대상을 선택하지 않고 로컬 PostgreSQL 관리자 계정으로 Database를 삭제한다. `DB_NAME`을 반드시 확인하고 로컬 개발 환경에서만 실행한다.
 
-Reset 후 Seed Data까지 다시 적용하려면 현재는 두 명령을 순서대로 실행한다.
+`reset_db.sh`는 Database를 삭제한 뒤 내부에서 `setup_db.sh`를 옵션 없이 실행하므로 Schema와 권한만 다시 적용한다. Seed Data까지 다시 적용하려면 다음 두 명령을 순서대로 실행한다. 두 번째 명령은 기존 Schema와 권한을 한 번 더 확인한 뒤 Seed를 적용한다.
 
 ```bash
 ./database/reset_db.sh
@@ -238,6 +272,24 @@ PGPASSWORD="$DB_PASSWORD" psql \
   -c "SELECT COUNT(*) FROM log;" \
   -c "SELECT COUNT(*) FROM sensor_data;"
 ```
+
+예상 결과는 Installation 1건, Operation 8건, Log 6건, Sensor Data 5건이다.
+
+실행 상태와 Sequence를 함께 확인한다.
+
+```bash
+source .env
+PGPASSWORD="$DB_PASSWORD" psql \
+  -h "$DB_HOST" \
+  -p "$DB_PORT" \
+  -U "$DB_USER" \
+  -d "$DB_NAME" \
+  -c "SELECT status, COUNT(*) FROM work_execution GROUP BY status ORDER BY status;" \
+  -c "SELECT status, COUNT(*) FROM operation_execution GROUP BY status ORDER BY status;" \
+  -c "SELECT sequencename, last_value FROM pg_sequences WHERE schemaname = 'public' ORDER BY sequencename;"
+```
+
+고정 PK를 사용하는 각 Seed Table의 Sequence `last_value`는 해당 Table의 최대 ID 이상이어야 한다.
 
 ---
 
@@ -316,11 +368,12 @@ Seed가 이미 적용된 DB에는 `seed.sql`을 다시 적용하지 않는다. �
 
 ---
 
-## 13. 데이터 베이스 구축 체크리스트
+## 13. 데이터베이스 구축 체크리스트
 
 - Ubuntu 24.04와 `sudo` 사용 가능 여부를 확인한다.
 - `web_app`에서 `.env.example`을 `.env`로 복사하고 값을 설정한다.
 - `./database/setup_db.sh --seed`를 실행한다.
 - 애플리케이션 계정으로 접속하여 9개 Table을 확인한다.
 - 주요 Table의 Seed row 수를 확인한다.
+- Seed 적용 후 9개 Sequence가 최대 PK 이상으로 보정됐는지 확인한다.
 - Flask Backend를 실행하여 DB 연결을 확인한다.
