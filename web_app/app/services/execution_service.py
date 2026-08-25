@@ -147,6 +147,22 @@ def create_execution_records_for_operations(
         operation_executions,
     )
 
+def get_work_executions(
+    limit: int = 100,
+) -> list[WorkExecution]:
+    statement = (
+        db.select(WorkExecution)
+        .order_by(
+            WorkExecution.created_at.desc(),
+            WorkExecution
+            .work_execution_id.desc(),
+        )
+        .limit(limit)
+    )
+
+    return list(
+        db.session.scalars(statement).all()
+    )
 
 def get_work_execution_by_id(
     work_execution_id: int,
