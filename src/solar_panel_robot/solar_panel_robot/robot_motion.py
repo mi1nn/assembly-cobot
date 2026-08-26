@@ -1,158 +1,70 @@
+import math
 import time
 
-import rclpy
-import DR_init
-
-from dsr_msgs2.srv import MoveStop
-
-from .config_loader import PoseLoader
 from .force_control import ForceController
 
 from DSR_ROBOT2 import (
     movej,
     movel,
-    amovel,
     movesx,
-    check_motion,
-    get_current_posx,
     get_tool_force,
+    get_current_posx,
     posj,
     posx,
     set_digital_output,
     wait,
     DR_BASE,
     DR_TOOL,
-    DR_MV_MOD_ABS,
     DR_MV_MOD_REL,
-    DR_SSTOP,
+    DR_MV_MOD_ABS,
 )
 
 
 OFF = 0
 ON = 1
 
+# =========================================================
+# Robot default configuration (YAML/config_loader 제거)
+# =========================================================
+# 작업별 speed/acc/좌표/Force 값은 SolarMotion이 DB에서 받아 각 함수에 전달한다.
+# 아래 값은 로봇 공통 기본값과 초기 Home/Gripper 설정에만 사용한다.
+DEFAULT_VELOCITY = 100.0
+DEFAULT_ACC = 200.0
+HOME_POSITION = [0.0, 0.0, 90.0, 0.0, 90.0, 0.0]
+GRASP_PORT = 1
+RELEASE_PORT = 2
+GRIPPER_WAIT_TIME = 1.0
+
 
 class RobotMotion:
     """
-    로봇의 기본 이동과 단순 그리퍼 제어를 담당
+    로봇의 기본 이동, 그리퍼 제어, Force 기반 Place를 담당한다.
     """
 
+    FORCE_AXIS_INDEX = {
+        "x": 0,
+        "y": 1,
+        "z": 2,
+    }
+
     def __init__(self):
-
-        self.config = PoseLoader()
-
-        # Force Controller
         self.force = ForceController()
 
-        # DSR ROS2 node
-        # 클래스 내부에서 DR_init.__dsr__node를 직접 쓰면
-        # Python name mangling으로 _RobotMotion__dsr__node가 되므로
-        # getattr()로 가져와 보관한다.
-        self.dsr_node = getattr(
-            DR_init,
-            "__dsr__node",
-        )
+        # YAML 대신 robot_motion.py 내부 로봇 기본값 사용.
+        # 작업 실행 시에는 DB에서 받은 speed/acc 등이 함수 인자로 전달되어
+        # 이 기본값보다 우선한다.
+        self.velocity = DEFAULT_VELOCITY
+        self.acc = DEFAULT_ACC
 
-        # MoveStop service client
-        # 현재 DSR_ROBOT2 환경의 service prefix:
-        # /dsr01/dsr_controller2/...
-        self.stop_client = self.dsr_node.create_client(
-            MoveStop,
-            "dsr_controller2/motion/move_stop",
-        )
-
-        # Robot motion settings
-        self.velocity = self.config.get_velocity()
-        self.acc = self.config.get_acc()
-
-        # Gripper settings
-        self.grasp_port = self.config.get_grasp_port()
-        self.release_port = self.config.get_release_port()
-        self.gripper_wait_time = (
-            self.config.get_gripper_wait_time()
-        )
-
-    # =========================================================
-    # Motion Stop
-    # =========================================================
-
-    def stop_motion(
-        self,
-        mode=DR_SSTOP,
-        timeout=2.0,
-    ):
-        """
-        진행 중인 Robot Motion을 MoveStop ROS2 service로 정지한다.
-
-        mode:
-            DR_SSTOP 등 Doosan stop mode
-
-        timeout:
-            service 대기 및 응답 최대 시간(sec)
-        """
-
-        print(
-            f"[MOTION STOP] 요청 mode={mode}",
-            flush=True,
-        )
-
-        if not self.stop_client.wait_for_service(
-            timeout_sec=timeout
-        ):
-            raise RuntimeError(
-                "MoveStop service를 찾을 수 없습니다: "
-                "/dsr01/dsr_controller2/motion/move_stop"
-            )
-
-        request = MoveStop.Request()
-        request.stop_mode = int(mode)
-
-        future = self.stop_client.call_async(
-            request
-        )
-
-        rclpy.spin_until_future_complete(
-            self.dsr_node,
-            future,
-            timeout_sec=timeout,
-        )
-
-        if not future.done():
-            raise RuntimeError(
-                "MoveStop service 응답 Timeout"
-            )
-
-        try:
-            result = future.result()
-
-        except Exception as e:
-            raise RuntimeError(
-                f"MoveStop service 호출 실패: {e}"
-            ) from e
-
-        if result is None:
-            raise RuntimeError(
-                "MoveStop service 응답이 없습니다."
-            )
-
-        if not result.success:
-            raise RuntimeError(
-                "Robot Motion 정지 실패"
-            )
-
-        print(
-            "[MOTION STOP] 완료",
-            flush=True,
-        )
-
-        return True
+        self.grasp_port = GRASP_PORT
+        self.release_port = RELEASE_PORT
+        self.gripper_wait_time = GRIPPER_WAIT_TIME
 
     # =========================================================
     # Gripper
     # =========================================================
 
     def grasp(self):
-
         print(
             "[GRIPPER] Grasp",
             flush=True,
@@ -162,18 +74,14 @@ class RobotMotion:
             self.release_port,
             OFF,
         )
-
         set_digital_output(
             self.grasp_port,
             ON,
         )
 
-        wait(
-            self.gripper_wait_time
-        )
+        wait(self.gripper_wait_time)
 
     def release(self):
-
         print(
             "[GRIPPER] Release",
             flush=True,
@@ -183,39 +91,25 @@ class RobotMotion:
             self.grasp_port,
             OFF,
         )
-
         set_digital_output(
             self.release_port,
             ON,
         )
 
-        wait(
-            self.gripper_wait_time
-        )
+        wait(self.gripper_wait_time)
 
     # =========================================================
     # Basic motion
     # =========================================================
 
     def move_home(self):
-
-        pose = self.config.get(
-            "home"
-        )
-
-        if pose["type"] != "joint":
-            raise ValueError(
-                "Pose 'home' must be joint type"
-            )
-
+        """robot_motion.py에 고정된 기본 Home 관절 자세로 이동한다."""
         print(
             "[HOME] 이동 시작",
             flush=True,
         )
 
-        home = posj(
-            pose["position"]
-        )
+        home = posj(HOME_POSITION)
 
         movej(
             home,
@@ -227,44 +121,6 @@ class RobotMotion:
             "[HOME] 이동 완료",
             flush=True,
         )
-
-    def make_target_ready(
-        self,
-        pose_name,
-        approach_height,
-    ):
-
-        pose = self.config.get(
-            pose_name
-        )
-
-        if pose["type"] != "task":
-            raise ValueError(
-                f"Pose '{pose_name}' "
-                f"must be task type"
-            )
-
-        target_position = (
-            pose["position"].copy()
-        )
-
-        ready_position = (
-            pose["position"].copy()
-        )
-
-        ready_position[2] += (
-            approach_height
-        )
-
-        target = posx(
-            target_position
-        )
-
-        ready = posx(
-            ready_position
-        )
-
-        return target, ready
 
     def move_z(
         self,
@@ -299,6 +155,105 @@ class RobotMotion:
             mod=DR_MV_MOD_REL,
         )
 
+    def move_x(
+        self,
+        distance,
+        ref=DR_TOOL,
+        velocity=None,
+        acc=None,
+    ):
+        """지정 좌표계의 X축으로 상대 이동한다."""
+
+        velocity = (
+            self.velocity
+            if velocity is None
+            else float(velocity)
+        )
+        acc = (
+            self.acc
+            if acc is None
+            else float(acc)
+        )
+
+        movel(
+            posx(
+                distance,
+                0,
+                0,
+                0,
+                0,
+                0,
+            ),
+            vel=velocity,
+            acc=acc,
+            ref=ref,
+            mod=DR_MV_MOD_REL,
+        )
+
+    def move_xy(
+        self,
+        x,
+        y,
+        ref=DR_BASE,
+        velocity=None,
+        acc=None,
+    ):
+        """지정 좌표계의 X/Y축으로 상대 이동한다."""
+        velocity = (
+            self.velocity
+            if velocity is None
+            else float(velocity)
+        )
+        acc = (
+            self.acc
+            if acc is None
+            else float(acc)
+        )
+
+        movel(
+            posx(
+                float(x),
+                float(y),
+                0,
+                0,
+                0,
+                0,
+            ),
+            vel=velocity,
+            acc=acc,
+            ref=ref,
+            mod=DR_MV_MOD_REL,
+        )
+
+    def move_pose(
+        self,
+        pose,
+        ref=DR_BASE,
+        velocity=None,
+        acc=None,
+    ):
+        """6D 절대 pose로 이동한다. Search best 위치 복귀에 사용한다."""
+        if pose is None or len(pose) != 6:
+            raise ValueError("pose must contain 6 values")
+
+        velocity = self.velocity if velocity is None else float(velocity)
+        acc = self.acc if acc is None else float(acc)
+
+        print(
+            "[MOVE POSE ABS] "
+            f"ref={'BASE' if ref == DR_BASE else ref}, "
+            f"pose={[round(float(v), 3) for v in pose]}",
+            flush=True,
+        )
+
+        movel(
+            posx(*[float(v) for v in pose]),
+            vel=velocity,
+            acc=acc,
+            ref=ref,
+            mod=DR_MV_MOD_ABS,
+        )
+
     # =========================================================
     # Arc motion
     # =========================================================
@@ -311,17 +266,8 @@ class RobotMotion:
         steps=6,
     ):
         """
-        start -> end 사이에 포물선 형태의
-        중간점을 생성한 뒤 movesx()로 spline 이동한다.
-
-        start, end:
-            [x, y, z, rx, ry, rz]
-
-        height:
-            궤적의 최대 추가 높이(mm)
-
-        steps:
-            생성할 spline point 개수
+        start -> end 사이에 포물선 형태의 중간점을 생성하고
+        movesx()로 spline 이동한다.
         """
 
         if steps < 2:
@@ -329,92 +275,29 @@ class RobotMotion:
                 "steps must be 2 or greater"
             )
 
-        if (
-            len(start) != 6
-            or len(end) != 6
-        ):
+        if len(start) != 6 or len(end) != 6:
             raise ValueError(
-                "start and end must "
-                "contain 6 values"
+                "start and end must contain 6 values"
             )
 
         points = []
 
-        for i in range(
-            1,
-            steps + 1,
-        ):
+        for i in range(1, steps + 1):
+            t = float(i) / steps
 
-            t = (
-                float(i)
-                / steps
-            )
-
-            x = (
-                start[0]
-                + (
-                    end[0]
-                    - start[0]
-                )
-                * t
-            )
-
-            y = (
-                start[1]
-                + (
-                    end[1]
-                    - start[1]
-                )
-                * t
-            )
+            x = start[0] + (end[0] - start[0]) * t
+            y = start[1] + (end[1] - start[1]) * t
 
             z_linear = (
                 start[2]
-                + (
-                    end[2]
-                    - start[2]
-                )
-                * t
+                + (end[2] - start[2]) * t
             )
+            z_arc = 4 * height * t * (1 - t)
+            z = z_linear + z_arc
 
-            z_arc = (
-                4
-                * height
-                * t
-                * (1 - t)
-            )
-
-            z = (
-                z_linear
-                + z_arc
-            )
-
-            rx = (
-                start[3]
-                + (
-                    end[3]
-                    - start[3]
-                )
-                * t
-            )
-
-            ry = (
-                start[4]
-                + (
-                    end[4]
-                    - start[4]
-                )
-                * t
-            )
-
-            rz = (
-                start[5]
-                + (
-                    end[5]
-                    - start[5]
-                )
-                * t
-            )
+            rx = start[3] + (end[3] - start[3]) * t
+            ry = start[4] + (end[4] - start[4]) * t
+            rz = start[5] + (end[5] - start[5]) * t
 
             points.append(
                 posx(
@@ -429,8 +312,7 @@ class RobotMotion:
 
         print(
             f"[ARC] spline 이동 시작: "
-            f"height={height}, "
-            f"steps={steps}",
+            f"height={height}, steps={steps}",
             flush=True,
         )
 
@@ -445,6 +327,513 @@ class RobotMotion:
             "[ARC] spline 이동 완료",
             flush=True,
         )
+
+    # =========================================================
+    # Current Pose / Force Probe
+    # =========================================================
+
+    def get_current_pose(
+        self,
+        ref=DR_BASE,
+    ):
+        """현재 TCP pose를 지정 좌표계 기준으로 반환한다."""
+        pose, solution_space = get_current_posx(
+            ref=ref
+        )
+
+        values = [
+            float(pose[i])
+            for i in range(6)
+        ]
+
+        return values, int(solution_space)
+
+    def seek_contact(
+        self,
+        axis="z",
+        direction=1,
+        force=8.0,
+        threshold=5.0,
+        max_travel=150.0,
+        poll_interval=0.02,
+        arm_delay=0.15,
+        timeout=None,
+        stiffness=None,
+    ):
+        """
+        공중의 접근 위치에서 약한 Desired Force를 적용해 실제 접촉점을 찾는다.
+
+        동작:
+            1. TOOL 기준 Compliance ON
+            2. baseline force / 시작 TCP pose 저장
+            3. 지정 TOOL 축으로 Desired Force 적용
+            4. 매 poll마다 pose / Fx,Fy,Fz / delta / travel 출력
+            5. arm_delay 이후 선택 축 delta force가 threshold 이상이면 접촉
+            6. max_travel 초과 시 실패 (시간 제한 없음)
+            7. 성공/실패와 무관하게 Force / Compliance OFF
+
+        반환 dict의 contact_pose는 Force가 켜진 상태에서 접촉을 감지한 순간의
+        BASE TCP pose다. 상위 로직에서는 Force 해제 후 실제 현재 pose를 다시
+        측정해 Search P0로 사용하는 것을 권장한다.
+        """
+        axis = str(axis).lower()
+        direction = int(direction)
+        force = float(force)
+        threshold = float(threshold)
+        max_travel = float(max_travel)
+        poll_interval = float(poll_interval)
+        arm_delay = float(arm_delay)
+        timeout = None if timeout is None else float(timeout)
+
+        if axis not in self.FORCE_AXIS_INDEX:
+            raise ValueError(
+                f"axis must be one of x, y, z: {axis}"
+            )
+        if direction not in (-1, 1):
+            raise ValueError(
+                "direction must be +1 or -1"
+            )
+        if force <= 0:
+            raise ValueError(
+                "force must be greater than 0"
+            )
+        if threshold <= 0:
+            raise ValueError(
+                "threshold must be greater than 0"
+            )
+        if max_travel <= 0:
+            raise ValueError(
+                "max_travel must be greater than 0"
+            )
+        if poll_interval <= 0:
+            raise ValueError(
+                "poll_interval must be greater than 0"
+            )
+        if arm_delay < 0:
+            raise ValueError(
+                "arm_delay must be >= 0"
+            )
+        if timeout is not None and timeout <= 0:
+            raise ValueError(
+                "timeout must be None or greater than 0"
+            )
+
+        axis_index = self.FORCE_AXIS_INDEX[axis]
+        side_indices = [
+            index
+            for index in (0, 1, 2)
+            if index != axis_index
+        ]
+        signed_force = direction * force
+        direction_label = "+" if direction > 0 else "-"
+
+        print(
+            "========================================",
+            flush=True,
+        )
+        print(
+            f"[CONTACT SEEK] START axis=TOOL {axis.upper()}, "
+            f"direction={direction_label}{axis.upper()}, "
+            f"force={force:.2f}N, threshold={threshold:.2f}N, "
+            f"max_travel={max_travel:.2f}mm, "
+            f"timeout={'DISABLED' if timeout is None else f'{timeout:.2f}s'}",
+            flush=True,
+        )
+        print(
+            "========================================",
+            flush=True,
+        )
+
+        try:
+            self.force.compliance_on(
+                stiffness=stiffness,
+                reference="tool",
+            )
+            wait(0.15)
+
+            baseline_force = [
+                float(value)
+                for value in get_tool_force(DR_TOOL)
+            ]
+            start_pose, solution_space = self.get_current_pose(
+                ref=DR_BASE
+            )
+
+            print(
+                "[CONTACT SEEK] Baseline "
+                f"pose=[{', '.join(f'{v:.3f}' for v in start_pose)}] "
+                f"solution_space={solution_space} "
+                f"force=[Fx={baseline_force[0]:.3f}, "
+                f"Fy={baseline_force[1]:.3f}, "
+                f"Fz={baseline_force[2]:.3f}]N",
+                flush=True,
+            )
+
+            self.force.force_on(
+                forces={
+                    axis: signed_force,
+                },
+                mode="relative",
+                reference="tool",
+            )
+
+            start_time = time.monotonic()
+            sample_index = 0
+
+            while True:
+                wait(poll_interval)
+                sample_index += 1
+
+                current_pose, _ = self.get_current_pose(
+                    ref=DR_BASE
+                )
+                current_force = [
+                    float(value)
+                    for value in get_tool_force(DR_TOOL)
+                ]
+
+                elapsed = time.monotonic() - start_time
+                travel_mm = math.sqrt(
+                    sum(
+                        (current_pose[i] - start_pose[i]) ** 2
+                        for i in range(3)
+                    )
+                )
+                force_delta = [
+                    current_force[i] - baseline_force[i]
+                    for i in range(3)
+                ]
+                axis_force_delta = abs(
+                    force_delta[axis_index]
+                )
+                side_force_delta = math.sqrt(
+                    sum(
+                        force_delta[i] ** 2
+                        for i in side_indices
+                    )
+                )
+
+                print(
+                    f"[CONTACT SAMPLE #{sample_index:04d}] "
+                    f"t={elapsed:.3f}s "
+                    f"pose=[{', '.join(f'{v:.3f}' for v in current_pose)}] "
+                    f"force=[Fx={current_force[0]:.3f}, "
+                    f"Fy={current_force[1]:.3f}, "
+                    f"Fz={current_force[2]:.3f}]N "
+                    f"delta=[dFx={force_delta[0]:+.3f}, "
+                    f"dFy={force_delta[1]:+.3f}, "
+                    f"dFz={force_delta[2]:+.3f}]N "
+                    f"travel={travel_mm:.3f}mm "
+                    f"side={side_force_delta:.3f}N "
+                    f"axis_delta={axis_force_delta:.3f}N",
+                    flush=True,
+                )
+
+                if (
+                    elapsed >= arm_delay
+                    and axis_force_delta >= threshold
+                ):
+                    result = {
+                        "start_pose": list(start_pose),
+                        "contact_pose": list(current_pose),
+                        "baseline_force": list(baseline_force),
+                        "contact_force": list(current_force),
+                        "travel_mm": float(travel_mm),
+                        "side_force_delta": float(side_force_delta),
+                        "axis_force_delta": float(axis_force_delta),
+                        "elapsed": float(elapsed),
+                    }
+
+                    print(
+                        "",
+                        flush=True,
+                    )
+                    print(
+                        "========================================",
+                        flush=True,
+                    )
+                    print(
+                        "[CONTACT SEEK] CONTACT DETECTED",
+                        flush=True,
+                    )
+                    print(
+                        f"[CONTACT SEEK] contact_pose="
+                        f"[{', '.join(f'{v:.3f}' for v in current_pose)}]",
+                        flush=True,
+                    )
+                    print(
+                        f"[CONTACT SEEK] travel={travel_mm:.3f}mm, "
+                        f"axis_delta={axis_force_delta:.3f}N "
+                        f">= {threshold:.3f}N, "
+                        f"side={side_force_delta:.3f}N",
+                        flush=True,
+                    )
+                    print(
+                        "========================================",
+                        flush=True,
+                    )
+
+                    return result
+
+                if timeout is not None and elapsed >= timeout:
+                    raise RuntimeError(
+                        "[CONTACT SEEK] Timeout: "
+                        f"{timeout:.2f}s, travel={travel_mm:.3f}mm, "
+                        f"axis_delta={axis_force_delta:.3f}N"
+                    )
+
+                if travel_mm >= max_travel:
+                    raise RuntimeError(
+                        "[CONTACT SEEK] 최대 이동거리 초과: "
+                        f"travel={travel_mm:.3f}mm >= "
+                        f"max_travel={max_travel:.3f}mm, "
+                        f"axis_delta={axis_force_delta:.3f}N"
+                    )
+
+
+        finally:
+            print(
+                "[CONTACT SEEK] Force / Compliance 종료",
+                flush=True,
+            )
+            self.force.all_off()
+
+    def probe_force(
+        self,
+        axis="z",
+        direction=1,
+        force=8.0,
+        probe_time=0.30,
+        max_travel=2.0,
+        poll_interval=0.02,
+        stiffness=None,
+    ):
+        """
+        짧은 Desired Force를 걸어 후보 pose의 삽입 가능성을 측정한다.
+
+        반환값:
+            travel_mm:
+                probe 시작 TCP 위치 대비 실제 이동 거리(mm)
+            side_force_delta:
+                Force 시작 전 baseline 대비 횡방향 힘 변화량(N)
+            axis_force_delta:
+                Force 축의 baseline 대비 힘 변화량(N)
+
+        probe_time 또는 max_travel 중 먼저 도달하는 조건에서 종료하고
+        Force / Compliance를 항상 해제한다.
+        """
+        axis = str(axis).lower()
+        direction = int(direction)
+        force = float(force)
+        probe_time = float(probe_time)
+        max_travel = float(max_travel)
+        poll_interval = float(poll_interval)
+
+        if axis not in self.FORCE_AXIS_INDEX:
+            raise ValueError(
+                f"axis must be one of x, y, z: {axis}"
+            )
+        if direction not in (-1, 1):
+            raise ValueError(
+                "direction must be +1 or -1"
+            )
+        if force <= 0:
+            raise ValueError(
+                "force must be greater than 0"
+            )
+        if probe_time <= 0:
+            raise ValueError(
+                "probe_time must be greater than 0"
+            )
+        if max_travel <= 0:
+            raise ValueError(
+                "max_travel must be greater than 0"
+            )
+        if poll_interval <= 0:
+            raise ValueError(
+                "poll_interval must be greater than 0"
+            )
+
+        axis_index = self.FORCE_AXIS_INDEX[axis]
+        side_indices = [
+            index
+            for index in (0, 1, 2)
+            if index != axis_index
+        ]
+        signed_force = direction * force
+
+        result = None
+
+        print(
+            f"[PROBE] 시작 axis=TOOL {axis.upper()}, "
+            f"direction={direction:+d}, "
+            f"force={force:.2f}N, "
+            f"probe_time={probe_time:.2f}s, "
+            f"max_travel={max_travel:.2f}mm",
+            flush=True,
+        )
+
+        try:
+            self.force.compliance_on(
+                stiffness=stiffness,
+                reference="tool",
+            )
+            wait(0.15)
+
+            baseline_force = [
+                float(value)
+                for value in get_tool_force(DR_TOOL)
+            ]
+            start_pose, _ = self.get_current_pose(
+                ref=DR_BASE
+            )
+
+            print(
+                "[PROBE] Baseline "
+                f"pose=[{', '.join(f'{v:.3f}' for v in start_pose)}] "
+                f"force=[Fx={baseline_force[0]:.3f}, "
+                f"Fy={baseline_force[1]:.3f}, "
+                f"Fz={baseline_force[2]:.3f}]N",
+                flush=True,
+            )
+
+            # Probe를 걸기 전부터 삽입축 하중이 큰 경우에는
+            # 이미 지그/부품에 강하게 걸린 후보로 보고 Desired Force를
+            # 추가하지 않는다. set_desired_force()에서 멈추는 상황을 방지한다.
+            baseline_axis_force_limit = max(20.0, force * 2.5)
+            baseline_axis_force = abs(baseline_force[axis_index])
+            if baseline_axis_force >= baseline_axis_force_limit:
+                print(
+                    f"[PROBE] SKIP - baseline {axis.upper()} force가 이미 큼: "
+                    f"{baseline_axis_force:.3f}N >= "
+                    f"{baseline_axis_force_limit:.3f}N",
+                    flush=True,
+                )
+                result = {
+                    "start_pose": list(start_pose),
+                    "end_pose": list(start_pose),
+                    "baseline_force": list(baseline_force),
+                    "end_force": list(baseline_force),
+                    "travel_mm": 0.0,
+                    "side_force_delta": 0.0,
+                    "axis_force_delta": 0.0,
+                    "stopped_by_travel_limit": False,
+                    "blocked_by_baseline": True,
+                }
+                return result
+
+            self.force.force_on(
+                forces={
+                    axis: signed_force,
+                },
+                mode="relative",
+                reference="tool",
+            )
+
+            start_time = time.monotonic()
+            stopped_by_travel_limit = False
+            end_pose = list(start_pose)
+            end_force = list(baseline_force)
+            travel_mm = 0.0
+            sample_index = 0
+
+            while True:
+                wait(poll_interval)
+                sample_index += 1
+
+                end_pose, _ = self.get_current_pose(
+                    ref=DR_BASE
+                )
+                end_force = [
+                    float(value)
+                    for value in get_tool_force(DR_TOOL)
+                ]
+
+                travel_mm = math.sqrt(
+                    sum(
+                        (end_pose[i] - start_pose[i]) ** 2
+                        for i in range(3)
+                    )
+                )
+
+                elapsed = time.monotonic() - start_time
+                force_delta = [
+                    end_force[i] - baseline_force[i]
+                    for i in range(3)
+                ]
+                sample_side_force_delta = math.sqrt(
+                    sum(
+                        force_delta[i] ** 2
+                        for i in side_indices
+                    )
+                )
+                sample_axis_force_delta = abs(
+                    force_delta[axis_index]
+                )
+
+                print(
+                    f"[PROBE SAMPLE #{sample_index:03d}] "
+                    f"t={elapsed:.3f}s "
+                    f"pose=[{', '.join(f'{v:.3f}' for v in end_pose)}] "
+                    f"force=[Fx={end_force[0]:.3f}, "
+                    f"Fy={end_force[1]:.3f}, "
+                    f"Fz={end_force[2]:.3f}]N "
+                    f"delta=[dFx={force_delta[0]:+.3f}, "
+                    f"dFy={force_delta[1]:+.3f}, "
+                    f"dFz={force_delta[2]:+.3f}]N "
+                    f"travel={travel_mm:.3f}mm "
+                    f"side={sample_side_force_delta:.3f}N "
+                    f"axis_delta={sample_axis_force_delta:.3f}N",
+                    flush=True,
+                )
+
+                if travel_mm >= max_travel:
+                    stopped_by_travel_limit = True
+                    break
+
+                if elapsed >= probe_time:
+                    break
+
+            side_force_delta = math.sqrt(
+                sum(
+                    (
+                        end_force[i]
+                        - baseline_force[i]
+                    ) ** 2
+                    for i in side_indices
+                )
+            )
+            axis_force_delta = abs(
+                end_force[axis_index]
+                - baseline_force[axis_index]
+            )
+
+            result = {
+                "start_pose": start_pose,
+                "end_pose": end_pose,
+                "baseline_force": baseline_force,
+                "end_force": end_force,
+                "travel_mm": float(travel_mm),
+                "side_force_delta": float(side_force_delta),
+                "axis_force_delta": float(axis_force_delta),
+                "stopped_by_travel_limit": bool(
+                    stopped_by_travel_limit
+                ),
+                "blocked_by_baseline": False,
+            }
+
+            print(
+                f"[PROBE] 결과 travel={travel_mm:.3f}mm, "
+                f"side_force_delta={side_force_delta:.3f}N, "
+                f"axis_force_delta={axis_force_delta:.3f}N, "
+                f"travel_limit={stopped_by_travel_limit}",
+                flush=True,
+            )
+
+        finally:
+            self.force.all_off()
+
+        return result
 
     # =========================================================
     # Pick & Place
@@ -468,10 +857,8 @@ class RobotMotion:
         )
 
         print(
-            f"[PICK] "
-            f"velocity={velocity}, "
-            f"acc={acc}, "
-            f"distance={distance}",
+            f"[PICK] velocity={velocity}, "
+            f"acc={acc}, distance={distance}",
             flush=True,
         )
 
@@ -480,7 +867,9 @@ class RobotMotion:
             velocity=velocity,
             acc=acc,
         )
+
         self.grasp()
+
         self.move_z(
             distance,
             velocity=velocity,
@@ -494,898 +883,289 @@ class RobotMotion:
 
     def place(
         self,
-        distance=50,
-        search_limit_z=0.0,
-        force=40.0,
-        contact_force=20.0,
-        insert_force=12.0,
-        stiffness_z=500.0,
-        search_velocity=10.0,
-        search_acc=20.0,
-        search_timeout=None,
-        insert_timeout=3.0,
+        axis="z",
+        direction=1,
+        force=30.0,
+        threshold=20.0,
+        timeout=10.0,
+        hold_time=0.0,
+        poll_interval=0.02,
+        arm_delay=0.10,
+        stiffness=None,
     ):
         """
-        Force 기반 Place
+        TOOL 좌표계 Force 기반 범용 Place 삽입 동작.
 
-        동작 순서
+        Post 예시:
+            axis="z", direction=+1
+            -> TOOL +Z 방향 Force 삽입, Delta Fz 감시
 
-        1. 현재 Base 기준 TCP 위치 확인
-        2. 비접촉 상태의 TOOL Fz를 baseline으로 저장
-        3. 현재 X/Y/Rx/Ry/Rz 유지
-           Base Z=search_limit_z까지 amovel 하강
-        4. TOOL Z Force로 최초 접촉 확인
-        5. 1단계 Force 값 터미널 1회 출력
-        6. Soft Stop
-        7. Compliance Control ON
-        8. TOOL -Z 방향 Desired Force 적용
-        9. 압입 Force 확인
-        10. 2단계 Force 값 터미널 1회 출력
-        11. Force / Compliance OFF
-        12. Gripper를 닫은 상태로 Post Check 단계에 제어권 반환
+        Post Pin 예시:
+            axis="x", direction=+1
+            -> TOOL +X 방향 Force 삽입, Delta Fx 감시
 
-        주의:
-            Gripper Release와 BASE +Z 이탈은 이 함수에서 수행하지 않는다.
-            상위 SolarMotion.install_post()에서 Frame Check 성공 후 수행한다.
+        get_tool_force(DR_TOOL)로 시작점 대비 힘 변화량을 직접 측정한다.
 
-        distance:
-            Post Check 성공 후 사용할 권장 이탈 거리(mm).
-            이 함수 내부에서는 상승하지 않고 값을 반환한다.
+        axis:
+            "x", "y", "z" 중 Force를 적용할 TOOL 축.
 
-        search_limit_z:
-            접촉이 없을 경우 허용할
-            Base 기준 최저 Z 좌표(mm)
+        direction:
+            +1이면 해당 TOOL 축의 +방향, -1이면 -방향.
 
         force:
-            접촉 이후 TOOL -Z 방향으로
-            가할 Desired Force(N)
+            Desired Force의 크기(N). 양수 값만 입력한다.
 
-        contact_force:
-            최초 접촉으로 판단할
-            TOOL Z축 Force(N)
+        threshold:
+            Force 시작점 대비 선택 축 힘 변화량의 절대값(N).
+            이 값 이상인 상태가 hold_time 동안 연속 유지되면 완료로 판단한다.
 
-        insert_force:
-            압입이 진행됐다고 판단할
-            TOOL Z축 Force(N)
+        timeout:
+            None이면 시간 제한 없이 threshold 조건을 기다린다.
 
-        stiffness_z:
-            TOOL Z축 Compliance stiffness
-
-        search_velocity:
-            접촉 탐색 하강 속도(mm/s)
-
-        search_acc:
-            접촉 탐색 하강 가속도(mm/s^2)
-
-        search_timeout:
-            접촉 탐색 최대 시간(sec)
-            None이면 이동거리와 속도로 자동 계산
-
-        insert_timeout:
-            Force Control 이후
-            insert_force 도달 최대 시간(sec)
+        hold_time:
+            threshold 이상 상태를 연속으로 유지해야 하는 시간(초).
+            0이면 기존처럼 즉시 완료한다.
         """
 
+        axis = str(axis).lower()
+        direction = int(direction)
+        force = float(force)
+        threshold = float(threshold)
+        timeout = None if timeout is None else float(timeout)
+        hold_time = float(hold_time)
+        poll_interval = float(poll_interval)
+        arm_delay = float(arm_delay)
+
+        if axis not in self.FORCE_AXIS_INDEX:
+            raise ValueError(
+                f"axis must be one of x, y, z: {axis}"
+            )
+
+        if direction not in (-1, 1):
+            raise ValueError(
+                "direction must be +1 or -1"
+            )
+
+        if force <= 0:
+            raise ValueError(
+                "force must be greater than 0"
+            )
+
+        if threshold <= 0:
+            raise ValueError(
+                "threshold must be greater than 0"
+            )
+
+        if timeout is not None and timeout <= 0:
+            raise ValueError(
+                "timeout must be None or greater than 0"
+            )
+
+        if hold_time < 0:
+            raise ValueError(
+                "hold_time must be >= 0"
+            )
+
+        if poll_interval <= 0:
+            raise ValueError(
+                "poll_interval must be greater than 0"
+            )
+
+        if arm_delay < 0:
+            raise ValueError(
+                "arm_delay must be >= 0"
+            )
+
+        axis_index = self.FORCE_AXIS_INDEX[axis]
+        axis_label = axis.upper()
+        signed_force = direction * force
+        direction_label = "+" if direction > 0 else "-"
+
         print(
-            f"[PLACE] 시작 "
-            f"search_limit_z={search_limit_z}mm, "
-            f"contact_force={contact_force}N, "
-            f"desired_force={force}N, "
-            f"insert_force={insert_force}N",
+            f"[PLACE] 시작 axis=TOOL {axis_label}, "
+            f"direction={direction_label}{axis_label}, "
+            f"desired_force={force:.2f}N, "
+            f"delta_threshold={threshold:.2f}N, "
+            f"hold_time={hold_time:.2f}s, "
+            f"timeout={'DISABLED' if timeout is None else f'{timeout:.2f}s'}",
             flush=True,
         )
 
-        contact_detected = False
-        search_motion_started = False
         force_control_started = False
 
         try:
-
-            # =================================================
-            # 1. 현재 Base 기준 TCP 위치 확인
-            # =================================================
-
-            current_pose, _ = get_current_posx(
-                DR_BASE
-            )
-
-            current_z = float(
-                current_pose[2]
-            )
-
+            # 1. TOOL 기준 Compliance Control
             print(
-                f"[PLACE] 현재 TCP "
-                f"Base Z={current_z:.2f}mm",
-                flush=True,
-            )
-
-            if current_z <= search_limit_z:
-
-                raise RuntimeError(
-                    "[PLACE] 현재 TCP Z가 "
-                    "탐색 한계 이하입니다. "
-                    f"current_z={current_z:.2f}, "
-                    f"search_limit_z={search_limit_z:.2f}"
-                )
-
-            # =================================================
-            # 2. 비접촉 상태의 TOOL Fz를 baseline으로 저장
-            # =================================================
-
-            print(
-                "[PLACE] Force baseline 측정",
-                flush=True,
-            )
-
-            # 이전 모션의 진동이 가라앉도록 대기
-            wait(1.0)
-
-            baseline_force = get_tool_force(
-                DR_TOOL
-            )
-
-            baseline_fz = float(
-                baseline_force[2]
-            )
-
-            print(
-                f"[PLACE] baseline Fz="
-                f"{baseline_fz:.2f}N",
-                flush=True,
-            )
-
-            # =================================================
-            # 3. Base Z=search_limit_z까지
-            #    비동기 절대좌표 하강
-            # =================================================
-
-            search_target = posx(
-                current_pose[0],
-                current_pose[1],
-                search_limit_z,
-                current_pose[3],
-                current_pose[4],
-                current_pose[5],
-            )
-
-            print(
-                f"[PLACE] 접촉 탐색 시작 "
-                f"Base Z "
-                f"{current_z:.2f} -> "
-                f"{search_limit_z:.2f}mm "
-                f"(vel={search_velocity}, "
-                f"acc={search_acc})",
-                flush=True,
-            )
-
-            amovel(
-                search_target,
-                vel=search_velocity,
-                acc=search_acc,
-                ref=DR_BASE,
-                mod=DR_MV_MOD_ABS,
-            )
-
-            search_motion_started = True
-
-            # 비동기 모션 시작 후 상태 반영 대기
-            wait(0.02)
-
-            start_time = time.monotonic()
-
-            # =================================================
-            # 접촉 탐색 Timeout 계산
-            # =================================================
-
-            if search_timeout is None:
-
-                if search_velocity <= 0:
-
-                    raise ValueError(
-                        "search_velocity must be greater than 0"
-                    )
-
-                search_distance = (
-                    current_z
-                    - search_limit_z
-                )
-
-                calculated_timeout = (
-                    search_distance
-                    / search_velocity
-                    + 5.0
-                )
-
-            else:
-
-                calculated_timeout = (
-                    search_timeout
-                )
-
-            print(
-                f"[PLACE] 접촉 탐색 Timeout="
-                f"{calculated_timeout:.2f}s",
-                flush=True,
-            )
-
-            # =================================================
-            # 4. 1단계
-            #    amovel 중 최초 접촉 Force 확인
-            # =================================================
-
-            while True:
-
-                stage1_force = get_tool_force(
-                    DR_TOOL
-                )
-
-                current_fz = float(
-                    stage1_force[2]
-                )
-
-                delta_fz = abs(
-                    current_fz
-                    - baseline_fz
-                )
-
-                contact = (
-                    delta_fz
-                    >= contact_force
-                )
-
-                # -------------------------------------------------
-                # 접촉 Force 변화량 도달
-                # -------------------------------------------------
-
-                if contact:
-
-                    contact_detected = True
-
-                    print(
-                        "",
-                        flush=True,
-                    )
-
-                    print(
-                        "========================================",
-                        flush=True,
-                    )
-
-                    print(
-                        "[PLACE][1단계] 최초 접촉 감지",
-                        flush=True,
-                    )
-
-                    print(
-                        f"[PLACE][1단계] 기준: "
-                        f"|ΔF_tool_z| >= "
-                        f"{contact_force:.2f}N",
-                        flush=True,
-                    )
-
-                    print(
-                        f"[PLACE][1단계] "
-                        f"baseline Fz={baseline_fz:.2f}N, "
-                        f"current Fz={current_fz:.2f}N, "
-                        f"delta Fz={delta_fz:.2f}N",
-                        flush=True,
-                    )
-
-                    print(
-                        f"[PLACE][1단계] Force "
-                        f"Fx={stage1_force[0]:.2f}N, "
-                        f"Fy={stage1_force[1]:.2f}N, "
-                        f"Fz={stage1_force[2]:.2f}N",
-                        flush=True,
-                    )
-
-                    print(
-                        f"[PLACE][1단계] Moment "
-                        f"Mx={stage1_force[3]:.2f}Nm, "
-                        f"My={stage1_force[4]:.2f}Nm, "
-                        f"Mz={stage1_force[5]:.2f}Nm",
-                        flush=True,
-                    )
-
-                    print(
-                        "========================================",
-                        flush=True,
-                    )
-
-                    print(
-                        "",
-                        flush=True,
-                    )
-
-                    break
-
-                # -------------------------------------------------
-                # Z=search_limit_z까지 갔는데 접촉 없음
-                # -------------------------------------------------
-
-                motion_state = check_motion()
-
-                if motion_state == 0:
-
-                    raise RuntimeError(
-                        "[PLACE] 접촉 감지 실패: "
-                        f"Base Z={search_limit_z}mm까지 "
-                        "이동했지만 접촉이 "
-                        "감지되지 않았습니다."
-                    )
-
-                # -------------------------------------------------
-                # Timeout
-                # -------------------------------------------------
-
-                elapsed = (
-                    time.monotonic()
-                    - start_time
-                )
-
-                if elapsed >= calculated_timeout:
-
-                    raise RuntimeError(
-                        "[PLACE] 접촉 탐색 Timeout: "
-                        f"{calculated_timeout:.2f}초 동안 "
-                        "접촉이 감지되지 않았습니다."
-                    )
-
-                wait(0.02)
-
-            # =================================================
-            # 5. 최초 접촉 -> amovel Soft Stop
-            # =================================================
-
-            if contact_detected:
-
-                print(
-                    "[PLACE] 1단계 접촉 감지 "
-                    "-> Soft Stop",
-                    flush=True,
-                )
-
-                self.stop_motion(
-                    DR_SSTOP
-                )
-
-                stop_wait_start = (
-                    time.monotonic()
-                )
-
-                # 실제 모션이 완전히 멈출 때까지 대기
-                while check_motion() != 0:
-
-                    if (
-                        time.monotonic()
-                        - stop_wait_start
-                    ) >= 2.0:
-
-                        raise RuntimeError(
-                            "[PLACE] 정지 실패: "
-                            "Soft Stop 후에도 "
-                            "모션이 종료되지 않았습니다."
-                        )
-
-                    wait(0.01)
-
-                search_motion_started = False
-
-                # 접촉 당시 정지 위치 확인
-                stopped_pose, _ = get_current_posx(
-                    DR_BASE
-                )
-
-                print(
-                    f"[PLACE] 접촉 후 정지 위치 "
-                    f"Base Z="
-                    f"{float(stopped_pose[2]):.2f}mm",
-                    flush=True,
-                )
-
-            # =================================================
-            # 6. Compliance Control ON
-            # =================================================
-
-            print(
-                "[PLACE] Compliance ON "
-                "(reference=TOOL)",
+                "[PLACE] Compliance ON (reference=TOOL)",
                 flush=True,
             )
 
             self.force.compliance_on(
-                stiffness={
-                    "z": stiffness_z,
-                },
+                stiffness=stiffness,
                 reference="tool",
             )
 
-            # Compliance 상태가 안정된 뒤 Desired Force 적용
-            wait(0.5)
+            wait(0.2)
 
-            # =================================================
-            # 7. TOOL -Z Desired Force 적용
-            # =================================================
+            # 2. Force 적용 직전 선택 축의 baseline 저장
+            baseline_force = [
+                float(value)
+                for value in get_tool_force(DR_TOOL)
+            ]
+            baseline_value = float(
+                baseline_force[axis_index]
+            )
 
             print(
-                f"[PLACE] TOOL -Z "
-                f"Desired Force "
-                f"{force:.2f}N 적용",
+                f"[PLACE] Baseline F{axis}={baseline_value:.2f}N "
+                f"| force=[Fx={baseline_force[0]:.2f}, "
+                f"Fy={baseline_force[1]:.2f}, "
+                f"Fz={baseline_force[2]:.2f}]N",
+                flush=True,
+            )
+
+            # 3. 선택한 TOOL 축에 Desired Force 적용
+            print(
+                f"[PLACE] TOOL {direction_label}{axis_label} "
+                f"Desired Force {force:.2f}N 적용",
                 flush=True,
             )
 
             self.force.force_on(
                 forces={
-                    "z": -force,
+                    axis: signed_force,
                 },
                 mode="relative",
                 reference="tool",
             )
 
             force_control_started = True
+            start_time = time.monotonic()
 
-            # =================================================
-            # 8. 2단계
-            #    압입 Force 도달 확인
-            # =================================================
+            if arm_delay > 0:
+                wait(arm_delay)
 
             print(
-                f"[PLACE] 2단계 압입 확인 시작 "
-                f"|F_tool_z| >= "
-                f"{insert_force:.2f}N",
+                f"[PLACE] Delta Force 판정 시작 "
+                f"|F{axis} - baseline| >= {threshold:.2f}N",
                 flush=True,
             )
 
-            insert_start = (
-                time.monotonic()
-            )
+            # 본 삽입은 0.1초마다 Force 상태를 출력한다.
+            log_interval = 0.10
+            next_log_time = 0.0
+            sample_index = 0
+            threshold_start = None
 
+            # 4. 선택 축의 힘 변화량을 직접 반복 측정
             while True:
-
-                inserted = self.force.check(
-                    axis="z",
-                    min_force=insert_force,
-                    reference="tool",
+                measured_force = [
+                    float(value)
+                    for value in get_tool_force(DR_TOOL)
+                ]
+                current_value = float(
+                    measured_force[axis_index]
                 )
-
-                # -------------------------------------------------
-                # 압입 Force 도달
-                # -------------------------------------------------
-
-                if inserted:
-
-                    # 2단계 조건이 만족된 바로 이 시점의
-                    # TOOL 기준 실제 Force를 1회 읽음
-                    stage2_force = get_tool_force(
-                        DR_TOOL
-                    )
-
-                    print(
-                        "",
-                        flush=True,
-                    )
-
-                    print(
-                        "========================================",
-                        flush=True,
-                    )
-
-                    print(
-                        "[PLACE][2단계] 압입 Force 도달",
-                        flush=True,
-                    )
-
-                    print(
-                        f"[PLACE][2단계] 기준: "
-                        f"|F_tool_z| >= "
-                        f"{insert_force:.2f}N",
-                        flush=True,
-                    )
-
-                    print(
-                        f"[PLACE][2단계] Force "
-                        f"Fx={stage2_force[0]:.2f}N, "
-                        f"Fy={stage2_force[1]:.2f}N, "
-                        f"Fz={stage2_force[2]:.2f}N",
-                        flush=True,
-                    )
-
-                    print(
-                        f"[PLACE][2단계] Moment "
-                        f"Mx={stage2_force[3]:.2f}Nm, "
-                        f"My={stage2_force[4]:.2f}Nm, "
-                        f"Mz={stage2_force[5]:.2f}Nm",
-                        flush=True,
-                    )
-
-                    print(
-                        "========================================",
-                        flush=True,
-                    )
-
-                    print(
-                        "",
-                        flush=True,
-                    )
-
-                    break
-
-                # -------------------------------------------------
-                # 압입 Timeout
-                # -------------------------------------------------
-
-                elapsed = (
-                    time.monotonic()
-                    - insert_start
+                delta_force = abs(
+                    current_value - baseline_value
                 )
+                elapsed = time.monotonic() - start_time
+                sample_index += 1
 
-                if elapsed >= insert_timeout:
-
-                    # 실패 시점 Force도 디버깅을 위해 1회 출력
-                    timeout_force = get_tool_force(
-                        DR_TOOL
-                    )
-
+                if elapsed >= next_log_time:
+                    delta_xyz = [
+                        measured_force[i] - baseline_force[i]
+                        for i in range(3)
+                    ]
                     print(
-                        f"[PLACE][2단계][TIMEOUT] "
-                        f"Fx={timeout_force[0]:.2f}N, "
-                        f"Fy={timeout_force[1]:.2f}N, "
-                        f"Fz={timeout_force[2]:.2f}N",
+                        f"[PLACE SAMPLE #{sample_index:04d}] "
+                        f"t={elapsed:.3f}s "
+                        f"force=[Fx={measured_force[0]:.3f}, "
+                        f"Fy={measured_force[1]:.3f}, "
+                        f"Fz={measured_force[2]:.3f}]N "
+                        f"delta=[dFx={delta_xyz[0]:+.3f}, "
+                        f"dFy={delta_xyz[1]:+.3f}, "
+                        f"dFz={delta_xyz[2]:+.3f}]N "
+                        f"axis_delta={delta_force:.3f}N / "
+                        f"threshold={threshold:.3f}N",
                         flush=True,
                     )
+                    next_log_time += log_interval
 
+                if delta_force >= threshold:
+                    if threshold_start is None:
+                        threshold_start = time.monotonic()
+
+                    held = time.monotonic() - threshold_start
+
+                    if held >= hold_time:
+                        print(
+                            "",
+                            flush=True,
+                        )
+                        print(
+                            "========================================",
+                            flush=True,
+                        )
+                        print(
+                            "[PLACE] COMPLETE - 삽입 Force 유지 조건 만족",
+                            flush=True,
+                        )
+                        print(
+                            f"[PLACE] Axis=TOOL {axis_label}",
+                            flush=True,
+                        )
+                        print(
+                            f"[PLACE] Baseline F{axis}="
+                            f"{baseline_value:.2f}N",
+                            flush=True,
+                        )
+                        print(
+                            f"[PLACE] Current F{axis}="
+                            f"{current_value:.2f}N",
+                            flush=True,
+                        )
+                        print(
+                            f"[PLACE] Delta F{axis}="
+                            f"{delta_force:.2f}N "
+                            f">= {threshold:.2f}N",
+                            flush=True,
+                        )
+                        print(
+                            f"[PLACE] Threshold hold="
+                            f"{held:.3f}s >= {hold_time:.3f}s",
+                            flush=True,
+                        )
+                        print(
+                            "========================================",
+                            flush=True,
+                        )
+
+                        return True
+                else:
+                    # threshold 아래로 떨어지면 연속 유지시간을 처음부터 다시 센다.
+                    threshold_start = None
+
+                if timeout is not None and elapsed >= timeout:
                     raise RuntimeError(
-                        "[PLACE] 압입 실패: "
-                        f"{insert_timeout}초 동안 "
-                        f"{insert_force}N에 "
-                        "도달하지 못했습니다."
+                        "[PLACE] Delta Force threshold Timeout: "
+                        f"{timeout:.1f}초 동안 "
+                        f"|F{axis} - baseline| >= "
+                        f"{threshold:.2f}N 조건을 만족하지 "
+                        "못했습니다. "
+                        f"baseline={baseline_value:.2f}N, "
+                        f"current={current_value:.2f}N, "
+                        f"delta={delta_force:.2f}N"
                     )
 
-                wait(0.02)
+                wait(poll_interval)
 
         finally:
-
-            # =================================================
-            # 예외 발생 시 비동기 탐색 모션 정지
-            # =================================================
-
-            if (
-                search_motion_started
-                and check_motion() != 0
-            ):
-
-                print(
-                    "[PLACE] 예외 처리: "
-                    "진행 중 탐색 모션 정지",
-                    flush=True,
-                )
-
-                self.stop_motion(
-                    DR_SSTOP
-                )
-
-                stop_wait_start = (
-                    time.monotonic()
-                )
-
-                while check_motion() != 0:
-
-                    if (
-                        time.monotonic()
-                        - stop_wait_start
-                    ) >= 2.0:
-
-                        break
-
-                    wait(0.01)
-
-            # =================================================
-            # 10. Force / Compliance OFF
-            # =================================================
-
             if force_control_started:
-
                 print(
                     "[PLACE] Force Control 종료",
                     flush=True,
                 )
 
+            # 성공/실패와 관계없이 Force와 Compliance를 반드시 해제한다.
             self.force.all_off()
-
-
-        # =====================================================
-        # Place Force 단계 완료
-        #
-        # Frame Check가 끝날 때까지 Gripper는 닫힌 상태를 유지한다.
-        # Gripper Release와 BASE +Z 이탈은 SolarMotion.install_post()
-        # 에서 Frame Check 성공 후 수행한다.
-        # =====================================================
-
-        print(
-            "[PLACE] 2단계 Force 압입 완료 - Gripper 유지",
-            flush=True,
-        )
-
-        print(
-            "[PLACE] Post Check 단계 대기",
-            flush=True,
-        )
-
-        return float(distance)
-
-    def check_force_move(
-        self,
-        distance=50.0,
-        force_threshold=50.0,
-        velocity=10.0,
-        acc=20.0,
-        label="POST CHECK",
-    ):
-        """
-        TOOL Z 방향으로 최대 distance만큼 비동기 이동하면서
-        실제 TOOL Z축 Force 절대값을 검사한다.
-
-        distance:
-            TOOL Z 방향 최대 탐색 거리(mm)
-            +값이면 TOOL +Z
-            -값이면 TOOL -Z
-
-        force_threshold:
-            성공으로 판단할 실제 TOOL Z축 Force 절대값(N)
-
-        label:
-            터미널 로그 구분용 이름.
-            예: "POST CHECK", "PIN INSERT"
-
-        return:
-            True  -> 이동 중 |F_tool_z| >= force_threshold 감지
-            False -> 최대 거리까지 이동했지만 threshold 미감지
-
-        성공/실패 모두 시작 위치로 자동 복귀하지 않는다.
-        실패 시 최대 이동 위치에서 그대로 정지한다.
-        """
-
-        prefix = f"[{label}]"
-
-        print(
-            f"{prefix} 시작 "
-            f"distance={distance}mm, "
-            f"threshold={force_threshold}N",
-            flush=True,
-        )
-
-        motion_started = False
-
-        try:
-            # =====================================================
-            # 1. 이동 시작 전 Force 확인
-            # =====================================================
-
-            start_force = get_tool_force(
-                DR_TOOL
-            )
-
-            print(
-                f"{prefix} 시작 Force "
-                f"Fz={float(start_force[2]):.2f}N",
-                flush=True,
-            )
-
-            # =====================================================
-            # 2. TOOL Z 방향 비동기 이동
-            # =====================================================
-
-            print(
-                f"{prefix} TOOL Z 방향 "
-                f"{distance}mm 탐색 시작",
-                flush=True,
-            )
-
-            amovel(
-                posx(
-                    0,
-                    0,
-                    distance,
-                    0,
-                    0,
-                    0,
-                ),
-                vel=velocity,
-                acc=acc,
-                ref=DR_TOOL,
-                mod=DR_MV_MOD_REL,
-            )
-
-            motion_started = True
-            wait(0.02)
-
-            # =====================================================
-            # 3. 이동 중 실제 TOOL Fz 확인
-            # =====================================================
-
-            while True:
-                force_value = get_tool_force(
-                    DR_TOOL
-                )
-
-                current_fz = float(
-                    force_value[2]
-                )
-
-                abs_fz = abs(
-                    current_fz
-                )
-
-                # -------------------------------------------------
-                # Force threshold 도달 -> 즉시 정지 + 성공
-                # -------------------------------------------------
-
-                if abs_fz >= force_threshold:
-                    print(
-                        "",
-                        flush=True,
-                    )
-
-                    print(
-                        "========================================",
-                        flush=True,
-                    )
-
-                    print(
-                        f"{prefix} SUCCESS - Force threshold 감지",
-                        flush=True,
-                    )
-
-                    print(
-                        f"{prefix} 기준: "
-                        f"|F_tool_z| >= {force_threshold:.2f}N",
-                        flush=True,
-                    )
-
-                    print(
-                        f"{prefix} 현재: "
-                        f"Fz={current_fz:.2f}N, "
-                        f"|Fz|={abs_fz:.2f}N",
-                        flush=True,
-                    )
-
-                    print(
-                        f"{prefix} Force "
-                        f"Fx={force_value[0]:.2f}N, "
-                        f"Fy={force_value[1]:.2f}N, "
-                        f"Fz={force_value[2]:.2f}N",
-                        flush=True,
-                    )
-
-                    print(
-                        f"{prefix} Moment "
-                        f"Mx={force_value[3]:.2f}Nm, "
-                        f"My={force_value[4]:.2f}Nm, "
-                        f"Mz={force_value[5]:.2f}Nm",
-                        flush=True,
-                    )
-
-                    print(
-                        "========================================",
-                        flush=True,
-                    )
-
-                    # threshold 감지 순간 즉시 정지
-                    self.stop_motion(
-                        DR_SSTOP
-                    )
-
-                    stop_wait_start = time.monotonic()
-
-                    while check_motion() != 0:
-                        if (
-                            time.monotonic()
-                            - stop_wait_start
-                        ) >= 2.0:
-                            raise RuntimeError(
-                                f"{label} 정지 실패"
-                            )
-
-                        wait(0.01)
-
-                    motion_started = False
-
-                    print(
-                        f"{prefix} 감지 위치에서 정지 유지",
-                        flush=True,
-                    )
-
-                    return True
-
-                # -------------------------------------------------
-                # 최대 거리 이동 완료 -> 현재 위치 유지 + 실패
-                # -------------------------------------------------
-
-                if check_motion() == 0:
-                    motion_started = False
-
-                    final_force = get_tool_force(
-                        DR_TOOL
-                    )
-
-                    final_fz = float(
-                        final_force[2]
-                    )
-
-                    final_abs_fz = abs(
-                        final_fz
-                    )
-
-                    print(
-                        "",
-                        flush=True,
-                    )
-
-                    print(
-                        "========================================",
-                        flush=True,
-                    )
-
-                    print(
-                        f"{prefix}[ERROR] Force threshold 미감지",
-                        flush=True,
-                    )
-
-                    print(
-                        f"{prefix}[ERROR] "
-                        f"{distance}mm 이동하는 동안 "
-                        f"|F_tool_z| >= {force_threshold:.2f}N "
-                        "조건을 만족하지 못했습니다.",
-                        flush=True,
-                    )
-
-                    print(
-                        f"{prefix}[ERROR] 최종 Force: "
-                        f"Fz={final_fz:.2f}N, "
-                        f"|Fz|={final_abs_fz:.2f}N",
-                        flush=True,
-                    )
-
-                    print(
-                        f"{prefix}[ERROR] 현재 위치에서 작업을 중단합니다.",
-                        flush=True,
-                    )
-
-                    print(
-                        "========================================",
-                        flush=True,
-                    )
-
-                    return False
-
-                wait(0.02)
-
-        finally:
-            # =====================================================
-            # 예외 발생 시 진행 중인 비동기 모션만 정지
-            # 위치 복귀는 하지 않는다.
-            # =====================================================
-
-            if (
-                motion_started
-                and check_motion() != 0
-            ):
-                print(
-                    f"{prefix}[ERROR] 예외 발생 - 진행 중 모션 정지",
-                    flush=True,
-                )
-
-                self.stop_motion(
-                    DR_SSTOP
-                )
-
-                stop_wait_start = time.monotonic()
-
-                while check_motion() != 0:
-                    if (
-                        time.monotonic()
-                        - stop_wait_start
-                    ) >= 2.0:
-                        break
-
-                    wait(0.01)
