@@ -971,10 +971,32 @@ class SolarMotion:
 
             pick_distance = settings["pick_distance"]
 
-            # 1. PIN 바로 위의 접근 위치로 이동
+            # 1. pickup_position보다 BASE Z +30mm 높은 안전 접근점으로 이동
+            pickup_safe_pose = self.posx([
+                float(pickup_pose[0]),
+                float(pickup_pose[1]),
+                float(pickup_pose[2]) + 30.0,
+                float(pickup_pose[3]),
+                float(pickup_pose[4]),
+                float(pickup_pose[5]),
+            ])
+
             self.node.get_logger().info(
-                f"PIN Pick 접근 위치 이동 - "
+                f"PIN Pick 안전 접근 위치 이동 - "
                 f"component={component.get('code')}, "
+                f"BASE Z +30.0mm"
+            )
+            self.movel(
+                pickup_safe_pose,
+                vel=settings["speed"],
+                acc=settings["acc"],
+                ref=self.DR_BASE,
+            )
+            self.wait(0.5)
+
+            # 2. DB의 pickup_position으로 이동
+            self.node.get_logger().info(
+                f"PIN Pick 위치 이동 - "
                 f"pick_distance={pick_distance:.1f}mm"
             )
             self.movel(
@@ -985,7 +1007,7 @@ class SolarMotion:
             )
             self.wait(0.5)
 
-            # 2. PIN 위치까지 수직 하강
+            # 3. PIN 위치까지 수직 하강
             self.node.get_logger().info(
                 f"PIN Pick 하강 - BASE Z {-pick_distance:.1f}mm"
             )
@@ -997,7 +1019,7 @@ class SolarMotion:
             )
             self.wait(0.2)
 
-            # 3. PIN 파지
+            # 4. PIN 파지
             self.node.get_logger().info("PIN Gripper Close")
             self.motion.grasp()
             self.wait(0.2)
@@ -1014,7 +1036,7 @@ class SolarMotion:
             )
             self.wait(0.2)
 
-            # 5. Z 방향으로 다시 상승
+            # 6. Z 방향으로 다시 상승
             self.node.get_logger().info(
                 f"PIN Pick 상승 - BASE Z +{pick_distance:.1f}mm"
             )
@@ -1070,7 +1092,7 @@ class SolarMotion:
             self.node.get_logger().info(
                 "PIN Place 설정 - "
                 f"component={component.get('code')}, "
-                f"reference=BASE, axis=+X, "
+                f"reference=TOOL, axis=+X, "
                 f"force={settings['place_force']:.2f}N, "
                 f"threshold={settings['contact_force']:.2f}N"
             )
@@ -1087,7 +1109,7 @@ class SolarMotion:
             )
             self.wait(0.5)
 
-            # 2. 1차 BASE +X Force Push
+            # 2. 1차 TOOL +X Force Push
             self.node.get_logger().info(
                 "========== PIN PLACE 1ST PUSH START =========="
             )
@@ -1137,7 +1159,7 @@ class SolarMotion:
             self.motion.grasp()
             self.wait(0.5)
 
-            # 6. 2차 BASE +X Force Push
+            # 6. 2차 TOOL +X Force Push
             self.node.get_logger().info(
                 "========== PIN PLACE 2ND PUSH START =========="
             )
@@ -1170,8 +1192,8 @@ class SolarMotion:
                 status="COMPLETED",
                 detail={
                     "component_code": component.get("code"),
-                    "reference": "BASE",
-                    "axis": "BASE_X",
+                    "reference": "TOOL",
+                    "axis": "TOOL_X",
                     "direction": self.PIN_INSERT_DIRECTION,
                     "push_count": 2,
                     "force": settings["place_force"],
