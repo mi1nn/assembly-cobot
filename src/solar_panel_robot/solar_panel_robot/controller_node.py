@@ -903,14 +903,14 @@ class SolarPanelControllerNode(Node):
             )
 
         if operation_code == "FRAME_PICK":
-            return self.solar.pick_pin(
+            return self.solar.pick_frame(
                 parameters,
                 components,
                 operation_context=operation_context,
             )
 
         if operation_code == "FRAME_PLACE":
-            return self.solar.pick_pin(
+            return self.solar.place_frame(
                 parameters,
                 components,
                 operation_context=operation_context,
