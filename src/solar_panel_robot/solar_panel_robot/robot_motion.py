@@ -1,6 +1,11 @@
 import math
 import time
 
+import rclpy
+import DR_init
+
+from dsr_msgs2.srv import MoveStop
+
 from .force_control import ForceController
 
 from DSR_ROBOT2 import (
@@ -17,6 +22,7 @@ from DSR_ROBOT2 import (
     DR_TOOL,
     DR_MV_MOD_REL,
     DR_MV_MOD_ABS,
+    DR_SSTOP,
 )
 
 
@@ -50,6 +56,12 @@ class RobotMotion:
     def __init__(self):
         self.force = ForceController()
 
+        self.dsr_node = getattr(DR_init, "__dsr__node")
+        self.stop_client = self.dsr_node.create_client(
+            MoveStop,
+            "dsr_controller2/motion/move_stop",
+        )
+
         # YAML 대신 robot_motion.py 내부 로봇 기본값 사용.
         # 작업 실행 시에는 DB에서 받은 speed/acc 등이 함수 인자로 전달되어
         # 이 기본값보다 우선한다.
@@ -59,6 +71,58 @@ class RobotMotion:
         self.grasp_port = GRASP_PORT
         self.release_port = RELEASE_PORT
         self.gripper_wait_time = GRIPPER_WAIT_TIME
+
+    # =========================================================
+    # Motion Stop / Restore
+    # =========================================================
+
+    def stop_motion(self, mode=DR_SSTOP, timeout=2.0):
+        """진행 중인 Robot Motion을 MoveStop service로 정지한다."""
+        print(f"[MOTION STOP] 요청 mode={mode}", flush=True)
+
+        if not self.stop_client.wait_for_service(timeout_sec=timeout):
+            raise RuntimeError(
+                "MoveStop service를 찾을 수 없습니다: "
+                "dsr_controller2/motion/move_stop"
+            )
+
+        request = MoveStop.Request()
+        request.stop_mode = int(mode)
+        future = self.stop_client.call_async(request)
+
+        rclpy.spin_until_future_complete(
+            self.dsr_node,
+            future,
+            timeout_sec=timeout,
+        )
+
+        if not future.done():
+            future.cancel()
+            raise RuntimeError("MoveStop service 응답 Timeout")
+
+        try:
+            result = future.result()
+        except Exception as error:
+            raise RuntimeError(
+                f"MoveStop service 호출 실패: {error}"
+            ) from error
+
+        if result is None:
+            raise RuntimeError("MoveStop service 응답이 없습니다.")
+        if not result.success:
+            raise RuntimeError("Robot Motion 정지 실패")
+
+        print("[MOTION STOP] 완료", flush=True)
+        return True
+
+    def restore_motion(self):
+        """정지 후 Force 상태를 해제하고 안전 기본 Home 자세로 복귀한다."""
+        print("[MOTION RESTORE] 시작", flush=True)
+        self.force.all_off()
+        self.release()
+        self.move_home()
+        print("[MOTION RESTORE] 완료", flush=True)
+        return True
 
     # =========================================================
     # Gripper
@@ -900,7 +964,7 @@ class RobotMotion:
             axis="z", direction=+1
             -> TOOL +Z 방향 Force 삽입, Delta Fz 감시
 
-        Post Pin 예시:
+        PIN / SNAPFIT 예시:
             axis="x", direction=+1
             -> TOOL +X 방향 Force 삽입, Delta Fx 감시
 

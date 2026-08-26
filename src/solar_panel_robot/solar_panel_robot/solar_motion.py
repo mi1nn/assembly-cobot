@@ -6,11 +6,19 @@ class PostPlaceError(Exception):
     pass
 
 
-class PostPinPickError(Exception):
+class PinPickError(Exception):
     pass
 
 
-class PostPinPlaceError(Exception):
+class PinPlaceError(Exception):
+    pass
+
+
+class SnapfitPickError(Exception):
+    pass
+
+
+class SnapfitPlaceError(Exception):
     pass
 
 
@@ -33,8 +41,9 @@ class SolarMotion:
             tcp, ucs, tool, fixture, coordinate_system
 
     operation.components
-        CMP-POST-* : pickup_position / assembly_position
-        PIN-*      : pickup_position / assembly_position
+        CMP-POST-*   : pickup_position / assembly_position
+        PIN-A-*      : pickup_position / assembly_position
+        SNAPFIT-A-*  : pickup_position / assembly_position
 
     Post place alignment는 코드 내부 정책으로 고정한다.
         - 첫 접촉: TOOL +Z
@@ -47,10 +56,17 @@ class SolarMotion:
     """
 
     POST_COMPONENT_PREFIX = "CMP-POST-"
-    POST_PIN_COMPONENT_PREFIX = "PIN-"
+    PIN_COMPONENT_PREFIX = "PIN-A-"
+    SNAPFIT_COMPONENT_PREFIX = "SNAPFIT-A-"
 
-    POST_INSERT_DIRECTION = 1      # TOOL +Z
-    POST_PIN_INSERT_DIRECTION = 1  # TOOL +X
+    POST_INSERT_DIRECTION = 1       # TOOL +Z
+
+    # PIN/SNAPFIT은 기존 POST_PIN 설계와 동일하게 TOOL +X 삽입을 기본으로 둔다.
+    # 실제 지그에서 삽입축이 다르면 아래 axis/direction만 변경하면 된다.
+    PIN_INSERT_AXIS = "x"
+    PIN_INSERT_DIRECTION = 1        # TOOL +X
+    SNAPFIT_INSERT_AXIS = "x"
+    SNAPFIT_INSERT_DIRECTION = 1    # TOOL +X
 
     CONTACT_THRESHOLD_N = 5.0
     CONTACT_POLL_INTERVAL = 0.02
@@ -58,12 +74,12 @@ class SolarMotion:
     CONTACT_DEFAULT_MAX_TRAVEL_MM = 150.0
 
     # 최적 위치 선정 후 POST 본 삽입 완료 조건
-    POST_FINAL_CONTACT_THRESHOLD_N = 65.0
+    POST_FINAL_CONTACT_THRESHOLD_N = 20.0
     POST_FINAL_CONTACT_HOLD_SEC = 0.50
 
     # 1차 Contact Seek에서 이 BASE Z 아래까지 이미 내려갔다면
     # 포스트가 정상적으로 구멍에 진입한 것으로 보고 25-point Search를 생략한다.
-    DIRECT_INSERT_BASE_Z_THRESHOLD_MM = 182.0
+    DIRECT_INSERT_BASE_Z_THRESHOLD_MM = 190.0
 
     SEARCH_X_OFFSETS_MM = (-0.6, -0.3, 0.0, 0.3, 0.6)
     SEARCH_Y_OFFSETS_MM = (-0.6, -0.3, 0.0, 0.3, 0.6)
@@ -231,6 +247,11 @@ class SolarMotion:
                 "search_acc": self._first_number(
                     parameters, ("place_search_acceleration",), 20.0, positive=True
                 ),
+                "direct_insert_base_z_threshold": self._first_number(
+                    parameters,
+                    ("place_direct_insert_base_z_threshold",),
+                    self.DIRECT_INSERT_BASE_Z_THRESHOLD_MM,
+                ),
             }
         )
 
@@ -253,22 +274,115 @@ class SolarMotion:
         )
         return settings
 
+    def _load_pin_pick_settings(self, parameters):
+        """얇은 PIN(PIN-A-*) Pick 설정."""
+        settings = self._load_travel_settings(parameters)
+        settings["pick_distance"] = self._first_number(
+            parameters,
+            ("pin_pick_distance", "pick_distance"),
+            50.0,
+            positive=True,
+        )
+        return settings
+
+    def _load_snapfit_pick_settings(self, parameters):
+        """SNAPFIT-A-* Pick 설정. 기존 POST_PIN용 키도 호환한다."""
+        settings = self._load_travel_settings(parameters)
+        settings["pick_distance"] = self._first_number(
+            parameters,
+            ("snapfit_pick_distance", "post_pin_pick_distance", "pick_distance"),
+            50.0,
+            positive=True,
+        )
+        return settings
+
     def _load_pin_place_settings(self, parameters):
-        """PIN Place에서 실제로 사용하는 값만 읽는다."""
+        """얇은 PIN(PIN-A-*) Force Place 설정."""
         settings = self._load_travel_settings(parameters)
         settings.update(
             {
                 "retreat_distance": self._first_number(
                     parameters,
-                    ("place_retreat_distance", "post_place_retreat_distance"),
-                    50.0,
+                    ("pin_place_retreat_distance", "place_retreat_distance"),
+                    30.0,
                     nonnegative=True,
                 ),
                 "place_force": self._first_number(
-                    parameters, ("place_force", "post_pin_place_force", "post_place_force"), 40.0, positive=True
+                    parameters,
+                    ("pin_place_force", "place_force"),
+                    20.0,
+                    positive=True,
                 ),
                 "contact_force": self._first_number(
-                    parameters, ("place_contact_force", "post_pin_place_force_threshold", "post_place_force_threshold"), 20.0, positive=True
+                    parameters,
+                    ("pin_place_force_threshold", "place_contact_force"),
+                    10.0,
+                    positive=True,
+                ),
+                "stiffness": self._first_number(
+                    parameters,
+                    ("pin_place_stiffness_x",),
+                    500.0,
+                    positive=True,
+                ),
+                "timeout": self._first_number(
+                    parameters,
+                    ("pin_place_timeout",),
+                    10.0,
+                    positive=True,
+                ),
+            }
+        )
+        return settings
+
+    def _load_snapfit_place_settings(self, parameters):
+        """SNAPFIT-A-* Force Place 설정. 기존 POST_PIN 파라미터를 alias로 유지한다."""
+        settings = self._load_travel_settings(parameters)
+        settings.update(
+            {
+                "retreat_distance": self._first_number(
+                    parameters,
+                    (
+                        "snapfit_place_retreat_distance",
+                        "place_retreat_distance",
+                        "post_place_retreat_distance",
+                    ),
+                    30.0,
+                    nonnegative=True,
+                ),
+                "place_force": self._first_number(
+                    parameters,
+                    (
+                        "snapfit_place_force",
+                        "post_pin_place_force",
+                        "place_force",
+                        "post_place_force",
+                    ),
+                    40.0,
+                    positive=True,
+                ),
+                "contact_force": self._first_number(
+                    parameters,
+                    (
+                        "snapfit_place_force_threshold",
+                        "post_pin_place_force_threshold",
+                        "place_contact_force",
+                        "post_place_force_threshold",
+                    ),
+                    20.0,
+                    positive=True,
+                ),
+                "stiffness": self._first_number(
+                    parameters,
+                    ("snapfit_place_stiffness_x",),
+                    500.0,
+                    positive=True,
+                ),
+                "timeout": self._first_number(
+                    parameters,
+                    ("snapfit_place_timeout",),
+                    10.0,
+                    positive=True,
                 ),
             }
         )
@@ -293,23 +407,32 @@ class SolarMotion:
             f"{label} component를 찾을 수 없습니다. code prefix={prefix}"
         )
 
-    def _position_to_posx(self, position, label):
+    def _position_to_posx(
+        self,
+        position,
+        label,
+    ):
         if not isinstance(position, dict):
-            raise ValueError(f"{label}은 JSON object여야 합니다.")
+            raise ValueError(
+                f"{label}은 JSON object여야 합니다."
+            )
 
-        required = ("x", "y", "z", "rx", "ry", "rz", "frame")
-        missing = [key for key in required if position.get(key) is None]
+        required = (
+            "x", "y", "z",
+            "A", "B", "C",
+        )
+
+        missing = [
+            key
+            for key in required
+            if position.get(key) is None
+        ]
+
         if missing:
             raise ValueError(f"{label} 필드 누락: " + ", ".join(missing))
 
-        frame = str(position["frame"]).upper()
-        if frame != "BASE":
-            raise ValueError(
-                f"{label}.frame={frame}: 현재 Post Motion은 BASE 좌표만 지원합니다."
-            )
-
         values = []
-        for key in ("x", "y", "z", "rx", "ry", "rz"):
+        for key in ("x", "y", "z", "A", "B", "C"):
             try:
                 values.append(float(position[key]))
             except (TypeError, ValueError) as e:
@@ -351,14 +474,24 @@ class SolarMotion:
             components, self.POST_COMPONENT_PREFIX, "POST"
         )
 
-    def _post_pin_pickup_input(self, components):
+    def _pin_pickup_input(self, components):
         return self._pickup_input(
-            components, self.POST_PIN_COMPONENT_PREFIX, "POST_PIN"
+            components, self.PIN_COMPONENT_PREFIX, "PIN"
         )
 
-    def _post_pin_assembly_input(self, components):
+    def _pin_assembly_input(self, components):
         return self._assembly_input(
-            components, self.POST_PIN_COMPONENT_PREFIX, "POST_PIN"
+            components, self.PIN_COMPONENT_PREFIX, "PIN"
+        )
+
+    def _snapfit_pickup_input(self, components):
+        return self._pickup_input(
+            components, self.SNAPFIT_COMPONENT_PREFIX, "SNAPFIT"
+        )
+
+    def _snapfit_assembly_input(self, components):
+        return self._assembly_input(
+            components, self.SNAPFIT_COMPONENT_PREFIX, "SNAPFIT"
         )
 
     # =========================================================
@@ -689,18 +822,6 @@ class SolarMotion:
             )
             self.wait(0.5)
 
-            # 1) 공중 assembly_position -> 실제 접촉점 탐색.
-            self.node.get_logger().info(
-                "========== POST CONTACT SEEK START =========="
-            )
-            self.node.get_logger().info(
-                f"direction={direction_label}, desired_force="
-                f"{settings['contact_seek_force']:.2f}N, "
-                f"detect_threshold={self.CONTACT_THRESHOLD_N:.2f}N, "
-                f"max_travel={settings['search_limit_z']:.2f}mm, "
-                f"timeout={settings['search_timeout']}"
-            )
-
             contact = self.motion.seek_contact(
                 axis="z",
                 direction=direction,
@@ -730,14 +851,19 @@ class SolarMotion:
             #    Z < 182mm이면 25-point Search를 생략하고 현재 위치에서 바로 최종 삽입한다.
             current_base_z = float(contact_pose[2])
             best = None
-            search_skipped = current_base_z < self.DIRECT_INSERT_BASE_Z_THRESHOLD_MM
+            direct_insert_threshold = settings[
+                "direct_insert_base_z_threshold"
+            ]
+
+            search_skipped = (
+                current_base_z < direct_insert_threshold
+            )
 
             self.node.get_logger().info(
                 "========== POST DIRECT INSERT CHECK =========="
-            )
-            self.node.get_logger().info(
                 f"Contact BASE Z={current_base_z:.3f}mm, "
-                f"direct_threshold={self.DIRECT_INSERT_BASE_Z_THRESHOLD_MM:.3f}mm"
+                f"threshold={direct_insert_threshold:.3f}mm, "
+                f"search_skipped={search_skipped}"
             )
 
             if search_skipped:
@@ -818,21 +944,21 @@ class SolarMotion:
             raise PostPlaceError(str(e)) from e
 
     # =========================================================
-    # POST PIN PICK
+    # PIN PICK / PLACE
     # =========================================================
 
-    def pick_post_pin(self, parameters, components, operation_context=None):
-        self.node.get_logger().info("========== POST PIN PICK START ==========")
+    def pick_pin(self, parameters, components, operation_context=None):
+        self.node.get_logger().info("========== PIN PICK START ==========")
         self._publish_cycle_event(
-            operation_context, phase="POST_PIN_PICK", status="STARTED"
+            operation_context, phase="PIN_PICK", status="STARTED"
         )
 
         try:
-            settings = self._load_pick_settings(parameters)
-            component, pickup_pose = self._post_pin_pickup_input(components)
+            settings = self._load_pin_pick_settings(parameters)
+            component, pickup_pose = self._pin_pickup_input(components)
 
             self.node.get_logger().info(
-                f"Post Pin Pick 시작 위치 이동 - {component.get('code')}"
+                f"PIN Pick 시작 위치 이동 - {component.get('code')}"
             )
             self.movel(
                 pickup_pose,
@@ -841,6 +967,7 @@ class SolarMotion:
                 ref=self.DR_BASE,
             )
             self.wait(0.5)
+
             self.motion.pick(
                 distance=settings["pick_distance"],
                 velocity=settings["speed"],
@@ -848,40 +975,34 @@ class SolarMotion:
             )
             self.wait(0.5)
 
-            self.node.get_logger().info("========== POST PIN PICK COMPLETE ==========")
+            self.node.get_logger().info("========== PIN PICK COMPLETE ==========")
             self._publish_cycle_event(
                 operation_context,
-                phase="POST_PIN_PICK",
+                phase="PIN_PICK",
                 status="COMPLETED",
                 detail={"component_code": component.get("code")},
             )
             return True
 
         except Exception as e:
-            self.node.get_logger().error(f"Post Pin Pick 실패: {e}")
+            self.node.get_logger().error(f"PIN Pick 실패: {e}")
             self._publish_cycle_event(
-                operation_context, phase="POST_PIN_PICK", status="FAILED", error=e
+                operation_context, phase="PIN_PICK", status="FAILED", error=e
             )
-            raise PostPinPickError(str(e)) from e
+            raise PinPickError(str(e)) from e
 
-    # =========================================================
-    # POST PIN PLACE
-    # =========================================================
-
-    def place_post_pin(self, parameters, components, operation_context=None):
-        self.node.get_logger().info("========== POST PIN PLACE START ==========")
+    def place_pin(self, parameters, components, operation_context=None):
+        self.node.get_logger().info("========== PIN PLACE START ==========")
         self._publish_cycle_event(
-            operation_context, phase="POST_PIN_PLACE", status="STARTED"
+            operation_context, phase="PIN_PLACE", status="STARTED"
         )
 
         try:
             settings = self._load_pin_place_settings(parameters)
-            component, assembly_pose = self._post_pin_assembly_input(components)
-            direction = self.POST_PIN_INSERT_DIRECTION
-            direction_label = "+X" if direction > 0 else "-X"
+            component, assembly_pose = self._pin_assembly_input(components)
 
             self.node.get_logger().info(
-                f"Post Pin Place 시작 위치 이동 - {component.get('code')}"
+                f"PIN Assembly 시작 위치 이동 - {component.get('code')}"
             )
             self.movel(
                 assembly_pose,
@@ -891,46 +1012,180 @@ class SolarMotion:
             )
             self.wait(0.5)
 
-            self.node.get_logger().info(
-                "Post Pin TOOL X Force Place 시작 - "
-                f"direction={direction_label}, desired_force="
-                f"{settings['place_force']:.2f}N, "
-                f"delta_threshold={settings['contact_force']:.2f}N"
-            )
             result = self.motion.place(
-                axis="x",
-                direction=direction,
+                axis=self.PIN_INSERT_AXIS,
+                direction=self.PIN_INSERT_DIRECTION,
                 force=settings["place_force"],
                 threshold=settings["contact_force"],
+                timeout=settings["timeout"],
+                stiffness={self.PIN_INSERT_AXIS: settings["stiffness"]},
             )
             if not result:
-                raise RuntimeError(
-                    "Post Pin TOOL X Force Place가 성공을 반환하지 않았습니다."
-                )
+                raise RuntimeError("PIN Force Place가 성공을 반환하지 않았습니다.")
 
+            self.wait(0.2)
+            self.motion.release()
             self.wait(0.5)
-            self.node.get_logger().info("========== POST PIN PLACE COMPLETE ==========")
+
+            if settings["retreat_distance"] > 0:
+                if self.PIN_INSERT_AXIS != "x":
+                    raise RuntimeError(
+                        "현재 PIN 안전 이탈은 TOOL X축만 구현되어 있습니다. "
+                        "PIN_INSERT_AXIS를 변경했다면 retreat motion도 함께 구현해야 합니다."
+                    )
+                self.motion.move_x(
+                    -self.PIN_INSERT_DIRECTION * settings["retreat_distance"],
+                    ref=self.DR_TOOL,
+                    velocity=settings["speed"],
+                    acc=settings["acc"],
+                )
+                self.wait(0.5)
+
+            self.node.get_logger().info("========== PIN PLACE COMPLETE ==========")
             self._publish_cycle_event(
                 operation_context,
-                phase="POST_PIN_PLACE",
+                phase="PIN_PLACE",
                 status="COMPLETED",
                 detail={
                     "component_code": component.get("code"),
-                    "axis": "TOOL_X",
-                    "direction": direction,
-                    "place_force": settings["place_force"],
-                    "threshold": settings["contact_force"],
-                    "retreat_distance": settings["retreat_distance"],
+                    "axis": f"TOOL_{self.PIN_INSERT_AXIS.upper()}",
+                    "direction": self.PIN_INSERT_DIRECTION,
                 },
             )
-            return settings["retreat_distance"], direction
+            return True
 
         except Exception as e:
-            self.node.get_logger().error(f"Post Pin Place 실패: {e}")
+            self.node.get_logger().error(f"PIN Place 실패: {e}")
             self._publish_cycle_event(
-                operation_context, phase="POST_PIN_PLACE", status="FAILED", error=e
+                operation_context, phase="PIN_PLACE", status="FAILED", error=e
             )
-            raise PostPinPlaceError(str(e)) from e
+            try:
+                self.force.all_off()
+            except Exception:
+                pass
+            raise PinPlaceError(str(e)) from e
+
+    # =========================================================
+    # SNAPFIT PICK / PLACE
+    # =========================================================
+
+    def pick_snapfit(self, parameters, components, operation_context=None):
+        self.node.get_logger().info("========== SNAPFIT PICK START ==========")
+        self._publish_cycle_event(
+            operation_context, phase="SNAPFIT_PICK", status="STARTED"
+        )
+
+        try:
+            settings = self._load_snapfit_pick_settings(parameters)
+            component, pickup_pose = self._snapfit_pickup_input(components)
+
+            self.node.get_logger().info(
+                f"SNAPFIT Pick 시작 위치 이동 - {component.get('code')}"
+            )
+            self.movel(
+                pickup_pose,
+                vel=settings["speed"],
+                acc=settings["acc"],
+                ref=self.DR_BASE,
+            )
+            self.wait(0.5)
+
+            self.motion.pick(
+                distance=settings["pick_distance"],
+                velocity=settings["speed"],
+                acc=settings["acc"],
+            )
+            self.wait(0.5)
+
+            self.node.get_logger().info("========== SNAPFIT PICK COMPLETE ==========")
+            self._publish_cycle_event(
+                operation_context,
+                phase="SNAPFIT_PICK",
+                status="COMPLETED",
+                detail={"component_code": component.get("code")},
+            )
+            return True
+
+        except Exception as e:
+            self.node.get_logger().error(f"SNAPFIT Pick 실패: {e}")
+            self._publish_cycle_event(
+                operation_context, phase="SNAPFIT_PICK", status="FAILED", error=e
+            )
+            raise SnapfitPickError(str(e)) from e
+
+    def place_snapfit(self, parameters, components, operation_context=None):
+        self.node.get_logger().info("========== SNAPFIT PLACE START ==========")
+        self._publish_cycle_event(
+            operation_context, phase="SNAPFIT_PLACE", status="STARTED"
+        )
+
+        try:
+            settings = self._load_snapfit_place_settings(parameters)
+            component, assembly_pose = self._snapfit_assembly_input(components)
+
+            self.node.get_logger().info(
+                f"SNAPFIT Assembly 시작 위치 이동 - {component.get('code')}"
+            )
+            self.movel(
+                assembly_pose,
+                vel=settings["speed"],
+                acc=settings["acc"],
+                ref=self.DR_BASE,
+            )
+            self.wait(0.5)
+
+            result = self.motion.place(
+                axis=self.SNAPFIT_INSERT_AXIS,
+                direction=self.SNAPFIT_INSERT_DIRECTION,
+                force=settings["place_force"],
+                threshold=settings["contact_force"],
+                timeout=settings["timeout"],
+                stiffness={self.SNAPFIT_INSERT_AXIS: settings["stiffness"]},
+            )
+            if not result:
+                raise RuntimeError("SNAPFIT Force Place가 성공을 반환하지 않았습니다.")
+
+            self.wait(0.2)
+            self.motion.release()
+            self.wait(0.5)
+
+            if settings["retreat_distance"] > 0:
+                if self.SNAPFIT_INSERT_AXIS != "x":
+                    raise RuntimeError(
+                        "현재 SNAPFIT 안전 이탈은 TOOL X축만 구현되어 있습니다. "
+                        "SNAPFIT_INSERT_AXIS를 변경했다면 retreat motion도 함께 구현해야 합니다."
+                    )
+                self.motion.move_x(
+                    -self.SNAPFIT_INSERT_DIRECTION * settings["retreat_distance"],
+                    ref=self.DR_TOOL,
+                    velocity=settings["speed"],
+                    acc=settings["acc"],
+                )
+                self.wait(0.5)
+
+            self.node.get_logger().info("========== SNAPFIT PLACE COMPLETE ==========")
+            self._publish_cycle_event(
+                operation_context,
+                phase="SNAPFIT_PLACE",
+                status="COMPLETED",
+                detail={
+                    "component_code": component.get("code"),
+                    "axis": f"TOOL_{self.SNAPFIT_INSERT_AXIS.upper()}",
+                    "direction": self.SNAPFIT_INSERT_DIRECTION,
+                },
+            )
+            return True
+
+        except Exception as e:
+            self.node.get_logger().error(f"SNAPFIT Place 실패: {e}")
+            self._publish_cycle_event(
+                operation_context, phase="SNAPFIT_PLACE", status="FAILED", error=e
+            )
+            try:
+                self.force.all_off()
+            except Exception:
+                pass
+            raise SnapfitPlaceError(str(e)) from e
 
     # =========================================================
     # Full Post cycle
@@ -954,7 +1209,12 @@ class SolarMotion:
             self.pick_post(parameters, components, operation_context)
             post_retreat = self.place_post(parameters, components, operation_context)
 
-            self.node.get_logger().info("Post Place 완료 -> Gripper Release")
+            self.node.get_logger().info("Post Place 완료 -> Robot Motion Stop")
+            self.motion.stop_motion()
+            self.force.all_off()
+            self.wait(0.2)
+
+            self.node.get_logger().info("Robot Motion 정지 완료 -> Gripper Release")
             self.motion.release()
             self.wait(0.5)
 
@@ -970,27 +1230,9 @@ class SolarMotion:
                 )
                 self.wait(0.5)
 
-            self.pick_post_pin(parameters, components, operation_context)
-            pin_retreat, pin_direction = self.place_post_pin(
-                parameters, components, operation_context
-            )
-
-            self.node.get_logger().info("Post Pin Place 완료 -> Gripper Release")
-            self.motion.release()
+            self.node.get_logger().info("Post Release 및 안전 이탈 완료 -> Home 이동")
+            self.motion.move_home()
             self.wait(0.5)
-
-            if pin_retreat > 0:
-                retreat_x = -pin_direction * pin_retreat
-                self.node.get_logger().info(
-                    f"Post Pin Release 완료 -> TOOL X {retreat_x:+.3f}mm 이탈"
-                )
-                self.motion.move_x(
-                    retreat_x,
-                    ref=self.DR_TOOL,
-                    velocity=settings["speed"],
-                    acc=settings["acc"],
-                )
-                self.wait(0.5)
 
             self.node.get_logger().info("========== POST CYCLE COMPLETE ==========")
             self._publish_cycle_event(
