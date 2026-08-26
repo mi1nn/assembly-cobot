@@ -514,7 +514,7 @@ class SolarMotion:
         """SNAPFIT-A-* Place 설정.
 
         assembly_position은 실제 Place/Force 시작 좌표다.
-        place_distance는 해당 좌표에서 TOOL -Z 방향으로 떨어진 안전 접근 거리다.
+        place_distance는 해당 좌표에서 BASE +Z 방향으로 떨어진 안전 접근 거리다.
         """
         settings = self._load_travel_settings(parameters)
         settings.update(
@@ -522,8 +522,10 @@ class SolarMotion:
                 "place_distance": self._first_number(
                     parameters,
                     (
+                        "snap_fit_place_distance",
                         "snapfit_place_distance",
                         "place_distance",
+                        "snap_fit_place_retreat_distance",
                         "snapfit_place_retreat_distance",
                         "place_retreat_distance",
                         "post_place_retreat_distance",
@@ -1955,6 +1957,13 @@ class SolarMotion:
             self.motion.grasp()
             self.wait(0.2)
 
+            safe_result = self.movel(
+                safe_pick_pose,
+                vel=settings["speed"],
+                acc=settings["acc"],
+                ref=self.DR_BASE,
+            )
+            
             # 4. Grasp 위치 -> 공통 전송 기준점 Arc 이동
             arc_start_pose, solution_space = self.motion.get_current_pose(
                 ref=self.DR_BASE
@@ -1967,6 +1976,8 @@ class SolarMotion:
                 f"steps={arc_steps}, speed={settings['speed']:.1f}, "
                 f"acc={settings['acc']:.1f}, solution_space={solution_space}"
             )
+
+
             self.motion.move_arc(
                 arc_start_pose,
                 transfer_pose,
@@ -2034,27 +2045,32 @@ class SolarMotion:
 
             place_distance = settings["place_distance"]
 
-            # assembly_position은 BASE 절대 좌표다.
-            # 안전 접근점은 그 pose에서 TOOL -Z 방향으로 place_distance만큼 이격한다.
-            safe_place_pose = self.trans(
-                assembly_pose,
-                [0.0, 0.0, -place_distance, 0.0, 0.0, 0.0],
-                self.DR_TOOL,
-            )
+            # 안전 접근점은 assembly_position에서 BASE +Z 방향으로
+            # place_distance만큼 이격한 절대좌표다.
+            safe_place_pose = self.posx([
+                float(assembly_pose[0]),
+                float(assembly_pose[1]),
+                float(assembly_pose[2]) + place_distance,
+                float(assembly_pose[3]),
+                float(assembly_pose[4]),
+                float(assembly_pose[5]),
+            ])
 
             self.node.get_logger().info(
                 "SNAPFIT Place 설정 - "
                 f"component={component.get('code')}, "
                 f"force_axis=TOOL +Z, "
                 f"place_distance={place_distance:.1f}mm, "
+                f"assembly_target={list(assembly_pose)}, "
+                f"safe_target={list(safe_place_pose)}, "
                 f"force={settings['place_force']:.2f}N, "
                 f"threshold={settings['contact_force']:.2f}N"
             )
 
-            # 1. TOOL -Z 안전 접근점으로 이동
+            # 1. BASE +Z 안전 접근점으로 이동
             self.node.get_logger().info(
                 "SNAPFIT Place 안전 접근 - "
-                f"assembly_position 기준 TOOL -Z {place_distance:.1f}mm"
+                f"assembly_position 기준 BASE +Z {place_distance:.1f}mm"
             )
             self.movel(
                 safe_place_pose,
@@ -2108,7 +2124,7 @@ class SolarMotion:
             # 5. 처음 계산한 동일한 안전 접근점으로 복귀
             if place_distance > 0:
                 self.node.get_logger().info(
-                    "SNAPFIT Place 완료 -> TOOL -Z 안전 접근점 복귀"
+                    "SNAPFIT Place 완료 -> BASE +Z 안전 접근점 복귀"
                 )
                 self.movel(
                     safe_place_pose,
