@@ -41,8 +41,8 @@ class SolarMotion:
         DB 전체를 검증하지 않는다. 각 Pick/Place 단계가 실제로 필요한 값만
         실행 시점에 선택적으로 읽는다. 현재 사용하는 키:
             speed, acceleration, pick_distance, place_retreat_distance,
-            place_search_limit_z, place_force, place_contact_force,
-            place_insert_force, place_stiffness_z, place_search_velocity,
+            place_search_limit_z, post_place_force, post_contact_force,
+            post_insert_force, place_stiffness_z, place_search_velocity,
             place_search_acceleration, place_search_timeout
 
         아래 메타데이터는 DB에 존재해도 Post Motion에서는 사용하지 않는다.
@@ -53,6 +53,11 @@ class SolarMotion:
         PIN-A-*      : pickup_position / assembly_position
         SNAPFIT-A-*  : pickup_position / assembly_position
         CMP-FRAME-*   : pickup_position / assembly_position
+
+    좌표/안전거리 정책:
+        - PIN은 기존 실험 코드를 유지한다.
+        - POST/FRAME/SNAPFIT의 pickup_position / assembly_position은 실제 작업 좌표다.
+        - pick_distance / place_retreat_distance는 안전 접근/복귀 거리로 사용한다.
 
     Post place alignment는 코드 내부 정책으로 고정한다.
         - 첫 접촉: TOOL +Z
@@ -84,12 +89,11 @@ class SolarMotion:
     FRAME_PLACE_FORCE_DIRECTION = -1
     FRAME_PLACE_FORCE_REFERENCE = "base"
 
-    # FRAME Release 후 TOOL Z축 기준 periodic 회전.
-    # amp=20deg 이므로 -20deg ~ +20deg 범위로 5회 반복한다.
-    FRAME_PERIODIC_RZ_DEG = 20.0
-    FRAME_PERIODIC_PERIOD_SEC = 1.0
-    FRAME_PERIODIC_ATIME_SEC = 0.2
-    FRAME_PERIODIC_REPEAT = 5
+    # FRAME Release 후 TOOL Z축 기준 Spiral.
+    # 총 5회 회전: 바깥쪽 2.5회 + 안쪽 2.5회.
+    # 최대 반경 50mm(5cm), 축방향 이동은 0mm로 하여 중심으로 복귀한다.
+    FRAME_SPIRAL_REVOLUTIONS = 5.0
+    FRAME_SPIRAL_RADIUS_MM = 50.0
 
     POST_INSERT_DIRECTION = 1       # TOOL +Z
 
@@ -130,23 +134,31 @@ class SolarMotion:
         from DSR_ROBOT2 import (
             movel,
             movec,
-            move_periodic,
+            move_spiral,
             posx,
             trans,
             wait,
             DR_BASE,
             DR_TOOL,
+            DR_AXIS_Z,
+            DR_SPIRAL_OUTWARD,
+            DR_SPIRAL_INWARD,
+            DR_ROT_FORWARD,
         )
         from .robot_motion import RobotMotion
 
         self.movel = movel
         self.movec = movec
-        self.move_periodic = move_periodic
+        self.move_spiral = move_spiral
         self.posx = posx
         self.trans = trans
         self.wait = wait
         self.DR_BASE = DR_BASE
         self.DR_TOOL = DR_TOOL
+        self.DR_AXIS_Z = DR_AXIS_Z
+        self.DR_SPIRAL_OUTWARD = DR_SPIRAL_OUTWARD
+        self.DR_SPIRAL_INWARD = DR_SPIRAL_INWARD
+        self.DR_ROT_FORWARD = DR_ROT_FORWARD
 
         self.motion = RobotMotion()
         self.force = self.motion.force
@@ -269,21 +281,21 @@ class SolarMotion:
                     50.0,
                     nonnegative=True,
                 ),
-                # 최종 본 삽입 Desired Force
+                # POST 최종 본 삽입 Desired Force
                 "place_force": self._first_number(
-                    parameters, ("place_force", "post_place_force"), 40.0, positive=True
+                    parameters, ("post_place_force",), 40.0, positive=True
                 ),
-                # 최초 접촉을 찾기 위한 약한 Desired Force
+                # POST 최초 접촉을 찾기 위한 약한 Desired Force
                 "contact_seek_force": self._first_number(
-                    parameters, ("place_contact_force", "post_contact_force"), 20.0, positive=True
+                    parameters, ("post_contact_force",), 20.0, positive=True
                 ),
                 # 최종 삽입 성공 판정은 코드 정책으로 분리한다.
-                # place_contact_force는 최초 Contact Seek 용도이며 여기 재사용하지 않는다.
+                # post_contact_force는 최초 Contact Seek 용도이며 여기 재사용하지 않는다.
                 "final_contact_threshold": self.POST_FINAL_CONTACT_THRESHOLD_N,
                 "final_contact_hold_sec": self.POST_FINAL_CONTACT_HOLD_SEC,
-                # 각 위치 후보에서 사용하는 Probe Force
+                # POST 각 위치 후보에서 사용하는 Probe/Search Force
                 "insert_force": self._first_number(
-                    parameters, ("place_insert_force", "post_search_force"), 12.0, positive=True
+                    parameters, ("post_insert_force",), 12.0, positive=True
                 ),
                 "stiffness_z": self._first_number(
                     parameters, ("place_stiffness_z",), 500.0, positive=True
@@ -383,7 +395,7 @@ class SolarMotion:
         return settings
 
     def _load_frame_settings(self, parameters):
-        """FRAME(CMP-FRAME-*) Pick/Place 이동/Force 설정.
+        """FRAME(CMP-FRAME-*) Pick/Place 이동/Force/Spiral 설정.
 
         pickup_position / assembly_position:
             실제 Pick/Place 작업 좌표.
@@ -392,61 +404,48 @@ class SolarMotion:
             실제 작업 좌표에서 BASE +Z 방향으로 떨어진 안전 접근 거리.
 
         FRAME 이동:
-            move_arc()를 사용하지 않고 공통 FRAME_MOVEC_VIA를 경유하는 movec() 사용.
+            공통 FRAME_MOVEC_VIA를 경유하는 movec() 사용.
 
         FRAME Place:
-            assembly_position 도달 후 BASE -Z Force Place를 수행하고,
-            Release 후 TOOL Z축 periodic 회전 뒤 안전 위치로 복귀.
+            assembly_position 도달 후 BASE -Z Force Place.
+            측정 Force threshold는 frame_place_force_threshold를 사용한다.
+            Release 후 TOOL Z축 기준 Spiral을 수행하고 중심으로 복귀한 뒤 상승한다.
         """
         settings = self._load_travel_settings(parameters)
 
         settings["pick_distance"] = self._first_number(
             parameters,
-            (
-                "frame_pick_distance",
-                "pick_distance",
-            ),
+            ("frame_pick_distance", "pick_distance"),
             50.0,
             nonnegative=True,
         )
 
         settings["place_distance"] = self._first_number(
             parameters,
-            (
-                "frame_place_distance",
-                "place_distance",
-                "place_retreat_distance",
-            ),
+            ("frame_place_distance", "place_distance", "place_retreat_distance"),
             50.0,
             nonnegative=True,
         )
 
+        # FRAME 전용 Desired Force.
         settings["place_force"] = self._first_number(
             parameters,
-            (
-                "frame_place_force",
-                "place_force",
-            ),
+            ("frame_place_force",),
             30.0,
             positive=True,
         )
 
+        # FRAME에서 측정 Force가 이 값 이상이면 Place 성공으로 판단.
         settings["contact_force"] = self._first_number(
             parameters,
-            (
-                "frame_place_force_threshold",
-                "place_contact_force",
-            ),
-            20.0,
+            ("frame_place_force_threshold",),
+            10.0,
             positive=True,
         )
 
         settings["stiffness_z"] = self._first_number(
             parameters,
-            (
-                "frame_place_stiffness_z",
-                "place_stiffness_z",
-            ),
+            ("frame_place_stiffness_z", "place_stiffness_z"),
             500.0,
             positive=True,
         )
@@ -458,38 +457,36 @@ class SolarMotion:
             positive=True,
         )
 
-        settings["periodic_rz_deg"] = self._first_number(
+        # Spiral 전체 회전수. 총 회전수를 절반씩 Outward / Inward에 나눠
+        # 최대 반경까지 나갔다가 원래 중심으로 복귀한다.
+        settings["spiral_revolutions"] = self._first_number(
             parameters,
-            ("frame_periodic_rz_deg",),
-            self.FRAME_PERIODIC_RZ_DEG,
+            ("frame_spiral_revolutions",),
+            self.FRAME_SPIRAL_REVOLUTIONS,
             positive=True,
         )
 
-        settings["periodic_period"] = self._first_number(
+        settings["spiral_radius"] = self._first_number(
             parameters,
-            ("frame_periodic_period",),
-            self.FRAME_PERIODIC_PERIOD_SEC,
+            ("frame_spiral_radius",),
+            self.FRAME_SPIRAL_RADIUS_MM,
             positive=True,
         )
 
-        settings["periodic_atime"] = self._first_number(
+        # 별도 값이 없으면 기존 operation speed / acceleration 사용.
+        settings["spiral_velocity"] = self._first_number(
             parameters,
-            ("frame_periodic_atime",),
-            self.FRAME_PERIODIC_ATIME_SEC,
-            nonnegative=True,
+            ("frame_spiral_velocity",),
+            settings["speed"],
+            positive=True,
         )
 
-        settings["periodic_repeat"] = int(
-            self._first_number(
-                parameters,
-                ("frame_periodic_repeat",),
-                self.FRAME_PERIODIC_REPEAT,
-                positive=True,
-            )
+        settings["spiral_acc"] = self._first_number(
+            parameters,
+            ("frame_spiral_acceleration",),
+            settings["acc"],
+            positive=True,
         )
-
-        if settings["periodic_repeat"] < 1:
-            raise ValueError("frame_periodic_repeat는 1 이상이어야 합니다.")
 
         return settings
 
@@ -746,6 +743,20 @@ class SolarMotion:
     # =========================================================
 
     def pick_post(self, parameters, components, operation_context=None):
+        """POST를 정확한 pickup_position에서 파지한다.
+
+        pickup_position:
+            실제 Gripper Close가 수행되는 정확한 Pick 좌표.
+
+        pick_distance:
+            pickup_position에서 BASE +Z 방향으로 떨어진 안전 접근 거리.
+
+        순서:
+            Safe Pick
+            -> pickup_position
+            -> Grasp
+            -> Safe Pick 복귀
+        """
         self.node.get_logger().info("========== POST PICK START ==========")
         self._publish_cycle_event(
             operation_context, phase="POST_PICK", status="STARTED"
@@ -755,8 +766,35 @@ class SolarMotion:
             settings = self._load_pick_settings(parameters)
             component, pickup_pose = self._post_pickup_input(components)
 
+            pick_distance = settings["pick_distance"]
+
+            # DB pickup_position 자체가 실제 파지 좌표다.
+            safe_pick_pose = self.posx([
+                float(pickup_pose[0]),
+                float(pickup_pose[1]),
+                float(pickup_pose[2]) + pick_distance,
+                float(pickup_pose[3]),
+                float(pickup_pose[4]),
+                float(pickup_pose[5]),
+            ])
+
+            # 1. Pick 안전 접근점
             self.node.get_logger().info(
-                f"Post Pick 시작 위치 이동 - {component.get('code')}"
+                "POST Pick 안전 접근 - "
+                f"component={component.get('code')}, "
+                f"BASE Z +{pick_distance:.1f}mm"
+            )
+            self.movel(
+                safe_pick_pose,
+                vel=settings["speed"],
+                acc=settings["acc"],
+                ref=self.DR_BASE,
+            )
+            self.wait(0.5)
+
+            # 2. 정확한 Pick 위치
+            self.node.get_logger().info(
+                "POST 정확한 Pick 위치 이동"
             )
             self.movel(
                 pickup_pose,
@@ -764,21 +802,37 @@ class SolarMotion:
                 acc=settings["acc"],
                 ref=self.DR_BASE,
             )
-            self.wait(0.5)
+            self.wait(0.2)
 
-            self.motion.pick(
-                distance=settings["pick_distance"],
-                velocity=settings["speed"],
+            # 3. 파지
+            self.node.get_logger().info("POST Gripper Close")
+            self.motion.grasp()
+            self.wait(0.2)
+
+            # 4. 동일한 안전 접근점으로 복귀
+            self.node.get_logger().info(
+                "POST Pick 완료 -> 안전 접근점 복귀"
+            )
+            self.movel(
+                safe_pick_pose,
+                vel=settings["speed"],
                 acc=settings["acc"],
+                ref=self.DR_BASE,
             )
             self.wait(0.5)
 
-            self.node.get_logger().info("========== POST PICK COMPLETE ==========")
+            self.node.get_logger().info(
+                "========== POST PICK COMPLETE =========="
+            )
             self._publish_cycle_event(
                 operation_context,
                 phase="POST_PICK",
                 status="COMPLETED",
-                detail={"component_code": component.get("code")},
+                detail={
+                    "component_code": component.get("code"),
+                    "pick_distance": pick_distance,
+                    "safe_reference": "BASE_Z",
+                },
             )
             return True
 
@@ -988,8 +1042,35 @@ class SolarMotion:
             direction = self.POST_INSERT_DIRECTION
             direction_label = "+Z" if direction > 0 else "-Z"
 
+            place_distance = settings["retreat_distance"]
+
+            # DB assembly_position 자체가 실제 Place/Force 시작 좌표다.
+            safe_place_pose = self.posx([
+                float(assembly_pose[0]),
+                float(assembly_pose[1]),
+                float(assembly_pose[2]) + place_distance,
+                float(assembly_pose[3]),
+                float(assembly_pose[4]),
+                float(assembly_pose[5]),
+            ])
+
+            # 1. Place 안전 접근점
             self.node.get_logger().info(
-                f"Post Place 시작 위치 이동 - {component.get('code')}"
+                "POST Place 안전 접근 - "
+                f"component={component.get('code')}, "
+                f"BASE Z +{place_distance:.1f}mm"
+            )
+            self.movel(
+                safe_place_pose,
+                vel=settings["speed"],
+                acc=settings["acc"],
+                ref=self.DR_BASE,
+            )
+            self.wait(0.5)
+
+            # 2. 정확한 Place/Force 시작 위치
+            self.node.get_logger().info(
+                "POST 정확한 assembly_position 이동"
             )
             self.movel(
                 assembly_pose,
@@ -997,7 +1078,7 @@ class SolarMotion:
                 acc=settings["acc"],
                 ref=self.DR_BASE,
             )
-            self.wait(0.5)
+            self.wait(0.2)
 
             contact = self.motion.seek_contact(
                 axis="z",
@@ -1094,6 +1175,8 @@ class SolarMotion:
                 "contact_axis_force_delta": float(contact["axis_force_delta"]),
                 "contact_base_z": current_base_z,
                 "search_skipped": bool(search_skipped),
+                "place_distance": place_distance,
+                "safe_reference": "BASE_Z",
             }
             if best is not None:
                 detail.update(
@@ -1523,27 +1606,33 @@ class SolarMotion:
             raise FramePickError(str(e)) from e
 
     def place_frame(self, parameters, components, operation_context=None):
-        """FRAME을 movec()로 접근한 뒤 Force Place하고 periodic 회전 후 이탈한다.
+        """FRAME을 movec()로 접근한 뒤 Force Place하고 Spiral 후 이탈한다.
 
         assembly_position:
             Force Place를 시작하는 정확한 Place 좌표.
 
-        frame_place_distance / place_distance / place_retreat_distance:
-            assembly_position에서 BASE +Z 방향으로 떨어진 안전 접근 거리.
+        place_retreat_distance:
+            assembly_position에서 BASE +Z 방향의 안전 접근/복귀 거리.
 
         Force:
             BASE -Z 방향.
+            frame_place_force       = Desired Force
+            frame_place_force_threshold = 측정 Force 성공 threshold (기본 10N)
 
-        Release 후:
-            TOOL Z축 기준 ±20deg periodic 회전 5회.
-            정상 종료하면 periodic 시작 자세로 돌아온 뒤 Safe Place로 상승.
+        Release 후 Spiral:
+            TOOL Z축 기준.
+            총 5회 기준으로 Outward 2.5회 + Inward 2.5회.
+            최대 반경 50mm(5cm).
+            축방향 이동 lmax=0mm.
+            따라서 중심으로 복귀한 뒤 Safe Place로 상승한다.
 
         순서:
             movec(FRAME_MOVEC_VIA -> Safe Place)
             -> movel(assembly_position)
             -> BASE -Z Force Place
             -> Release
-            -> TOOL Rz periodic
+            -> TOOL Z Spiral Outward
+            -> TOOL Z Spiral Inward
             -> movel(Safe Place)
         """
         self.node.get_logger().info("========== FRAME PLACE START ==========")
@@ -1606,8 +1695,8 @@ class SolarMotion:
             )
             self.node.get_logger().info(
                 "FRAME Force 설정 - "
-                f"force={settings['place_force']:.2f}N, "
-                f"threshold={settings['contact_force']:.2f}N, "
+                f"desired_force={settings['place_force']:.2f}N, "
+                f"measured_threshold={settings['contact_force']:.2f}N, "
                 f"stiffness_z={settings['stiffness_z']:.2f}, "
                 f"timeout={settings['force_timeout']:.2f}s"
             )
@@ -1638,35 +1727,54 @@ class SolarMotion:
             self.motion.release()
             self.wait(0.2)
 
-            # 5. TOOL Z축 기준 periodic 회전
+            # 5. TOOL Z축 기준 Spiral.
+            # 총 회전수를 반으로 나눠 밖으로 나갔다가 다시 중심으로 들어온다.
+            outward_rev = settings["spiral_revolutions"] / 2.0
+            inward_rev = settings["spiral_revolutions"] - outward_rev
+
             self.node.get_logger().info(
-                "========== FRAME TOOL Z PERIODIC START =========="
+                "========== FRAME TOOL Z SPIRAL START =========="
             )
             self.node.get_logger().info(
-                "FRAME Periodic 설정 - "
-                f"Rz=±{settings['periodic_rz_deg']:.1f}deg, "
-                f"period={settings['periodic_period']:.2f}s, "
-                f"atime={settings['periodic_atime']:.2f}s, "
-                f"repeat={settings['periodic_repeat']}"
+                "FRAME Spiral 설정 - "
+                f"total_rev={settings['spiral_revolutions']:.2f}, "
+                f"outward_rev={outward_rev:.2f}, "
+                f"inward_rev={inward_rev:.2f}, "
+                f"rmax={settings['spiral_radius']:.1f}mm, "
+                "lmax=0.0mm, "
+                f"vel={settings['spiral_velocity']:.1f}, "
+                f"acc={settings['spiral_acc']:.1f}, "
+                "ref=TOOL, axis=Z"
             )
 
-            self.move_periodic(
-                amp=[
-                    0.0,
-                    0.0,
-                    0.0,
-                    0.0,
-                    0.0,
-                    settings["periodic_rz_deg"],
-                ],
-                period=settings["periodic_period"],
-                atime=settings["periodic_atime"],
-                repeat=settings["periodic_repeat"],
+            # 5-1. 중심 -> 최대 반경 50mm
+            self.move_spiral(
+                rev=outward_rev,
+                rmax=settings["spiral_radius"],
+                lmax=0.0,
+                vel=settings["spiral_velocity"],
+                acc=settings["spiral_acc"],
+                axis=self.DR_AXIS_Z,
                 ref=self.DR_TOOL,
+                rad_dir=self.DR_SPIRAL_OUTWARD,
+                rot_dir=self.DR_ROT_FORWARD,
+            )
+
+            # 5-2. 최대 반경 -> 원래 중심
+            self.move_spiral(
+                rev=inward_rev,
+                rmax=settings["spiral_radius"],
+                lmax=0.0,
+                vel=settings["spiral_velocity"],
+                acc=settings["spiral_acc"],
+                axis=self.DR_AXIS_Z,
+                ref=self.DR_TOOL,
+                rad_dir=self.DR_SPIRAL_INWARD,
+                rot_dir=self.DR_ROT_FORWARD,
             )
 
             self.node.get_logger().info(
-                "FRAME TOOL Z Periodic 완료 -> 원래 자세 복귀 완료"
+                "FRAME TOOL Z Spiral 완료 -> 중심 복귀 완료"
             )
             self.wait(0.2)
 
@@ -1699,12 +1807,13 @@ class SolarMotion:
                     "force_reference": "BASE",
                     "force_axis": "BASE_Z",
                     "force_direction": self.FRAME_PLACE_FORCE_DIRECTION,
-                    "force": settings["place_force"],
-                    "threshold": settings["contact_force"],
-                    "periodic_reference": "TOOL",
-                    "periodic_axis": "RZ",
-                    "periodic_amplitude_deg": settings["periodic_rz_deg"],
-                    "periodic_repeat": settings["periodic_repeat"],
+                    "frame_place_force": settings["place_force"],
+                    "frame_place_force_threshold": settings["contact_force"],
+                    "spiral_reference": "TOOL",
+                    "spiral_axis": "Z",
+                    "spiral_total_revolutions": settings["spiral_revolutions"],
+                    "spiral_radius_mm": settings["spiral_radius"],
+                    "spiral_lmax_mm": 0.0,
                 },
             )
             return True
@@ -2004,14 +2113,27 @@ class SolarMotion:
             self.wait(0.5)
 
             if post_retreat > 0:
+                # assembly_position을 실제 Place 좌표로 보고,
+                # DB place_retreat_distance만큼 BASE +Z에 있는 동일 Safe Place로 복귀한다.
+                _, post_assembly_pose = self._post_assembly_input(components)
+                post_safe_place_pose = self.posx([
+                    float(post_assembly_pose[0]),
+                    float(post_assembly_pose[1]),
+                    float(post_assembly_pose[2]) + post_retreat,
+                    float(post_assembly_pose[3]),
+                    float(post_assembly_pose[4]),
+                    float(post_assembly_pose[5]),
+                ])
+
                 self.node.get_logger().info(
-                    f"Post Release 완료 -> BASE +Z {post_retreat}mm 이탈"
+                    "Post Release 완료 -> 동일한 Place 안전 접근점 복귀 - "
+                    f"BASE Z +{post_retreat:.1f}mm"
                 )
-                self.motion.move_z(
-                    post_retreat,
-                    ref=self.DR_BASE,
-                    velocity=settings["speed"],
+                self.movel(
+                    post_safe_place_pose,
+                    vel=settings["speed"],
                     acc=settings["acc"],
+                    ref=self.DR_BASE,
                 )
                 self.wait(0.5)
 
