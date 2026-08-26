@@ -956,42 +956,18 @@ class RobotMotion:
         poll_interval=0.02,
         arm_delay=0.10,
         stiffness=None,
+        reference="tool",
     ):
         """
-        TOOL 좌표계 Force 기반 범용 Place 삽입 동작.
+        선택한 기준 좌표계에서 Force 기반 범용 Place 삽입 동작.
 
-        Post 예시:
-            axis="z", direction=+1
-            -> TOOL +Z 방향 Force 삽입, Delta Fz 감시
-
-        Post Pin 예시:
-            axis="x", direction=+1
-            -> TOOL +X 방향 Force 삽입, Delta Fx 감시
-
-        get_tool_force(DR_TOOL)로 시작점 대비 힘 변화량을 직접 측정한다.
-
-        axis:
-            "x", "y", "z" 중 Force를 적용할 TOOL 축.
-
-        direction:
-            +1이면 해당 TOOL 축의 +방향, -1이면 -방향.
-
-        force:
-            Desired Force의 크기(N). 양수 값만 입력한다.
-
-        threshold:
-            Force 시작점 대비 선택 축 힘 변화량의 절대값(N).
-            이 값 이상인 상태가 hold_time 동안 연속 유지되면 완료로 판단한다.
-
-        timeout:
-            None이면 시간 제한 없이 threshold 조건을 기다린다.
-
-        hold_time:
-            threshold 이상 상태를 연속으로 유지해야 하는 시간(초).
-            0이면 기존처럼 즉시 완료한다.
+        reference:
+            "tool" -> TOOL 좌표계 기준 Force / 반력 측정
+            "base" -> BASE 좌표계 기준 Force / 반력 측정
         """
 
         axis = str(axis).lower()
+        reference = str(reference).lower()
         direction = int(direction)
         force = float(force)
         threshold = float(threshold)
@@ -1005,20 +981,25 @@ class RobotMotion:
                 f"axis must be one of x, y, z: {axis}"
             )
 
-        if direction not in (-1, 1):
+        if reference == "tool":
+            force_ref = DR_TOOL
+            reference_label = "TOOL"
+        elif reference == "base":
+            force_ref = DR_BASE
+            reference_label = "BASE"
+        else:
             raise ValueError(
-                "direction must be +1 or -1"
+                f"reference must be 'tool' or 'base': {reference}"
             )
+
+        if direction not in (-1, 1):
+            raise ValueError("direction must be +1 or -1")
 
         if force <= 0:
-            raise ValueError(
-                "force must be greater than 0"
-            )
+            raise ValueError("force must be greater than 0")
 
         if threshold <= 0:
-            raise ValueError(
-                "threshold must be greater than 0"
-            )
+            raise ValueError("threshold must be greater than 0")
 
         if timeout is not None and timeout <= 0:
             raise ValueError(
@@ -1026,9 +1007,7 @@ class RobotMotion:
             )
 
         if hold_time < 0:
-            raise ValueError(
-                "hold_time must be >= 0"
-            )
+            raise ValueError("hold_time must be >= 0")
 
         if poll_interval <= 0:
             raise ValueError(
@@ -1036,9 +1015,7 @@ class RobotMotion:
             )
 
         if arm_delay < 0:
-            raise ValueError(
-                "arm_delay must be >= 0"
-            )
+            raise ValueError("arm_delay must be >= 0")
 
         axis_index = self.FORCE_AXIS_INDEX[axis]
         axis_label = axis.upper()
@@ -1046,7 +1023,8 @@ class RobotMotion:
         direction_label = "+" if direction > 0 else "-"
 
         print(
-            f"[PLACE] 시작 axis=TOOL {axis_label}, "
+            f"[PLACE] 시작 reference={reference_label}, "
+            f"axis={axis_label}, "
             f"direction={direction_label}{axis_label}, "
             f"desired_force={force:.2f}N, "
             f"delta_threshold={threshold:.2f}N, "
@@ -1058,49 +1036,34 @@ class RobotMotion:
         force_control_started = False
 
         try:
-            # 1. TOOL 기준 Compliance Control
-            print(
-                "[PLACE] Compliance ON (reference=TOOL)",
-                flush=True,
-            )
-
             self.force.compliance_on(
                 stiffness=stiffness,
-                reference="tool",
+                reference=reference,
             )
 
             wait(0.2)
 
-            # 2. Force 적용 직전 선택 축의 baseline 저장
             baseline_force = [
                 float(value)
-                for value in get_tool_force(DR_TOOL)
+                for value in get_tool_force(force_ref)
             ]
             baseline_value = float(
                 baseline_force[axis_index]
             )
 
             print(
-                f"[PLACE] Baseline F{axis}={baseline_value:.2f}N "
+                f"[PLACE] Baseline {reference_label} F{axis}="
+                f"{baseline_value:.2f}N "
                 f"| force=[Fx={baseline_force[0]:.2f}, "
                 f"Fy={baseline_force[1]:.2f}, "
                 f"Fz={baseline_force[2]:.2f}]N",
                 flush=True,
             )
 
-            # 3. 선택한 TOOL 축에 Desired Force 적용
-            print(
-                f"[PLACE] TOOL {direction_label}{axis_label} "
-                f"Desired Force {force:.2f}N 적용",
-                flush=True,
-            )
-
             self.force.force_on(
-                forces={
-                    axis: signed_force,
-                },
+                forces={axis: signed_force},
                 mode="relative",
-                reference="tool",
+                reference=reference,
             )
 
             force_control_started = True
@@ -1109,24 +1072,17 @@ class RobotMotion:
             if arm_delay > 0:
                 wait(arm_delay)
 
-            print(
-                f"[PLACE] Delta Force 판정 시작 "
-                f"|F{axis} - baseline| >= {threshold:.2f}N",
-                flush=True,
-            )
-
-            # 본 삽입은 0.1초마다 Force 상태를 출력한다.
             log_interval = 0.10
             next_log_time = 0.0
             sample_index = 0
             threshold_start = None
 
-            # 4. 선택 축의 힘 변화량을 직접 반복 측정
             while True:
                 measured_force = [
                     float(value)
-                    for value in get_tool_force(DR_TOOL)
+                    for value in get_tool_force(force_ref)
                 ]
+
                 current_value = float(
                     measured_force[axis_index]
                 )
@@ -1141,8 +1097,10 @@ class RobotMotion:
                         measured_force[i] - baseline_force[i]
                         for i in range(3)
                     ]
+
                     print(
                         f"[PLACE SAMPLE #{sample_index:04d}] "
+                        f"ref={reference_label} "
                         f"t={elapsed:.3f}s "
                         f"force=[Fx={measured_force[0]:.3f}, "
                         f"Fy={measured_force[1]:.3f}, "
@@ -1154,6 +1112,7 @@ class RobotMotion:
                         f"threshold={threshold:.3f}N",
                         flush=True,
                     )
+
                     next_log_time += log_interval
 
                 if delta_force >= threshold:
@@ -1164,59 +1123,24 @@ class RobotMotion:
 
                     if held >= hold_time:
                         print(
-                            "",
-                            flush=True,
-                        )
-                        print(
-                            "========================================",
-                            flush=True,
-                        )
-                        print(
-                            "[PLACE] COMPLETE - 삽입 Force 유지 조건 만족",
-                            flush=True,
-                        )
-                        print(
-                            f"[PLACE] Axis=TOOL {axis_label}",
-                            flush=True,
-                        )
-                        print(
-                            f"[PLACE] Baseline F{axis}="
-                            f"{baseline_value:.2f}N",
-                            flush=True,
-                        )
-                        print(
-                            f"[PLACE] Current F{axis}="
-                            f"{current_value:.2f}N",
-                            flush=True,
-                        )
-                        print(
-                            f"[PLACE] Delta F{axis}="
-                            f"{delta_force:.2f}N "
+                            f"[PLACE] COMPLETE - "
+                            f"{reference_label} {axis_label} "
+                            f"Delta Force {delta_force:.2f}N "
                             f">= {threshold:.2f}N",
                             flush=True,
                         )
-                        print(
-                            f"[PLACE] Threshold hold="
-                            f"{held:.3f}s >= {hold_time:.3f}s",
-                            flush=True,
-                        )
-                        print(
-                            "========================================",
-                            flush=True,
-                        )
-
                         return True
+
                 else:
-                    # threshold 아래로 떨어지면 연속 유지시간을 처음부터 다시 센다.
                     threshold_start = None
 
                 if timeout is not None and elapsed >= timeout:
                     raise RuntimeError(
                         "[PLACE] Delta Force threshold Timeout: "
                         f"{timeout:.1f}초 동안 "
+                        f"{reference_label} "
                         f"|F{axis} - baseline| >= "
-                        f"{threshold:.2f}N 조건을 만족하지 "
-                        "못했습니다. "
+                        f"{threshold:.2f}N 조건을 만족하지 못했습니다. "
                         f"baseline={baseline_value:.2f}N, "
                         f"current={current_value:.2f}N, "
                         f"delta={delta_force:.2f}N"
@@ -1231,5 +1155,4 @@ class RobotMotion:
                     flush=True,
                 )
 
-            # 성공/실패와 관계없이 Force와 Compliance를 반드시 해제한다.
             self.force.all_off()
