@@ -326,7 +326,7 @@ class RobotMotion:
         self,
         start,
         end,
-        height=100,
+        height=500,
         steps=6,
     ):
         """
