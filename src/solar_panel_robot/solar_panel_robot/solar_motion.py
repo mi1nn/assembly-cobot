@@ -114,16 +114,6 @@ class SolarMotion:
     SNAPFIT_INSERT_DIRECTION = 1    # TOOL +Z
     SNAPFIT_INSERT_REFERENCE = "tool"
 
-    # SNAPFIT Pick 진입용 move_arc 고정 도착점 (BASE 절대좌표)
-    SNAPFIT_PICK_ARC_TARGET = (
-        382.99,
-        -117.23,
-        304.27,
-        156.18,
-        177.92,
-        63.5,
-    )
-    SNAPFIT_PICK_ARC_HEIGHT_MM = 320.0
 
     CONTACT_THRESHOLD_N = 5.0
     CONTACT_POLL_INTERVAL = 0.02
@@ -1891,24 +1881,13 @@ class SolarMotion:
     # =========================================================
 
     def pick_snapfit(self, parameters, components, operation_context=None):
-        """SNAPFIT Pick 진입을 move_arc -> movel 두 단계로 수행한다.
+        """안전 접근 후 SNAPFIT을 파지하고 공통 전송 기준점까지 Arc 이동한다.
 
-        pickup_position:
-            실제 Gripper Close가 수행되는 정확한 Pick 좌표.
-
-        pick_distance:
-            Grasp 완료 후 BASE +Z 방향으로 상승하는 안전거리.
-
-        진입 순서:
-            1. 실행 당시 현재 TCP(BASE) 좌표 측정
-            2. move_arc(
-                   start=현재 TCP,
-                   end=SNAPFIT_PICK_ARC_TARGET,
-                   height=320mm
-               )
-            3. movel(pickup_position)
-            4. Grasp
-            5. BASE +Z pick_distance 상승
+        순서:
+            pickup_position의 BASE +Z snapfit_pick_distance 안전점
+            -> pickup_position
+            -> Grasp
+            -> 현재 TCP에서 SNAPFIT_TRANSFER_POSE까지 move_arc
         """
         self.node.get_logger().info("========== SNAPFIT PICK START ==========")
         self._publish_cycle_event(
@@ -1918,87 +1897,81 @@ class SolarMotion:
         try:
             settings = self._load_snapfit_pick_settings(parameters)
             component, pickup_pose = self._snapfit_pickup_input(components)
+            pick_distance = settings["snapfit_pick_distance"]
+            arc_steps = int(settings["snapfit_arc_steps"])
+            if arc_steps < 2:
+                raise ValueError("snapfit_arc_steps는 2 이상이어야 합니다.")
 
-            snapfit_pick_distance = settings["snapfit_pick_distance"]
+            safe_pick_pose = self.posx([
+                float(pickup_pose[0]),
+                float(pickup_pose[1]),
+                float(pickup_pose[2]) + pick_distance,
+                float(pickup_pose[3]),
+                float(pickup_pose[4]),
+                float(pickup_pose[5]),
+            ])
 
-            # -----------------------------------------------------
-            # 1. 실행 당시 현재 TCP(BASE) 좌표 측정
-            # -----------------------------------------------------
-            current_pose, solution_space = self.motion.get_current_pose(
-                ref=self.DR_BASE
-            )
-            current_pose = [
-                float(current_pose[i])
-                for i in range(6)
-            ]
-
-            arc_target = [
-                float(value)
-                for value in self.SNAPFIT_PICK_ARC_TARGET
-            ]
-
+            # 1. pickup_position 기준 BASE +Z 안전 접근점
             self.node.get_logger().info(
-                "SNAPFIT Pick 현재 TCP 측정 - "
-                f"pose={current_pose}, "
-                f"solution_space={solution_space}"
+                "SNAPFIT Pick 안전 접근 MOVEL - "
+                f"distance=BASE +Z {pick_distance:.1f}mm, "
+                f"target={list(safe_pick_pose)}"
             )
-
-            # -----------------------------------------------------
-            # 2. 현재 TCP -> 고정 Arc 도착점
-            # -----------------------------------------------------
-            self.node.get_logger().info(
-                "SNAPFIT Pick move_arc 이동 - "
-                f"start={current_pose}, "
-                f"end={arc_target}, "
-                f"height={self.SNAPFIT_PICK_ARC_HEIGHT_MM:.1f}mm"
+            safe_result = self.movel(
+                safe_pick_pose,
+                vel=settings["speed"],
+                acc=settings["acc"],
+                ref=self.DR_BASE,
             )
-
-            self.motion.move_arc(
-                current_pose,
-                arc_target,
-                height=self.SNAPFIT_PICK_ARC_HEIGHT_MM,
-            )
+            if safe_result != 0:
+                raise RuntimeError(
+                    "SNAPFIT Pick 안전 접근 MOVEL 실패 - "
+                    f"result={safe_result}, target={list(safe_pick_pose)}"
+                )
             self.mwait()
             self.wait(0.2)
 
-            # -----------------------------------------------------
-            # 3. Arc 도착점 -> 실제 Pick 위치 MOVEL
-            # -----------------------------------------------------
+            # 2. 실제 Pick 위치
             self.node.get_logger().info(
-                "SNAPFIT move_arc 완료 -> 정확한 Pick 위치 MOVEL - "
-                f"target_pose={list(pickup_pose)}"
+                "SNAPFIT 정확한 Pick 위치 MOVEL - "
+                f"target={list(pickup_pose)}"
             )
-            pickup_move_result = self.movel(
+            pickup_result = self.movel(
                 pickup_pose,
                 vel=settings["speed"],
                 acc=settings["acc"],
                 ref=self.DR_BASE,
             )
-            if pickup_move_result != 0:
+            if pickup_result != 0:
                 raise RuntimeError(
                     "SNAPFIT Pick 위치 MOVEL 실패 - "
-                    f"result={pickup_move_result}, target={list(pickup_pose)}"
+                    f"result={pickup_result}, target={list(pickup_pose)}"
                 )
             self.mwait()
             self.wait(0.2)
 
-            # -----------------------------------------------------
-            # 4. 파지
-            # -----------------------------------------------------
+            # 3. 파지
             self.node.get_logger().info("SNAPFIT Gripper Close")
             self.motion.grasp()
             self.wait(0.2)
 
-            # -----------------------------------------------------
-            # 5. Grasp 완료 후 기존 안전거리만큼 BASE +Z 상승
-            # -----------------------------------------------------
-            self.node.get_logger().info(
-                "SNAPFIT Grasp 완료 -> BASE +Z 상대 상승 - "
-                f"distance={snapfit_pick_distance:.1f}mm"
+            # 4. Grasp 위치 -> 공통 전송 기준점 Arc 이동
+            arc_start_pose, solution_space = self.motion.get_current_pose(
+                ref=self.DR_BASE
             )
-            self.motion.move_z(
-                snapfit_pick_distance,
-                ref=self.DR_BASE,
+            transfer_pose = list(self.SNAPFIT_TRANSFER_POSE)
+            self.node.get_logger().info(
+                "SNAPFIT Grasp 완료 -> 공통 기준점 ARC - "
+                f"start={arc_start_pose}, end={transfer_pose}, "
+                f"height={settings['snapfit_arc_height']:.1f}mm, "
+                f"steps={arc_steps}, speed={settings['speed']:.1f}, "
+                f"acc={settings['acc']:.1f}, solution_space={solution_space}"
+            )
+            self.motion.move_arc(
+                arc_start_pose,
+                transfer_pose,
+                height=settings["snapfit_arc_height"],
+                steps=arc_steps,
                 velocity=settings["speed"],
                 acc=settings["acc"],
             )
@@ -2014,12 +1987,12 @@ class SolarMotion:
                 status="COMPLETED",
                 detail={
                     "component_code": component.get("code"),
-                    "approach_motion": "MOVE_ARC_THEN_MOVEL",
-                    "arc_start": "CURRENT_TCP_BASE",
-                    "arc_target": list(self.SNAPFIT_PICK_ARC_TARGET),
-                    "arc_height_mm": self.SNAPFIT_PICK_ARC_HEIGHT_MM,
-                    "snapfit_pick_distance": snapfit_pick_distance,
+                    "snapfit_pick_distance": pick_distance,
                     "safe_reference": "BASE_Z",
+                    "arc_start": arc_start_pose,
+                    "arc_target": transfer_pose,
+                    "arc_height_mm": settings["snapfit_arc_height"],
+                    "arc_steps": arc_steps,
                 },
             )
             return True

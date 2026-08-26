@@ -348,10 +348,12 @@ class RobotMotion:
             y = start[1] + (end[1] - start[1]) * t
             z_linear = start[2] + (end[2] - start[2]) * t
             z = z_linear + 4 * height * t * (1 - t)
-            rx = start[3] + (end[3] - start[3]) * t
-            ry = start[4] + (end[4] - start[4]) * t
-            rz = start[5] + (end[5] - start[5]) * t
-            points.append(posx(x, y, z, rx, ry, rz))
+            angles = []
+            for start_angle, end_angle in zip(start[3:], end[3:]):
+                # -180/180 경계를 가로지를 때 불필요한 장회전을 피한다.
+                delta = (end_angle - start_angle + 180.0) % 360.0 - 180.0
+                angles.append(start_angle + delta * t)
+            points.append(posx(x, y, z, *angles))
 
         print(
             "[ARC] spline 이동 시작: "
