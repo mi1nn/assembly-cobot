@@ -64,8 +64,8 @@ class SolarMotion:
     # PIN/SNAPFIT은 기존 POST_PIN 설계와 동일하게 TOOL +X 삽입을 기본으로 둔다.
     # 실제 지그에서 삽입축이 다르면 아래 axis/direction만 변경하면 된다.
     PIN_INSERT_AXIS = "x"
-    PIN_INSERT_DIRECTION = -1       # BASE -X
-    PIN_INSERT_REFERENCE = "base"
+    PIN_INSERT_DIRECTION = 1        # TOOL +X
+    PIN_INSERT_REFERENCE = "tool"
     SNAPFIT_INSERT_AXIS = "x"
     SNAPFIT_INSERT_DIRECTION = 1    # TOOL +X
 
@@ -954,11 +954,12 @@ class SolarMotion:
         pickup_position은 PIN 바로 위의 접근 위치로 사용한다.
 
         동작 순서:
-            1. pickup_position으로 이동
-            2. BASE -Z 방향으로 pick_distance만큼 하강
-            3. Gripper Close
-            4. BASE +X 방향으로 50mm 이동
-            5. BASE +Z 방향으로 pick_distance만큼 상승
+            1. pickup_position보다 BASE Z +30mm 높은 위치로 이동
+            2. pickup_position으로 이동
+            3. BASE -Z 방향으로 pick_distance만큼 하강
+            4. Gripper Close
+            5. TOOL -X 방향으로 50mm 이동
+            6. BASE +Z 방향으로 pick_distance만큼 상승
         """
         self.node.get_logger().info("========== PIN PICK START ==========")
         self._publish_cycle_event(
@@ -971,10 +972,32 @@ class SolarMotion:
 
             pick_distance = settings["pick_distance"]
 
-            # 1. PIN 바로 위의 접근 위치로 이동
+            # 1. pickup_position보다 BASE Z +30mm 높은 안전 접근점으로 이동
+            pickup_safe_pose = self.posx([
+                float(pickup_pose[0]),
+                float(pickup_pose[1]),
+                float(pickup_pose[2]) + 30.0,
+                float(pickup_pose[3]),
+                float(pickup_pose[4]),
+                float(pickup_pose[5]),
+            ])
+
             self.node.get_logger().info(
-                f"PIN Pick 접근 위치 이동 - "
+                f"PIN Pick 안전 접근 위치 이동 - "
                 f"component={component.get('code')}, "
+                f"BASE Z +30.0mm"
+            )
+            self.movel(
+                pickup_safe_pose,
+                vel=settings["speed"],
+                acc=settings["acc"],
+                ref=self.DR_BASE,
+            )
+            self.wait(0.5)
+
+            # 2. DB의 pickup_position으로 이동
+            self.node.get_logger().info(
+                f"PIN Pick 위치 이동 - "
                 f"pick_distance={pick_distance:.1f}mm"
             )
             self.movel(
@@ -985,7 +1008,7 @@ class SolarMotion:
             )
             self.wait(0.5)
 
-            # 2. PIN 위치까지 수직 하강
+            # 3. PIN 위치까지 수직 하강
             self.node.get_logger().info(
                 f"PIN Pick 하강 - BASE Z {-pick_distance:.1f}mm"
             )
@@ -997,24 +1020,24 @@ class SolarMotion:
             )
             self.wait(0.2)
 
-            # 3. PIN 파지
+            # 4. PIN 파지
             self.node.get_logger().info("PIN Gripper Close")
             self.motion.grasp()
             self.wait(0.2)
 
             # 4. 파지 후 BASE -X 방향으로 50mm 이동
             self.node.get_logger().info(
-                "PIN Pick 파지 후 이동 - BASE X +50.0mm"
+                "PIN Pick 파지 후 이동 - TOOL X -50.0mm"
             )
             self.motion.move_x(
-                50.0,
-                ref=self.DR_BASE,
+                -50.0,
+                ref=self.DR_TOOL,
                 velocity=settings["speed"],
                 acc=settings["acc"],
             )
             self.wait(0.2)
 
-            # 5. Z 방향으로 다시 상승
+            # 6. Z 방향으로 다시 상승
             self.node.get_logger().info(
                 f"PIN Pick 상승 - BASE Z +{pick_distance:.1f}mm"
             )
@@ -1046,16 +1069,16 @@ class SolarMotion:
             raise PinPickError(str(e)) from e
 
     def place_pin(self, parameters, components, operation_context=None):
-        """PIN-A-*를 BASE -X 방향으로 두 번 밀어 넣는다.
+        """PIN-A-*를 TOOL +X 방향으로 두 번 밀어 넣는다.
 
         순서:
             place 위치 이동
-            -> BASE -X Force Push #1
+            -> TOOL +X Force Push #1
             -> 반력 감지
             -> Gripper Release
             -> place 위치 복귀
             -> Gripper Close
-            -> BASE -X Force Push #2
+            -> TOOL +X Force Push #2
             -> 반력 감지
         """
         self.node.get_logger().info("========== PIN PLACE START ==========")
@@ -1070,7 +1093,7 @@ class SolarMotion:
             self.node.get_logger().info(
                 "PIN Place 설정 - "
                 f"component={component.get('code')}, "
-                f"reference=BASE, axis=-X, "
+                f"reference=TOOL, axis=+X, "
                 f"force={settings['place_force']:.2f}N, "
                 f"threshold={settings['contact_force']:.2f}N"
             )
@@ -1087,7 +1110,7 @@ class SolarMotion:
             )
             self.wait(0.5)
 
-            # 2. 1차 BASE -X Force Push
+            # 2. 1차 TOOL +X Force Push
             self.node.get_logger().info(
                 "========== PIN PLACE 1ST PUSH START =========="
             )
@@ -1106,7 +1129,7 @@ class SolarMotion:
 
             if not first_result:
                 raise RuntimeError(
-                    "PIN 1차 BASE -X Force Place가 성공을 반환하지 않았습니다."
+                    "PIN 1차 TOOL +X Force Place가 성공을 반환하지 않았습니다."
                 )
 
             self.wait(0.2)
@@ -1137,7 +1160,7 @@ class SolarMotion:
             self.motion.grasp()
             self.wait(0.5)
 
-            # 6. 2차 BASE -X Force Push
+            # 6. 2차 TOOL +X Force Push
             self.node.get_logger().info(
                 "========== PIN PLACE 2ND PUSH START =========="
             )
@@ -1156,7 +1179,7 @@ class SolarMotion:
 
             if not second_result:
                 raise RuntimeError(
-                    "PIN 2차 BASE -X Force Place가 성공을 반환하지 않았습니다."
+                    "PIN 2차 TOOL +X Force Place가 성공을 반환하지 않았습니다."
                 )
 
             self.wait(0.5)
@@ -1170,8 +1193,8 @@ class SolarMotion:
                 status="COMPLETED",
                 detail={
                     "component_code": component.get("code"),
-                    "reference": "BASE",
-                    "axis": "BASE_X",
+                    "reference": "TOOL",
+                    "axis": "TOOL_X",
                     "direction": self.PIN_INSERT_DIRECTION,
                     "push_count": 2,
                     "force": settings["place_force"],
