@@ -6,11 +6,11 @@
 | MAINT ID | 대상 | 유지보수 요구사항 |
 | --- | --- | --- |
 | MAINT-01 | Gripper | 파지부의 마모와 체결 상태를 주기적으로 확인 |
-| MAINT-02 | Lock Pin | 휨, 변형 및 마모 상태 확인 |
+| MAINT-02 | Lock Pin (기둥-주춧돌 체결용) | 휨, 변형 및 마모 상태 확인 |
 | MAINT-03 | Pin Hole | 반복 체결에 따른 마모 및 유격 확인 |
 | MAINT-04 | Top Bracket | 균열, 변형 및 고정 상태 확인 |
 | MAINT-05 | Frame 안착면 | 마모 또는 변형 여부 확인 |
-| MAINT-06 | Frame 측정 기준부 | 반복 접촉으로 인한 변형 여부 확인 |
+| MAINT-06 | 스냅핏 체결부 (Frame-기둥, Panel-Frame) | 반복 체결에 따른 마모 및 체결력 저하 확인 |
 | MAINT-07 | 기둥 | 변형 및 수직 상태 확인 |
 | MAINT-08 | Panel Fixture | 반복 체결에 따른 마모 확인 |
 | MAINT-09 | TCP | Gripper 변경이나 충돌 발생 시 재설정 여부 확인 |
