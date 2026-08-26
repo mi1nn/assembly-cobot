@@ -104,8 +104,8 @@ class SolarMotion:
     SNAPFIT_INSERT_DIRECTION = 1    # TOOL +Z
     SNAPFIT_INSERT_REFERENCE = "tool"
 
-    # SNAPFIT Place 진입용 move_arc 고정 도착점 (BASE 절대좌표)
-    SNAPFIT_PLACE_ARC_TARGET = (
+    # SNAPFIT Pick 진입용 move_arc 고정 도착점 (BASE 절대좌표)
+    SNAPFIT_PICK_ARC_TARGET = (
         382.99,
         -117.23,
         304.27,
@@ -113,7 +113,7 @@ class SolarMotion:
         177.92,
         63.5,
     )
-    SNAPFIT_PLACE_ARC_HEIGHT_MM = 320.0
+    SNAPFIT_PICK_ARC_HEIGHT_MM = 320.0
 
     CONTACT_THRESHOLD_N = 5.0
     CONTACT_POLL_INTERVAL = 0.02
@@ -1869,16 +1869,24 @@ class SolarMotion:
     # =========================================================
 
     def pick_snapfit(self, parameters, components, operation_context=None):
-        """SNAPFIT을 정확한 pickup_position에서 파지한다.
+        """SNAPFIT Pick 진입을 move_arc -> movel 두 단계로 수행한다.
 
         pickup_position:
             실제 Gripper Close가 수행되는 정확한 Pick 좌표.
 
         pick_distance:
-            pickup_position에서 BASE +Z 방향으로 떨어진 안전 접근 거리.
+            Grasp 완료 후 BASE +Z 방향으로 상승하는 안전거리.
 
-        순서:
-            Safe Pick -> pickup_position -> Grasp -> Safe Pick
+        진입 순서:
+            1. 실행 당시 현재 TCP(BASE) 좌표 측정
+            2. move_arc(
+                   start=현재 TCP,
+                   end=SNAPFIT_PICK_ARC_TARGET,
+                   height=320mm
+               )
+            3. movel(pickup_position)
+            4. Grasp
+            5. BASE +Z pick_distance 상승
         """
         self.node.get_logger().info("========== SNAPFIT PICK START ==========")
         self._publish_cycle_event(
@@ -1891,40 +1899,51 @@ class SolarMotion:
 
             snapfit_pick_distance = settings["snapfit_pick_distance"]
 
-            # DB pickup_position 자체가 실제 파지 좌표다.
-            safe_pick_pose = self.posx([
-                float(pickup_pose[0]),
-                float(pickup_pose[1]),
-                float(pickup_pose[2]) + snapfit_pick_distance,
-                float(pickup_pose[3]),
-                float(pickup_pose[4]),
-                float(pickup_pose[5]),
-            ])
+            # -----------------------------------------------------
+            # 1. 실행 당시 현재 TCP(BASE) 좌표 측정
+            # -----------------------------------------------------
+            current_pose, solution_space = self.motion.get_current_pose(
+                ref=self.DR_BASE
+            )
+            current_pose = [
+                float(current_pose[i])
+                for i in range(6)
+            ]
 
-            # 1. 안전 접근점. SDK 반환값을 검사하고 실제 완료까지 대기한다.
+            arc_target = [
+                float(value)
+                for value in self.SNAPFIT_PICK_ARC_TARGET
+            ]
+
             self.node.get_logger().info(
-                "SNAPFIT Pick 안전 접근 - "
-                f"component={component.get('code')}, "
-                f"distance=BASE +Z {snapfit_pick_distance:.1f}mm, "
-                f"target_pose={list(safe_pick_pose)}"
+                "SNAPFIT Pick 현재 TCP 측정 - "
+                f"pose={current_pose}, "
+                f"solution_space={solution_space}"
             )
-            safe_move_result = self.movel(
-                safe_pick_pose,
-                vel=settings["speed"],
-                acc=settings["acc"],
-                ref=self.DR_BASE,
+
+            # -----------------------------------------------------
+            # 2. 현재 TCP -> 고정 Arc 도착점
+            # -----------------------------------------------------
+            self.node.get_logger().info(
+                "SNAPFIT Pick move_arc 이동 - "
+                f"start={current_pose}, "
+                f"end={arc_target}, "
+                f"height={self.SNAPFIT_PICK_ARC_HEIGHT_MM:.1f}mm"
             )
-            if safe_move_result != 0:
-                raise RuntimeError(
-                    "SNAPFIT Pick 안전 접근 MOVEL 실패 - "
-                    f"result={safe_move_result}, target={list(safe_pick_pose)}"
-                )
+
+            self.motion.move_arc(
+                current_pose,
+                arc_target,
+                height=self.SNAPFIT_PICK_ARC_HEIGHT_MM,
+            )
             self.mwait()
             self.wait(0.2)
 
-            # 2. 실제 Pick 위치. SDK 반환값을 검사하고 완료까지 대기한다.
+            # -----------------------------------------------------
+            # 3. Arc 도착점 -> 실제 Pick 위치 MOVEL
+            # -----------------------------------------------------
             self.node.get_logger().info(
-                "SNAPFIT 정확한 Pick 위치 이동 - "
+                "SNAPFIT move_arc 완료 -> 정확한 Pick 위치 MOVEL - "
                 f"target_pose={list(pickup_pose)}"
             )
             pickup_move_result = self.movel(
@@ -1941,12 +1960,16 @@ class SolarMotion:
             self.mwait()
             self.wait(0.2)
 
-            # 3. 파지
+            # -----------------------------------------------------
+            # 4. 파지
+            # -----------------------------------------------------
             self.node.get_logger().info("SNAPFIT Gripper Close")
             self.motion.grasp()
             self.wait(0.2)
 
-            # 4. Grasp 위치에서 DB 거리만큼 BASE +Z 상대 상승
+            # -----------------------------------------------------
+            # 5. Grasp 완료 후 기존 안전거리만큼 BASE +Z 상승
+            # -----------------------------------------------------
             self.node.get_logger().info(
                 "SNAPFIT Grasp 완료 -> BASE +Z 상대 상승 - "
                 f"distance={snapfit_pick_distance:.1f}mm"
@@ -1969,6 +1992,10 @@ class SolarMotion:
                 status="COMPLETED",
                 detail={
                     "component_code": component.get("code"),
+                    "approach_motion": "MOVE_ARC_THEN_MOVEL",
+                    "arc_start": "CURRENT_TCP_BASE",
+                    "arc_target": list(self.SNAPFIT_PICK_ARC_TARGET),
+                    "arc_height_mm": self.SNAPFIT_PICK_ARC_HEIGHT_MM,
                     "snapfit_pick_distance": snapfit_pick_distance,
                     "safe_reference": "BASE_Z",
                 },
@@ -1986,28 +2013,20 @@ class SolarMotion:
             raise SnapfitPickError(str(e)) from e
 
     def place_snapfit(self, parameters, components, operation_context=None):
-        """SNAPFIT을 move_arc 진입 후 TOOL +Z 방향으로 Force 삽입한다.
+        """SNAPFIT을 TOOL +Z 방향으로 Force 삽입한다.
 
         assembly_position:
             실제 Place/Force 삽입을 시작하는 정확한 좌표.
 
         place_distance:
-            Force 삽입/Release 완료 후 복귀할 안전거리.
-            assembly_position에서 TOOL -Z 방향으로 떨어진 위치를 사용한다.
+            assembly_position에서 TOOL -Z 방향으로 떨어진 안전 접근 거리.
 
-        진입 순서:
-            1. 실행 당시 현재 TCP(BASE) 좌표 측정
-            2. move_arc(
-                   start=현재 TCP,
-                   end=SNAPFIT_PLACE_ARC_TARGET,
-                   height=320mm
-               )
-            3. movel(assembly_position)
-
-        이후:
-            TOOL +Z Force Insert
+        순서:
+            Safe Place(TOOL -Z)
+            -> assembly_position
+            -> TOOL +Z Force Insert
             -> Gripper Release
-            -> TOOL -Z Safe Place 복귀
+            -> Safe Place 복귀
         """
         self.node.get_logger().info("========== SNAPFIT PLACE START ==========")
         self._publish_cycle_event(
@@ -2020,18 +2039,13 @@ class SolarMotion:
 
             place_distance = settings["place_distance"]
 
-            # Force/Release 완료 후 복귀할 안전 접근점.
-            # assembly_position에서 TOOL -Z 방향으로 place_distance만큼 이격한다.
+            # assembly_position은 BASE 절대 좌표다.
+            # 안전 접근점은 그 pose에서 TOOL -Z 방향으로 place_distance만큼 이격한다.
             safe_place_pose = self.trans(
                 assembly_pose,
                 [0.0, 0.0, -place_distance, 0.0, 0.0, 0.0],
                 self.DR_TOOL,
             )
-
-            arc_target = [
-                float(value)
-                for value in self.SNAPFIT_PLACE_ARC_TARGET
-            ]
 
             self.node.get_logger().info(
                 "SNAPFIT Place 설정 - "
@@ -2042,41 +2056,22 @@ class SolarMotion:
                 f"threshold={settings['contact_force']:.2f}N"
             )
 
-            # -----------------------------------------------------
-            # 1. 실행 당시 현재 TCP(BASE) 좌표 측정
-            # -----------------------------------------------------
-            current_pose, solution_space = self.motion.get_current_pose(
-                ref=self.DR_BASE
-            )
-
+            # 1. TOOL -Z 안전 접근점으로 이동
             self.node.get_logger().info(
-                "SNAPFIT Place 현재 TCP 측정 - "
-                f"pose={current_pose}, "
-                f"solution_space={solution_space}"
+                "SNAPFIT Place 안전 접근 - "
+                f"assembly_position 기준 TOOL -Z {place_distance:.1f}mm"
             )
-
-            # -----------------------------------------------------
-            # 2. 현재 TCP -> 고정 중간 도착점 move_arc
-            # -----------------------------------------------------
-            self.node.get_logger().info(
-                "SNAPFIT Place move_arc 이동 - "
-                f"start={current_pose}, "
-                f"end={arc_target}, "
-                f"height={self.SNAPFIT_PLACE_ARC_HEIGHT_MM:.1f}mm"
-            )
-
-            self.motion.move_arc(
-                start=current_pose,
-                end=arc_target,
-                height=self.SNAPFIT_PLACE_ARC_HEIGHT_MM,
+            self.movel(
+                safe_place_pose,
+                vel=settings["speed"],
+                acc=settings["acc"],
+                ref=self.DR_BASE,
             )
             self.wait(0.5)
 
-            # -----------------------------------------------------
-            # 3. move_arc 도착점 -> 정확한 assembly_position movel
-            # -----------------------------------------------------
+            # 2. 실제 Place/Force 시작 좌표로 이동
             self.node.get_logger().info(
-                "SNAPFIT move_arc 완료 -> 정확한 assembly_position MOVEL"
+                "SNAPFIT 정확한 assembly_position 이동"
             )
             self.movel(
                 assembly_pose,
@@ -2086,9 +2081,7 @@ class SolarMotion:
             )
             self.wait(0.2)
 
-            # -----------------------------------------------------
-            # 4. TOOL +Z Force 삽입
-            # -----------------------------------------------------
+            # 3. TOOL +Z Force 삽입
             self.node.get_logger().info(
                 "========== SNAPFIT TOOL +Z FORCE INSERT START =========="
             )
@@ -2110,19 +2103,14 @@ class SolarMotion:
 
             self.wait(0.2)
 
-            # -----------------------------------------------------
-            # 5. 삽입 완료 후 Gripper Release
-            # -----------------------------------------------------
+            # 4. 삽입 완료 후 놓기
             self.node.get_logger().info(
                 "SNAPFIT Force 삽입 완료 -> Gripper Release"
             )
             self.motion.release()
             self.wait(0.5)
 
-            # -----------------------------------------------------
-            # 6. 기존 안전거리 정책 유지:
-            #    assembly_position 기준 TOOL -Z 안전점으로 복귀
-            # -----------------------------------------------------
+            # 5. 처음 계산한 동일한 안전 접근점으로 복귀
             if place_distance > 0:
                 self.node.get_logger().info(
                     "SNAPFIT Place 완료 -> TOOL -Z 안전 접근점 복귀"
@@ -2144,10 +2132,6 @@ class SolarMotion:
                 status="COMPLETED",
                 detail={
                     "component_code": component.get("code"),
-                    "approach_motion": "MOVE_ARC_THEN_MOVEL",
-                    "arc_start": "CURRENT_TCP_BASE",
-                    "arc_target": list(self.SNAPFIT_PLACE_ARC_TARGET),
-                    "arc_height_mm": self.SNAPFIT_PLACE_ARC_HEIGHT_MM,
                     "reference": "TOOL",
                     "axis": "TOOL_Z",
                     "direction": self.SNAPFIT_INSERT_DIRECTION,
