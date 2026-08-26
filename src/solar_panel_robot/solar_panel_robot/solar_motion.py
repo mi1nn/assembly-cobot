@@ -58,12 +58,12 @@ class SolarMotion:
     CONTACT_DEFAULT_MAX_TRAVEL_MM = 150.0
 
     # 최적 위치 선정 후 POST 본 삽입 완료 조건
-    POST_FINAL_CONTACT_THRESHOLD_N = 65.0
+    POST_FINAL_CONTACT_THRESHOLD_N = 20.0
     POST_FINAL_CONTACT_HOLD_SEC = 0.50
 
     # 1차 Contact Seek에서 이 BASE Z 아래까지 이미 내려갔다면
     # 포스트가 정상적으로 구멍에 진입한 것으로 보고 25-point Search를 생략한다.
-    DIRECT_INSERT_BASE_Z_THRESHOLD_MM = 182.0
+    DIRECT_INSERT_BASE_Z_THRESHOLD_MM = 170.0
 
     SEARCH_X_OFFSETS_MM = (-0.6, -0.3, 0.0, 0.3, 0.6)
     SEARCH_Y_OFFSETS_MM = (-0.6, -0.3, 0.0, 0.3, 0.6)
@@ -314,8 +314,6 @@ class SolarMotion:
             if position.get(key) is None
         ]
 
-        required = ("x", "y", "z", "rx", "ry", "rz", "frame")
-        missing = [key for key in required if position.get(key) is None]
         if missing:
             raise ValueError(f"{label} 필드 누락: " + ", ".join(missing))
 
@@ -357,14 +355,9 @@ class SolarMotion:
             components, self.POST_COMPONENT_PREFIX, "POST"
         )
 
-        pickup_pose = self._position_to_posx(
-            component["pickup_position"],
-            "pickup_position",
-        )
-
-        assembly_pose = self._position_to_posx(
-            component["assembly_position"],
-            "assembly_position",
+    def _post_assembly_input(self, components):
+        return self._assembly_input(
+            components, self.POST_COMPONENT_PREFIX, "POST"
         )
 
     def _post_pin_assembly_input(self, components):
@@ -700,52 +693,6 @@ class SolarMotion:
             )
             self.wait(0.5)
 
-            retreat_distance = self.motion.place(
-                distance=self._require_number(
-                    parameters,
-                    "place_retreat_distance",
-                ),
-                search_limit_z=self._require_number(
-                    parameters,
-                    "place_search_limit_z",
-                ),
-                force=self._require_number(
-                    parameters,
-                    "place_force",
-                ),
-                contact_force=self._require_number(
-                    parameters,
-                    "place_contact_force",
-                ),
-                insert_force=self._require_number(
-                    parameters,
-                    "place_insert_force",
-                ),
-                stiffness_z=self._require_number(
-                    parameters,
-                    "place_stiffness_z",
-                ),
-                search_velocity=self._require_number(
-                    parameters,
-                    "place_search_velocity",
-                ),
-                search_acc=self._require_number(
-                    parameters,
-                    "place_search_acceleration",
-                ),
-                search_timeout=self._optional_number(
-                    parameters,
-                    "place_search_timeout",
-                ),
-            )
-            self.node.get_logger().info(
-                f"direction={direction_label}, desired_force="
-                f"{settings['contact_seek_force']:.2f}N, "
-                f"detect_threshold={self.CONTACT_THRESHOLD_N:.2f}N, "
-                f"max_travel={settings['search_limit_z']:.2f}mm, "
-                f"timeout={settings['search_timeout']}"
-            )
-
             contact = self.motion.seek_contact(
                 axis="z",
                 direction=direction,
@@ -939,7 +886,12 @@ class SolarMotion:
             self.pick_post(parameters, components, operation_context)
             post_retreat = self.place_post(parameters, components, operation_context)
 
-            self.node.get_logger().info("Post Place 완료 -> Gripper Release")
+            self.node.get_logger().info("Post Place 완료 -> Robot Motion Stop")
+            self.motion.stop_motion()
+            self.force.all_off()
+            self.wait(0.2)
+
+            self.node.get_logger().info("Robot Motion 정지 완료 -> Gripper Release")
             self.motion.release()
             self.wait(0.5)
 
@@ -955,27 +907,9 @@ class SolarMotion:
                 )
                 self.wait(0.5)
 
-            self.pick_post_pin(parameters, components, operation_context)
-            pin_retreat, pin_direction = self.place_post_pin(
-                parameters, components, operation_context
-            )
-
-            self.node.get_logger().info("Post Pin Place 완료 -> Gripper Release")
-            self.motion.release()
+            self.node.get_logger().info("Post Release 및 안전 이탈 완료 -> Home 이동")
+            self.motion.move_home()
             self.wait(0.5)
-
-            if pin_retreat > 0:
-                retreat_x = -pin_direction * pin_retreat
-                self.node.get_logger().info(
-                    f"Post Pin Release 완료 -> TOOL X {retreat_x:+.3f}mm 이탈"
-                )
-                self.motion.move_x(
-                    retreat_x,
-                    ref=self.DR_TOOL,
-                    velocity=settings["speed"],
-                    acc=settings["acc"],
-                )
-                self.wait(0.5)
 
             self.node.get_logger().info("========== POST CYCLE COMPLETE ==========")
             self._publish_cycle_event(

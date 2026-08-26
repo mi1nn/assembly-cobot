@@ -64,12 +64,12 @@ ACTION_NAME = "/execute_operation"
 # =============================================================
 
 POST_OPERATION_CODES = {
-    "postSA",
-    "postSB",
-    "postSC",
-    "postLA",
-    "postLB",
-    "postLC",
+    "post1",
+    "post2",
+    "post3",
+    "post4",
+    "post5",
+    "post6",
 }
 
 # DB operation code와 별개로 직접 Action 테스트에 사용할 수 있는 코드.
@@ -749,7 +749,7 @@ class SolarPanelControllerNode(Node):
         try:
             if self.solar is None:
                 raise RuntimeError("SolarMotion is not initialized.")
-            self.solar.force.all_off()
+            self.solar.motion.restore_motion()
         except Exception as error:
             self.set_status("ERROR")
             response.recovered = False
