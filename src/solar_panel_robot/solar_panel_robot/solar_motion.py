@@ -89,8 +89,8 @@ class SolarMotion:
     FRAME_PLACE_FORCE_DIRECTION = -1
     FRAME_PLACE_FORCE_REFERENCE = "base"
 
-    # FRAME Release 후 TOOL Z축 기준 Spiral은 place_frame()에서 고정값으로 사용한다.
-    # 바깥쪽 5회전 후 저장한 BASE 중심 pose로 복귀한다.
+    # FRAME Release 후 TOOL 좌표 기준 X/Y Periodic 이동을 수행한다.
+    # 기본 진폭은 X 5mm, Y 90mm이며 X 1주기 후 Y 1주기를 반복한다.
 
     POST_INSERT_DIRECTION = 1       # TOOL +Z
 
@@ -131,25 +131,23 @@ class SolarMotion:
         from DSR_ROBOT2 import (
             movel,
             movec,
-            move_spiral,
+            move_periodic,
             posx,
             trans,
             wait,
             DR_BASE,
             DR_TOOL,
-            DR_AXIS_Z,
         )
         from .robot_motion import RobotMotion
 
         self.movel = movel
         self.movec = movec
-        self.move_spiral = move_spiral
+        self.move_periodic = move_periodic
         self.posx = posx
         self.trans = trans
         self.wait = wait
         self.DR_BASE = DR_BASE
         self.DR_TOOL = DR_TOOL
-        self.DR_AXIS_Z = DR_AXIS_Z
 
         self.motion = RobotMotion()
         self.force = self.motion.force
@@ -386,7 +384,7 @@ class SolarMotion:
         return settings
 
     def _load_frame_settings(self, parameters):
-        """FRAME(CMP-FRAME-*) Pick/Place 이동/Force/Spiral 설정.
+        """FRAME(CMP-FRAME-*) Pick/Place 이동/Force/Periodic 설정.
 
         pickup_position / assembly_position:
             실제 Pick/Place 작업 좌표.
@@ -400,8 +398,8 @@ class SolarMotion:
         FRAME Place:
             assembly_position 도달 후 BASE -Z Force Place.
             측정 Force threshold는 frame_place_force_threshold를 사용한다.
-            Release 후 TOOL Z축 기준 Spiral을 고정값으로 수행하고
-            중심으로 복귀한 뒤 상승한다.
+            Release 후 DB에서 읽은 설정으로 TOOL X/Y Periodic을 수행하고
+            완료 후 안전 접근점으로 상승한다.
         """
         settings = self._load_travel_settings(parameters)
 
@@ -449,8 +447,36 @@ class SolarMotion:
             positive=True,
         )
 
-        # Spiral 파라미터는 DB에서 읽지 않는다.
-        # place_frame()에서 고정값으로 사용한다.
+        settings["periodic_x_amplitude"] = self._first_number(
+            parameters,
+            ("frame_periodic_x_amplitude",),
+            5.0,
+            nonnegative=True,
+        )
+        settings["periodic_y_amplitude"] = self._first_number(
+            parameters,
+            ("frame_periodic_y_amplitude",),
+            90.0,
+            nonnegative=True,
+        )
+        settings["periodic_period"] = self._first_number(
+            parameters,
+            ("frame_periodic_period",),
+            2.0,
+            positive=True,
+        )
+        settings["periodic_atime"] = self._first_number(
+            parameters,
+            ("frame_periodic_atime",),
+            0.5,
+            nonnegative=True,
+        )
+        settings["periodic_repeat"] = self._first_number(
+            parameters,
+            ("frame_periodic_repeat",),
+            2.0,
+            positive=True,
+        )
 
         return settings
 
@@ -1570,7 +1596,7 @@ class SolarMotion:
             raise FramePickError(str(e)) from e
 
     def place_frame(self, parameters, components, operation_context=None):
-        """FRAME을 movec()로 접근한 뒤 Force Place하고 Spiral 후 이탈한다.
+        """FRAME을 movec()로 접근한 뒤 Force Place하고 Periodic 후 이탈한다.
 
         assembly_position:
             Force Place를 시작하는 정확한 Place 좌표.
@@ -1583,19 +1609,16 @@ class SolarMotion:
             frame_place_force       = Desired Force
             frame_place_force_threshold = 측정 Force 성공 threshold (기본 10N)
 
-        Release 후 Spiral:
-            TOOL Z축 기준으로 바깥쪽 5회전한다.
-            최대 반경 50mm(5cm), 축방향 이동 lmax=0mm로 코드에 고정한다.
-            SDK가 역방향 Spiral을 지원하지 않으므로 저장한 BASE 중심 pose로
-            직선 복귀한 뒤 Safe Place로 상승한다.
+        Release 후 Periodic:
+            TOOL X 5mm 1주기 후 TOOL Y 90mm 1주기를 순차 실행한다.
+            두 축 동작 전체를 DB의 반복 횟수만큼 반복한다.
 
         순서:
             movec(FRAME_MOVEC_VIA -> Safe Place)
             -> movel(assembly_position)
             -> BASE -Z Force Place
             -> Release
-            -> TOOL Z Spiral Outward
-            -> movel(저장한 Spiral 중심)
+            -> (TOOL X Periodic -> TOOL Y Periodic) x sequence_repeat
             -> movel(Safe Place)
         """
         self.node.get_logger().info("========== FRAME PLACE START ==========")
@@ -1690,55 +1713,82 @@ class SolarMotion:
             self.motion.release()
             self.wait(0.2)
 
-            # 5. TOOL Z축 기준 Spiral.
-            # 5. TOOL Z축 기준 Spiral.
-            # 시작 중심을 BASE 절대 pose로 저장하고, 바깥쪽 Spiral 후 같은
-            # 중심 pose로 직선 복귀하여 기존의 중심 복귀 동작을 유지한다.
-            spiral_center_pose, spiral_center_solution_space = (
-                self.motion.get_current_pose(ref=self.DR_BASE)
-            )
+            # 5. Gripper Release 후 TOOL X 1주기 -> TOOL Y 1주기를
+            # DB의 frame_periodic_repeat 횟수만큼 순차 반복한다.
+            x_periodic_amp = [
+                settings["periodic_x_amplitude"],
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+            ]
+            y_periodic_amp = [
+                0.0,
+                settings["periodic_y_amplitude"],
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+            ]
+            periodic_period = settings["periodic_period"]
+            sequence_repeat = int(settings["periodic_repeat"])
+
+            if sequence_repeat < 1:
+                raise ValueError("frame_periodic_repeat는 1 이상이어야 합니다.")
 
             self.node.get_logger().info(
-                "========== FRAME TOOL Z SPIRAL START =========="
+                "========== FRAME TOOL X -> Y PERIODIC START =========="
             )
             self.node.get_logger().info(
-                "FRAME Spiral 고정 설정 - "
-                "total_rev=5.0, rmax=50.0mm, lmax=0.0mm, "
-                f"vel={settings['speed']:.1f}, "
-                f"acc={settings['acc']:.1f}, "
-                "ref=TOOL, axis=Z, "
-                f"center_pose={list(spiral_center_pose)}, "
-                f"solution_space={spiral_center_solution_space}"
+                "FRAME Periodic 순차 설정 - "
+                f"x_amp={x_periodic_amp}, y_amp={y_periodic_amp}, "
+                f"period={periodic_period:.2f}s, "
+                f"atime={settings['periodic_atime']:.2f}s, "
+                f"sequence_repeat={sequence_repeat}, ref=TOOL"
             )
 
-            # 5-1. 중심 -> 최대 반경 50mm, 총 5회 회전
-            spiral_result = self.move_spiral(
-                rev=5.0,
-                rmax=50.0,
-                lmax=0.0,
-                vel=settings["speed"],
-                acc=settings["acc"],
-                axis=self.DR_AXIS_Z,
-                ref=self.DR_TOOL,
-            )
-            if spiral_result != 0:
-                raise RuntimeError(
-                    "FRAME TOOL Z Spiral 이동 실패 - "
-                    f"result={spiral_result}"
+            for sequence_index in range(sequence_repeat):
+                current_sequence = sequence_index + 1
+                self.node.get_logger().info(
+                    f"FRAME Periodic sequence "
+                    f"{current_sequence}/{sequence_repeat} - TOOL X START"
                 )
+                x_result = self.move_periodic(
+                    amp=x_periodic_amp,
+                    period=periodic_period,
+                    atime=settings["periodic_atime"],
+                    repeat=1.0,
+                    ref=self.DR_TOOL,
+                )
+                if x_result != 0:
+                    raise RuntimeError(
+                        "FRAME TOOL X Periodic 이동 실패 - "
+                        f"sequence={current_sequence}, result={x_result}"
+                    )
+                self.wait(0.2)
 
-            # 5-2. Spiral 끝점 -> 저장한 원래 중심 BASE pose
-            self.motion.move_pose(
-                spiral_center_pose,
-                ref=self.DR_BASE,
-                velocity=settings["speed"],
-                acc=settings["acc"],
-            )
+                self.node.get_logger().info(
+                    f"FRAME Periodic sequence "
+                    f"{current_sequence}/{sequence_repeat} - TOOL Y START"
+                )
+                y_result = self.move_periodic(
+                    amp=y_periodic_amp,
+                    period=periodic_period,
+                    atime=settings["periodic_atime"],
+                    repeat=1.0,
+                    ref=self.DR_TOOL,
+                )
+                if y_result != 0:
+                    raise RuntimeError(
+                        "FRAME TOOL Y Periodic 이동 실패 - "
+                        f"sequence={current_sequence}, result={y_result}"
+                    )
+                self.wait(0.2)
 
             self.node.get_logger().info(
-                "FRAME TOOL Z Spiral 완료 -> 중심 복귀 완료"
+                "FRAME TOOL X -> Y Periodic 순차 반복 완료"
             )
-            self.wait(0.2)
 
             # 6. 동일한 Place 안전 접근점으로 상승
             self.node.get_logger().info(
@@ -1771,11 +1821,13 @@ class SolarMotion:
                     "force_direction": self.FRAME_PLACE_FORCE_DIRECTION,
                     "frame_place_force": settings["place_force"],
                     "frame_place_force_threshold": settings["contact_force"],
-                    "spiral_reference": "TOOL",
-                    "spiral_axis": "Z",
-                    "spiral_total_revolutions": 5.0,
-                    "spiral_radius_mm": 50.0,
-                    "spiral_lmax_mm": 0.0,
+                    "periodic_reference": "TOOL",
+                    "periodic_x_amplitude": x_periodic_amp,
+                    "periodic_y_amplitude": y_periodic_amp,
+                    "periodic_period_sec": periodic_period,
+                    "periodic_atime_sec": settings["periodic_atime"],
+                    "periodic_sequence_repeat": sequence_repeat,
+                    "periodic_axis_repeat": 1,
                 },
             )
             return True
