@@ -830,6 +830,12 @@ class SolarMotion:
         )
 
         try:
+            settings = self._load_pick_settings(parameters)
+            componet, pickup_pose = (
+                self._post_pin_pickup_input(components)
+            )
+
+            
             result = self.motion.check_force_move(
                 label="POST CHECK",
             )
