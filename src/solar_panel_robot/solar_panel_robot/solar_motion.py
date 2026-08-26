@@ -83,6 +83,16 @@ class SolarMotion:
         179.17,
         9.5,
     )
+    # SNAPFIT Pick 후 모든 Place로 이동하기 전 대기하는 공통 BASE 기준점.
+    SNAPFIT_TRANSFER_POSE = (
+        382.99,
+        -117.23,
+        304.27,
+        156.18,
+        177.92,
+        63.5,
+    )
+
 
     # FRAME Place: 정확한 assembly_position 도달 후 BASE -Z 방향으로 Force Place.
     FRAME_PLACE_FORCE_AXIS = "z"
@@ -347,6 +357,18 @@ class SolarMotion:
                 "pick_distance",
             ),
             50.0,
+            positive=True,
+        )
+        settings["snapfit_arc_height"] = self._first_number(
+            parameters,
+            ("snapfit_arc_height",),
+            100.0,
+            nonnegative=True,
+        )
+        settings["snapfit_arc_steps"] = self._first_number(
+            parameters,
+            ("snapfit_arc_steps",),
+            6.0,
             positive=True,
         )
         return settings
