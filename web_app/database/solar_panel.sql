@@ -43,7 +43,7 @@ INSERT INTO operation (
     {"code":"PIN-A-06","name":"포스트 체결용 핀 A","category":"평행핀","pickup_position":{"x":586.87,"y":-307.07,"z":98.99,"A":55.72,"B":-178.98,"C":146.95},"assembly_position":{"x":533.44,"y":-124.67,"z":106.84,"A":53.28,"B":-178.41,"C":144.91}}]'),
 (7, 1, 'frameA', '프레임 A 조립', 7, '상부 프레임 결합', TRUE, 900,
 '{"tcp":{"x":0,"y":0,"z":150},"ucs":null,"tool":"gripper_post","fixture":"jig_frame","coordinate_system":"BASE","speed":100,"acceleration":200,"pick_distance":60,"place_retreat_distance":50,"place_search_limit_z":0.0,"place_force":30.0,"place_contact_force":20.0,"place_insert_force":12.0,"place_stiffness_z":500.0,"place_search_velocity":10.0,"place_search_acceleration":20.0,"place_search_timeout":null}',
- '[{"code": "CMP-FRAME-A", "name": "일체형 프레임", "category": "구조재", "pickup_position": null, "assembly_position": null},
+ '[{"code": "CMP-FRAME-A", "name": "일체형 프레임", "category": "구조재", "pickup_position": {"x": 387.13, "y": 81.77, "z": 276.88, "A": 42.64, "B": -179.35, "C": -45.74}, "assembly_position": {"x": -427.64, "y": 53.79, "z": 309.31, "A": 14.08, "B": -179.84, "C": -74.73}},
     {"code": "SNAPFIT-A-01", "name": "좌측 전단 포스트 체결용 핀 A", "category": "스냅핏", "pickup_position": null, "assembly_position": null},
     {"code": "SNAPFIT-A-02", "name": "중앙 전단 포스트 체결용 핀 A", "category": "스냅핏", "pickup_position": null, "assembly_position": null},
     {"code": "SNAPFIT-A-03", "name": "우측 전단 포스트 체결용 핀 A", "category": "스냅핏", "pickup_position": null, "assembly_position": null},
