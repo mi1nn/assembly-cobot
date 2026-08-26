@@ -231,6 +231,11 @@ class SolarMotion:
                 "search_acc": self._first_number(
                     parameters, ("place_search_acceleration",), 20.0, positive=True
                 ),
+                "direct_insert_base_z_threshold": self._first_number(
+                    parameters,
+                    ("place_direct_insert_base_z_threshold",),
+                    self.DIRECT_INSERT_BASE_Z_THRESHOLD_MM,
+                ),
             }
         )
 
@@ -722,14 +727,19 @@ class SolarMotion:
             #    Z < 182mm이면 25-point Search를 생략하고 현재 위치에서 바로 최종 삽입한다.
             current_base_z = float(contact_pose[2])
             best = None
-            search_skipped = current_base_z < self.DIRECT_INSERT_BASE_Z_THRESHOLD_MM
+            direct_insert_threshold = settings[
+                "direct_insert_base_z_threshold"
+            ]
+
+            search_skipped = (
+                current_base_z < direct_insert_threshold
+            )
 
             self.node.get_logger().info(
                 "========== POST DIRECT INSERT CHECK =========="
-            )
-            self.node.get_logger().info(
                 f"Contact BASE Z={current_base_z:.3f}mm, "
-                f"direct_threshold={self.DIRECT_INSERT_BASE_Z_THRESHOLD_MM:.3f}mm"
+                f"threshold={direct_insert_threshold:.3f}mm, "
+                f"search_skipped={search_skipped}"
             )
 
             if search_skipped:
