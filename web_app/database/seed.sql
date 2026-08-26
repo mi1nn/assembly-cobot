@@ -51,12 +51,11 @@ INSERT INTO operation (
 '[{"code":"CMP-POST-F","name":"포스트 F","category":"구조재","specification":"H-beam 200x100, L=2500","quantity":1,"pickup_position":{"x":370.0,"y":5.0,"z":200.0,"rx":5.0,"ry":179.0,"rz":5.0,"frame":"BASE"},"assembly_position":{"x":550.0,"y":4.0,"z":200.0,"rx":5.0,"ry":179.0,"rz":5.0,"frame":"BASE"}},{"code":"CMP-BOLT-M16","name":"앵커 볼트 M16","category":"체결부품","specification":"M16x120, HV 볼트","quantity":4}]'),
 
 (7, 1, 'frameA', '프레임 A 조립', 7, '상부 프레임 결합', TRUE, 900,
-'{"tcp": {"x": 0, "y": 0, "z": 150}, "tool": "gripper_post", "force": 30, "speed": 80, "fixture": "jig_post", "coordinate_system": "BASE", "ucs": {"p1": [448.74, -29.40, 52.58, 0.0, 180.0, 0.0], "p2": [548.74, -29.40, 52.58, 0.0, 180.0, 0.0], "p3": [448.74, 70.60, 52.58, 0.0, 180.0, 0.0]}}',
-'[{"code":"CMP-FRAME-A","name":"프레임 A","quantity":1,"pickup_position":{"x":1100,"y":200,"z":300,"frame":"BASE"},"assembly_position":{"x":3000,"y":2500,"z":700,"frame":"BASE"}},{"code":"CMP-BRKT-L","name":"브라켓 L형","quantity":8},{"code":"CMP-BOLT-M16","name":"볼트 M16","quantity":32}]'),
-
+ '{"tcp": {"x":0,"y":0,"z":150},"tool":"gripper_frame","force":30,"speed":80,"fixture":"jig_frame", "coordinate_system":"BASE","ucs":{"p1":[448.74,-29.40,52.58,0.0,180.0,0.0],"p2": [548.74,-29.40,52.58,0.0,180.0,0.0],"p3":[448.74,70.60,52.58,0.0,180.0,0.0]}}',
+ '[{"code":"CMP-FRAME-A","name":"프레임 A","quantity":1,"pickup_position":{"x":1100,"y":200,"z":300,"frame":"BASE"},"assembly_position":{"x":3000,"y":2500,"z":700,"frame":"BASE"}},{"code":"CMP-BRKT-L","name":"브라켓 L형","quantity":8},{"code":"CMP-BOLT-M16","name":"볼트 M16","quantity":32}]'),
 (8, 1, 'solarpanelA', '태양광 패널 A 설치', 8, '패널 20장 양중 및 체결', TRUE, 1200,
-'{"tcp": {"x": 0, "y": 0, "z": 150}, "tool": "gripper_post", "force": 30, "speed": 80, "fixture": "jig_post", "coordinate_system": "BASE", "ucs": {"p1": [448.74, -29.40, 52.58, 0.0, 180.0, 0.0], "p2": [548.74, -29.40, 52.58, 0.0, 180.0, 0.0], "p3": [448.74, 70.60, 52.58, 0.0, 180.0, 0.0]}}',
-'[{"code":"CMP-PANEL-450W","name":"태양광 패널 450W","quantity":20,"pickup_position":{"x":1250,"y":200,"z":300,"frame":"BASE"},"assembly_position":{"x":1500,"y":2500,"z":900,"frame":"BASE"}},{"code":"CMP-BRKT-PV","name":"마운트 브라켓","quantity":40},{"code":"CMP-BOLT-M8","name":"볼트 M8","quantity":160}]');
+ '{"tcp": {"x":0,"y":0,"z":150},"tool":"suction_cup","force":30,"speed":80,"fixture":"jig_panel","coordinate_system":"BASE","ucs":{"p1":[448.74,-29.40,52.58,0.0,180.0,0.0],"p2": [548.74,-29.40,52.58,0.0,180.0,0.0],"p3":[448.74,70.60,52.58,0.0,180.0,0.0]}}',
+ '[{"code":"CMP-PANEL-450W","name":"태양광 패널 450W","quantity":20,"pickup_position":{"x":1250,"y":200,"z":300,"frame":"BASE"},"assembly_position":{"x":1500,"y":2500,"z":900,"frame":"BASE"}},{"code":"CMP-BRKT-PV","name":"마운트 브라켓","quantity":40},{"code":"CMP-BOLT-M8","name":"볼트 M8","quantity":160}]');
 
 
 INSERT INTO robot (

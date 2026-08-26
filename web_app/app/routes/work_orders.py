@@ -6,6 +6,8 @@ from app.services.execution_service import (
     get_robot_by_id,
     mark_work_execution_running,
     mark_work_submission_failed,
+    get_operation_execution_by_id,
+    mark_robot_stop_requested,
 )
 
 # API 발행
@@ -27,6 +29,11 @@ from app.services.bridge_service import (
     BridgeResponseError,
     build_work_command,
     submit_bridge_work,
+    stop_bridge_work,
+)
+
+from app.services.log_service import (
+    create_system_log,
 )
 
 # 제약조건 오류 처리하기 위한 모듈
@@ -499,6 +506,178 @@ def edit_work_order(work_order_id: int):
         "data": work_order.to_dict(),
         "error": None,
     }), 200
+
+@work_orders_bp.post(
+    "/<int:work_order_id>/stop"
+)
+def stop_work_order(work_order_id: int):
+    work_order = get_work_order_by_id(
+        work_order_id
+    )
+
+    if work_order is None:
+        return jsonify({
+            "success": False,
+            "data": None,
+            "error": {
+                "code": "WORK_ORDER_NOT_FOUND",
+                "message": (
+                    "The Work Order was "
+                    "not found."
+                ),
+            },
+        }), 404
+
+    if work_order.status != "RUNNING":
+        return jsonify({
+            "success": False,
+            "data": None,
+            "error": {
+                "code": "WORK_NOT_RUNNING",
+                "message": (
+                    "Only a RUNNING Work "
+                    "can be stopped."
+                ),
+            },
+        }), 409
+
+    work_execution = (
+        get_active_work_execution(
+            work_order_id
+        )
+    )
+
+    if work_execution is None:
+        return jsonify({
+            "success": False,
+            "data": None,
+            "error": {
+                "code": (
+                    "ACTIVE_EXECUTION_NOT_FOUND"
+                ),
+                "message": (
+                    "No active Work Execution "
+                    "was found."
+                ),
+            },
+        }), 409
+
+    try:
+        stop_result = stop_bridge_work(
+            work_execution.work_execution_id
+        )
+
+    except BridgeConnectionError as error:
+        return jsonify({
+            "success": False,
+            "data": None,
+            "error": {
+                "code": "BRIDGE_UNAVAILABLE",
+                "message": str(error),
+            },
+        }), 503
+
+    except BridgeResponseError as error:
+        return jsonify({
+            "success": False,
+            "data": None,
+            "error": {
+                "code": "STOP_REJECTED",
+                "message": str(error),
+            },
+        }), 502
+
+    operation_execution_id = (
+        stop_result.get(
+            "operation_execution_id"
+        )
+    )
+
+    operation_execution = (
+        get_operation_execution_by_id(
+            operation_execution_id
+        )
+    )
+
+    if (
+        operation_execution is None
+        or operation_execution.work_execution_id
+        != work_execution.work_execution_id
+    ):
+        return jsonify({
+            "success": False,
+            "data": None,
+            "error": {
+                "code": (
+                    "STOP_EXECUTION_MISMATCH"
+                ),
+                "message": (
+                    "Bridge returned an invalid "
+                    "Operation Execution."
+                ),
+            },
+        }), 409
+
+    robot = get_robot_by_id(
+        work_execution.robot_id
+    )
+
+    if robot is None:
+        return jsonify({
+            "success": False,
+            "data": None,
+            "error": {
+                "code": "ROBOT_NOT_FOUND",
+                "message": (
+                    "The execution Robot "
+                    "was not found."
+                ),
+            },
+        }), 409
+
+    mark_robot_stop_requested(robot)
+
+    create_system_log(
+        log_type="EVENT",
+        severity="WARNING",
+        code="WORK_STOP_REQUESTED",
+        message=(
+            stop_result.get("message")
+            or "Robot motion stop was requested."
+        ),
+        work_execution_id=(
+            work_execution.work_execution_id
+        ),
+        operation_execution_id=(
+            operation_execution
+            .operation_execution_id
+        ),
+        robot_id=robot.robot_id,
+        detail={
+            "stop_type": "FORCED",
+            "terminal_state_pending": True,
+        },
+    )
+
+    return jsonify({
+        "success": True,
+        "data": {
+            "stop_requested": True,
+            "terminal_state_pending": True,
+            "work_order": (
+                work_order.to_dict()
+            ),
+            "work_execution": (
+                work_execution.to_dict()
+            ),
+            "operation_execution": (
+                operation_execution.to_dict()
+            ),
+            "robot": robot.to_dict(),
+            "stop_result": stop_result,
+        },
+        "error": None,
+    }), 202
 
 @work_orders_bp.post(
     "/<int:work_order_id>/execute"
