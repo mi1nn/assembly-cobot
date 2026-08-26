@@ -64,7 +64,8 @@ class SolarMotion:
     # PIN/SNAPFIT은 기존 POST_PIN 설계와 동일하게 TOOL +X 삽입을 기본으로 둔다.
     # 실제 지그에서 삽입축이 다르면 아래 axis/direction만 변경하면 된다.
     PIN_INSERT_AXIS = "x"
-    PIN_INSERT_DIRECTION = 1        # TOOL +X
+    PIN_INSERT_DIRECTION = 1        # BASE +X
+    PIN_INSERT_REFERENCE = "base"
     SNAPFIT_INSERT_AXIS = "x"
     SNAPFIT_INSERT_DIRECTION = 1    # TOOL +X
 
@@ -948,6 +949,16 @@ class SolarMotion:
     # =========================================================
 
     def pick_pin(self, parameters, components, operation_context=None):
+        """PIN-A-*를 지정된 pickup_position에서 집는다.
+
+        pickup_position은 PIN 바로 위의 접근 위치로 사용한다.
+
+        동작 순서:
+            1. pickup_position으로 이동
+            2. BASE -Z 방향으로 pick_distance만큼 하강
+            3. Gripper Close
+            4. BASE +Z 방향으로 pick_distance만큼 상승
+        """
         self.node.get_logger().info("========== PIN PICK START ==========")
         self._publish_cycle_event(
             operation_context, phase="PIN_PICK", status="STARTED"
@@ -957,8 +968,13 @@ class SolarMotion:
             settings = self._load_pin_pick_settings(parameters)
             component, pickup_pose = self._pin_pickup_input(components)
 
+            pick_distance = settings["pick_distance"]
+
+            # 1. PIN 바로 위의 접근 위치로 이동
             self.node.get_logger().info(
-                f"PIN Pick 시작 위치 이동 - {component.get('code')}"
+                f"PIN Pick 접근 위치 이동 - "
+                f"component={component.get('code')}, "
+                f"pick_distance={pick_distance:.1f}mm"
             )
             self.movel(
                 pickup_pose,
@@ -968,8 +984,30 @@ class SolarMotion:
             )
             self.wait(0.5)
 
-            self.motion.pick(
-                distance=settings["pick_distance"],
+            # 2. PIN 위치까지 수직 하강
+            self.node.get_logger().info(
+                f"PIN Pick 하강 - BASE Z {-pick_distance:.1f}mm"
+            )
+            self.motion.move_z(
+                -pick_distance,
+                ref=self.DR_BASE,
+                velocity=settings["speed"],
+                acc=settings["acc"],
+            )
+            self.wait(0.2)
+
+            # 3. PIN 파지
+            self.node.get_logger().info("PIN Gripper Close")
+            self.motion.grasp()
+            self.wait(0.2)
+
+            # 4. 처음 접근 위치까지 다시 상승
+            self.node.get_logger().info(
+                f"PIN Pick 상승 - BASE Z +{pick_distance:.1f}mm"
+            )
+            self.motion.move_z(
+                pick_distance,
+                ref=self.DR_BASE,
                 velocity=settings["speed"],
                 acc=settings["acc"],
             )
@@ -980,7 +1018,10 @@ class SolarMotion:
                 operation_context,
                 phase="PIN_PICK",
                 status="COMPLETED",
-                detail={"component_code": component.get("code")},
+                detail={
+                    "component_code": component.get("code"),
+                    "pick_distance": pick_distance,
+                },
             )
             return True
 
@@ -992,6 +1033,18 @@ class SolarMotion:
             raise PinPickError(str(e)) from e
 
     def place_pin(self, parameters, components, operation_context=None):
+        """PIN-A-*를 BASE +X 방향으로 두 번 밀어 넣는다.
+
+        순서:
+            place 위치 이동
+            -> BASE +X Force Push #1
+            -> 반력 감지
+            -> Gripper Release
+            -> place 위치 복귀
+            -> Gripper Close
+            -> BASE +X Force Push #2
+            -> 반력 감지
+        """
         self.node.get_logger().info("========== PIN PLACE START ==========")
         self._publish_cycle_event(
             operation_context, phase="PIN_PLACE", status="STARTED"
@@ -1002,7 +1055,16 @@ class SolarMotion:
             component, assembly_pose = self._pin_assembly_input(components)
 
             self.node.get_logger().info(
-                f"PIN Assembly 시작 위치 이동 - {component.get('code')}"
+                "PIN Place 설정 - "
+                f"component={component.get('code')}, "
+                f"reference=BASE, axis=+X, "
+                f"force={settings['place_force']:.2f}N, "
+                f"threshold={settings['contact_force']:.2f}N"
+            )
+
+            # 1. place 위치
+            self.node.get_logger().info(
+                f"PIN Place 시작 위치 이동 - {component.get('code')}"
             )
             self.movel(
                 assembly_pose,
@@ -1012,44 +1074,95 @@ class SolarMotion:
             )
             self.wait(0.5)
 
-            result = self.motion.place(
+            # 2. 1차 BASE +X Force Push
+            self.node.get_logger().info(
+                "========== PIN PLACE 1ST PUSH START =========="
+            )
+
+            first_result = self.motion.place(
                 axis=self.PIN_INSERT_AXIS,
                 direction=self.PIN_INSERT_DIRECTION,
                 force=settings["place_force"],
                 threshold=settings["contact_force"],
                 timeout=settings["timeout"],
-                stiffness={self.PIN_INSERT_AXIS: settings["stiffness"]},
+                stiffness={
+                    self.PIN_INSERT_AXIS: settings["stiffness"]
+                },
+                reference=self.PIN_INSERT_REFERENCE,
             )
-            if not result:
-                raise RuntimeError("PIN Force Place가 성공을 반환하지 않았습니다.")
+
+            if not first_result:
+                raise RuntimeError(
+                    "PIN 1차 BASE +X Force Place가 성공을 반환하지 않았습니다."
+                )
 
             self.wait(0.2)
+
+            # 3. 첫 반력 감지 후 PIN을 놓음
+            self.node.get_logger().info(
+                "PIN 1차 반력 감지 완료 -> Gripper Release"
+            )
             self.motion.release()
             self.wait(0.5)
 
-            if settings["retreat_distance"] > 0:
-                if self.PIN_INSERT_AXIS != "x":
-                    raise RuntimeError(
-                        "현재 PIN 안전 이탈은 TOOL X축만 구현되어 있습니다. "
-                        "PIN_INSERT_AXIS를 변경했다면 retreat motion도 함께 구현해야 합니다."
-                    )
-                self.motion.move_x(
-                    -self.PIN_INSERT_DIRECTION * settings["retreat_distance"],
-                    ref=self.DR_TOOL,
-                    velocity=settings["speed"],
-                    acc=settings["acc"],
-                )
-                self.wait(0.5)
+            # 4. 원래 place 위치로 복귀
+            self.node.get_logger().info(
+                "PIN 1차 삽입 완료 -> 원래 Place 위치 복귀"
+            )
+            self.movel(
+                assembly_pose,
+                vel=settings["speed"],
+                acc=settings["acc"],
+                ref=self.DR_BASE,
+            )
+            self.wait(0.5)
 
-            self.node.get_logger().info("========== PIN PLACE COMPLETE ==========")
+            # 5. 빈 Gripper를 닫아 Push 준비
+            self.node.get_logger().info(
+                "PIN 2차 Push 준비 -> Gripper Close"
+            )
+            self.motion.grasp()
+            self.wait(0.5)
+
+            # 6. 2차 BASE +X Force Push
+            self.node.get_logger().info(
+                "========== PIN PLACE 2ND PUSH START =========="
+            )
+
+            second_result = self.motion.place(
+                axis=self.PIN_INSERT_AXIS,
+                direction=self.PIN_INSERT_DIRECTION,
+                force=settings["place_force"],
+                threshold=settings["contact_force"],
+                timeout=settings["timeout"],
+                stiffness={
+                    self.PIN_INSERT_AXIS: settings["stiffness"]
+                },
+                reference=self.PIN_INSERT_REFERENCE,
+            )
+
+            if not second_result:
+                raise RuntimeError(
+                    "PIN 2차 BASE +X Force Place가 성공을 반환하지 않았습니다."
+                )
+
+            self.wait(0.5)
+
+            self.node.get_logger().info(
+                "========== PIN PLACE COMPLETE =========="
+            )
             self._publish_cycle_event(
                 operation_context,
                 phase="PIN_PLACE",
                 status="COMPLETED",
                 detail={
                     "component_code": component.get("code"),
-                    "axis": f"TOOL_{self.PIN_INSERT_AXIS.upper()}",
+                    "reference": "BASE",
+                    "axis": "BASE_X",
                     "direction": self.PIN_INSERT_DIRECTION,
+                    "push_count": 2,
+                    "force": settings["place_force"],
+                    "threshold": settings["contact_force"],
                 },
             )
             return True
@@ -1057,13 +1170,19 @@ class SolarMotion:
         except Exception as e:
             self.node.get_logger().error(f"PIN Place 실패: {e}")
             self._publish_cycle_event(
-                operation_context, phase="PIN_PLACE", status="FAILED", error=e
+                operation_context,
+                phase="PIN_PLACE",
+                status="FAILED",
+                error=e,
             )
+
             try:
                 self.force.all_off()
             except Exception:
                 pass
+
             raise PinPlaceError(str(e)) from e
+
 
     # =========================================================
     # SNAPFIT PICK / PLACE
