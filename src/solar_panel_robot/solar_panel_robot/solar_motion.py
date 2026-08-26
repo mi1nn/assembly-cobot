@@ -141,7 +141,6 @@ class SolarMotion:
         self,
         position,
         label,
-        expected_frame,
     ):
         if not isinstance(position, dict):
             raise ValueError(
@@ -150,8 +149,7 @@ class SolarMotion:
 
         required = (
             "x", "y", "z",
-            "rx", "ry", "rz",
-            "frame",
+            "A", "B", "C",
         )
 
         missing = [
@@ -166,21 +164,8 @@ class SolarMotion:
                 + ", ".join(missing)
             )
 
-        frame = str(position["frame"]).upper()
-
-        if frame != expected_frame:
-            raise ValueError(
-                f"{label}.frame={frame}, "
-                f"parameter coordinate_system={expected_frame} 불일치"
-            )
-
-        if frame != "BASE":
-            raise ValueError(
-                "현재 Post 동작은 BASE 좌표계만 지원합니다."
-            )
-
         values = []
-        for key in ("x", "y", "z", "rx", "ry", "rz"):
+        for key in ("x", "y", "z", "A", "B", "C"):
             try:
                 values.append(float(position[key]))
             except (TypeError, ValueError) as e:
@@ -219,13 +204,11 @@ class SolarMotion:
         pickup_pose = self._position_to_posx(
             component["pickup_position"],
             "pickup_position",
-            coordinate_system,
         )
 
         assembly_pose = self._position_to_posx(
             component["assembly_position"],
             "assembly_position",
-            coordinate_system,
         )
 
         return (
@@ -544,10 +527,6 @@ class SolarMotion:
                     parameters,
                     "place_search_timeout",
                 ),
-                insert_timeout=self._require_number(
-                    parameters,
-                    "place_insert_timeout",
-                ),
             )
 
             self.wait(0.5)
@@ -611,25 +590,7 @@ class SolarMotion:
         )
 
         try:
-            force_threshold = self._require_number(
-                parameters,
-                "check_force_threshold",
-            )
-
             result = self.motion.check_force_move(
-                distance=self._require_number(
-                    parameters,
-                    "check_distance",
-                ),
-                force_threshold=force_threshold,
-                velocity=self._require_number(
-                    parameters,
-                    "check_velocity",
-                ),
-                acc=self._require_number(
-                    parameters,
-                    "check_acceleration",
-                ),
                 label="POST CHECK",
             )
 
@@ -642,13 +603,7 @@ class SolarMotion:
                     operation_context,
                     phase="CHECK",
                     status="COMPLETED",
-                    detail={
-                        "force_threshold": (
-                            force_threshold
-                        ),
-                    },
                 )
-
                 return True
 
             error_message = (
@@ -664,27 +619,19 @@ class SolarMotion:
                 phase="CHECK",
                 status="FAILED",
                 error=error_message,
-                detail={
-                    "force_threshold": (
-                        force_threshold
-                    ),
-                },
             )
-
             return False
 
         except Exception as e:
             self.node.get_logger().error(
                 f"Post Check 실행 오류: {e}"
             )
-
             self._publish_post_event(
                 operation_context,
                 phase="CHECK",
                 status="FAILED",
                 error=e,
             )
-
             raise
 
 

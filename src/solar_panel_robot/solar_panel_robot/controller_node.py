@@ -64,12 +64,12 @@ ACTION_NAME = "/execute_operation"
 # =============================================================
 
 POST_OPERATION_CODES = {
-    "postA",
-    "postB",
-    "postC",
-    "postD",
-    "postE",
-    "postF",
+    "postSA",
+    "postSB",
+    "postSC",
+    "postLA",
+    "postLB",
+    "postLC",
 }
 
 # DB operation code와 별개로 직접 Action 테스트에 사용할 수 있는 코드.
