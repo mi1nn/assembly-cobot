@@ -830,40 +830,7 @@ class SolarPanelControllerNode(Node):
                 "SolarMotion이 준비되지 않았습니다."
             )
 
-        # =====================================================
-        # TEMP TEST: post1 -> PIN PICK -> PIN PLACE
-        # =====================================================
-        #
-        # 기존 post1의 POST 설치 Cycle은 PIN 단독 테스트 동안 잠시 비활성화한다.
-        #
-        # if operation_code == "post1":
-        #     return self.solar.install_post_cycle(
-        #         parameters,
-        #         components,
-        #         operation_context=operation_context,
-        #     )
-        #
-        # 현재 임시 실행:
-        #     PIN PICK -> PIN PLACE
-        #
-        if operation_code == "post1":
-            self.get_logger().warning(
-                "[TEMP TEST] post1 -> PIN PICK -> PIN PLACE"
-            )
-
-            self.solar.pick_pin(
-                parameters,
-                components,
-                operation_context=operation_context,
-            )
-
-            return self.solar.place_pin(
-                parameters,
-                components,
-                operation_context=operation_context,
-            )
-
-        # post2 ~ post6은 기존 POST 설치 Cycle을 그대로 유지한다.
+        # 모든 post 작업은 POST 설치 후 해당 PIN 체결까지 하나의 공정으로 실행한다.
         if operation_code in POST_OPERATION_CODES:
             return self.solar.install_post_cycle(
                 parameters,
