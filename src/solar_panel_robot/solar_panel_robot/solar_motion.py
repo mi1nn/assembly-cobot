@@ -27,11 +27,11 @@ class PostCycleError(Exception):
 
 
 class SolarMotion:
-    """DB 최종 계약에 맞춘 Post 1개 설치 Cycle.
+    """DB 최종 계약에 맞춘 Post 1개와 체결 Pin 설치 Cycle.
 
     operation.parameter
-        DB 전체를 검증하지 않는다. 각 Pick/Place 단계가 실제로 필요한 값만
-        실행 시점에 선택적으로 읽는다. 현재 사용하는 키:
+        각 Pick/Place 단계가 실제로 필요한 값만 실행 시점에 선택적으로 읽는다.
+        현재 사용하는 키:
             speed, acceleration, pick_distance, place_retreat_distance,
             place_search_limit_z, place_force, place_contact_force,
             place_insert_force, place_stiffness_z, place_search_velocity,
@@ -61,8 +61,8 @@ class SolarMotion:
 
     POST_INSERT_DIRECTION = 1       # TOOL +Z
 
-    # PIN/SNAPFIT은 기존 POST_PIN 설계와 동일하게 TOOL +X 삽입을 기본으로 둔다.
-    # 실제 지그에서 삽입축이 다르면 아래 axis/direction만 변경하면 된다.
+    # PIN은 BASE -X, SNAPFIT은 TOOL +X 삽입을 기본으로 둔다.
+    # 실제 지그에서 삽입축이 다르면 아래 axis/direction/reference를 변경한다.
     PIN_INSERT_AXIS = "x"
     PIN_INSERT_DIRECTION = -1        # BASE -X
     PIN_INSERT_REFERENCE = "base"
@@ -1092,7 +1092,7 @@ class SolarMotion:
             self.node.get_logger().info(
                 "PIN Place 설정 - "
                 f"component={component.get('code')}, "
-                f"reference=TOOL, axis=+X, "
+                f"reference=BASE, axis=-X, "
                 f"force={settings['place_force']:.2f}N, "
                 f"threshold={settings['contact_force']:.2f}N"
             )
@@ -1109,7 +1109,7 @@ class SolarMotion:
             )
             self.wait(0.5)
 
-            # 2. 1차 TOOL +X Force Push
+            # 2. 1차 BASE -X Force Push
             self.node.get_logger().info(
                 "========== PIN PLACE 1ST PUSH START =========="
             )
@@ -1159,7 +1159,7 @@ class SolarMotion:
             self.motion.grasp()
             self.wait(0.5)
 
-            # 6. 2차 TOOL +X Force Push
+            # 6. 2차 BASE -X Force Push
             self.node.get_logger().info(
                 "========== PIN PLACE 2ND PUSH START =========="
             )
@@ -1192,8 +1192,8 @@ class SolarMotion:
                 status="COMPLETED",
                 detail={
                     "component_code": component.get("code"),
-                    "reference": "TOOL",
-                    "axis": "TOOL_X",
+                    "reference": "BASE",
+                    "axis": "BASE_X",
                     "direction": self.PIN_INSERT_DIRECTION,
                     "push_count": 2,
                     "force": settings["place_force"],
@@ -1385,6 +1385,27 @@ class SolarMotion:
                 self.wait(0.5)
 
             self.node.get_logger().info("Post Release 및 안전 이탈 완료 -> Home 이동")
+            self.motion.move_home()
+            self.wait(0.5)
+
+            self.node.get_logger().info(
+                "Post 설치 완료 -> 해당 PIN Pick/Place 시작"
+            )
+            self.pick_pin(parameters, components, operation_context)
+            self.place_pin(parameters, components, operation_context)
+
+            # PIN Place의 두 번째 force push가 끝난 상태를 정리하고 다음 공정이
+            # 안전하게 시작할 수 있도록 gripper를 연 뒤 Home으로 복귀한다.
+            self.node.get_logger().info("PIN Place 완료 -> Robot Motion Stop")
+            self.motion.stop_motion()
+            self.force.all_off()
+            self.wait(0.2)
+
+            self.node.get_logger().info("PIN Place 완료 -> Gripper Release")
+            self.motion.release()
+            self.wait(0.5)
+
+            self.node.get_logger().info("PIN 설치 완료 -> Home 이동")
             self.motion.move_home()
             self.wait(0.5)
 
