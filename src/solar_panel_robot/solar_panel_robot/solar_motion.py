@@ -89,11 +89,8 @@ class SolarMotion:
     FRAME_PLACE_FORCE_DIRECTION = -1
     FRAME_PLACE_FORCE_REFERENCE = "base"
 
-    # FRAME Release 후 TOOL Z축 기준 Spiral.
-    # 총 5회 회전: 바깥쪽 2.5회 + 안쪽 2.5회.
-    # 최대 반경 50mm(5cm), 축방향 이동은 0mm로 하여 중심으로 복귀한다.
-    FRAME_SPIRAL_REVOLUTIONS = 5.0
-    FRAME_SPIRAL_RADIUS_MM = 50.0
+    # FRAME Release 후 TOOL Z축 기준 Spiral은 place_frame()에서 고정값으로 사용한다.
+    # Outward 2.5회 + Inward 2.5회, 최대 반경 50mm, 축방향 이동 0mm.
 
     POST_INSERT_DIRECTION = 1       # TOOL +Z
 
@@ -409,7 +406,8 @@ class SolarMotion:
         FRAME Place:
             assembly_position 도달 후 BASE -Z Force Place.
             측정 Force threshold는 frame_place_force_threshold를 사용한다.
-            Release 후 TOOL Z축 기준 Spiral을 수행하고 중심으로 복귀한 뒤 상승한다.
+            Release 후 TOOL Z축 기준 Spiral을 고정값으로 수행하고
+            중심으로 복귀한 뒤 상승한다.
         """
         settings = self._load_travel_settings(parameters)
 
@@ -457,36 +455,8 @@ class SolarMotion:
             positive=True,
         )
 
-        # Spiral 전체 회전수. 총 회전수를 절반씩 Outward / Inward에 나눠
-        # 최대 반경까지 나갔다가 원래 중심으로 복귀한다.
-        settings["spiral_revolutions"] = self._first_number(
-            parameters,
-            ("frame_spiral_revolutions",),
-            self.FRAME_SPIRAL_REVOLUTIONS,
-            positive=True,
-        )
-
-        settings["spiral_radius"] = self._first_number(
-            parameters,
-            ("frame_spiral_radius",),
-            self.FRAME_SPIRAL_RADIUS_MM,
-            positive=True,
-        )
-
-        # 별도 값이 없으면 기존 operation speed / acceleration 사용.
-        settings["spiral_velocity"] = self._first_number(
-            parameters,
-            ("frame_spiral_velocity",),
-            settings["speed"],
-            positive=True,
-        )
-
-        settings["spiral_acc"] = self._first_number(
-            parameters,
-            ("frame_spiral_acceleration",),
-            settings["acc"],
-            positive=True,
-        )
+        # Spiral 파라미터는 DB에서 읽지 않는다.
+        # place_frame()에서 고정값으로 사용한다.
 
         return settings
 
@@ -1621,8 +1591,8 @@ class SolarMotion:
 
         Release 후 Spiral:
             TOOL Z축 기준.
-            총 5회 기준으로 Outward 2.5회 + Inward 2.5회.
-            최대 반경 50mm(5cm).
+            Outward 2.5회 + Inward 2.5회로 총 5회.
+            최대 반경 50mm(5cm). 값은 코드에 고정.
             축방향 이동 lmax=0mm.
             따라서 중심으로 복귀한 뒤 Safe Place로 상승한다.
 
@@ -1728,32 +1698,33 @@ class SolarMotion:
             self.wait(0.2)
 
             # 5. TOOL Z축 기준 Spiral.
-            # 총 회전수를 반으로 나눠 밖으로 나갔다가 다시 중심으로 들어온다.
-            outward_rev = settings["spiral_revolutions"] / 2.0
-            inward_rev = settings["spiral_revolutions"] - outward_rev
-
+            # Spiral 전용 파라미터는 DB에서 받지 않고 코드에 고정한다.
+            #
+            # 총 5회 회전:
+            #   Outward 2.5회 + Inward 2.5회
+            # 최대 반경:
+            #   50mm = 5cm
+            # 축방향 이동:
+            #   0mm
             self.node.get_logger().info(
                 "========== FRAME TOOL Z SPIRAL START =========="
             )
             self.node.get_logger().info(
-                "FRAME Spiral 설정 - "
-                f"total_rev={settings['spiral_revolutions']:.2f}, "
-                f"outward_rev={outward_rev:.2f}, "
-                f"inward_rev={inward_rev:.2f}, "
-                f"rmax={settings['spiral_radius']:.1f}mm, "
-                "lmax=0.0mm, "
-                f"vel={settings['spiral_velocity']:.1f}, "
-                f"acc={settings['spiral_acc']:.1f}, "
+                "FRAME Spiral 고정 설정 - "
+                "outward_rev=2.5, inward_rev=2.5, "
+                "rmax=50.0mm, lmax=0.0mm, "
+                f"vel={settings['speed']:.1f}, "
+                f"acc={settings['acc']:.1f}, "
                 "ref=TOOL, axis=Z"
             )
 
             # 5-1. 중심 -> 최대 반경 50mm
             self.move_spiral(
-                rev=outward_rev,
-                rmax=settings["spiral_radius"],
+                rev=2.5,
+                rmax=50.0,
                 lmax=0.0,
-                vel=settings["spiral_velocity"],
-                acc=settings["spiral_acc"],
+                vel=settings["speed"],
+                acc=settings["acc"],
                 axis=self.DR_AXIS_Z,
                 ref=self.DR_TOOL,
                 rad_dir=self.DR_SPIRAL_OUTWARD,
@@ -1762,11 +1733,11 @@ class SolarMotion:
 
             # 5-2. 최대 반경 -> 원래 중심
             self.move_spiral(
-                rev=inward_rev,
-                rmax=settings["spiral_radius"],
+                rev=2.5,
+                rmax=50.0,
                 lmax=0.0,
-                vel=settings["spiral_velocity"],
-                acc=settings["spiral_acc"],
+                vel=settings["speed"],
+                acc=settings["acc"],
                 axis=self.DR_AXIS_Z,
                 ref=self.DR_TOOL,
                 rad_dir=self.DR_SPIRAL_INWARD,
@@ -1811,8 +1782,8 @@ class SolarMotion:
                     "frame_place_force_threshold": settings["contact_force"],
                     "spiral_reference": "TOOL",
                     "spiral_axis": "Z",
-                    "spiral_total_revolutions": settings["spiral_revolutions"],
-                    "spiral_radius_mm": settings["spiral_radius"],
+                    "spiral_total_revolutions": 5.0,
+                    "spiral_radius_mm": 50.0,
                     "spiral_lmax_mm": 0.0,
                 },
             )
