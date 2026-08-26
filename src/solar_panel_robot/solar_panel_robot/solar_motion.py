@@ -90,7 +90,7 @@ class SolarMotion:
     FRAME_PLACE_FORCE_REFERENCE = "base"
 
     # FRAME Release 후 TOOL Z축 기준 Spiral은 place_frame()에서 고정값으로 사용한다.
-    # Outward 2.5회 + Inward 2.5회, 최대 반경 50mm, 축방향 이동 0mm.
+    # 바깥쪽 5회전 후 저장한 BASE 중심 pose로 복귀한다.
 
     POST_INSERT_DIRECTION = 1       # TOOL +Z
 
@@ -138,9 +138,6 @@ class SolarMotion:
             DR_BASE,
             DR_TOOL,
             DR_AXIS_Z,
-            DR_SPIRAL_OUTWARD,
-            DR_SPIRAL_INWARD,
-            DR_ROT_FORWARD,
         )
         from .robot_motion import RobotMotion
 
@@ -153,9 +150,6 @@ class SolarMotion:
         self.DR_BASE = DR_BASE
         self.DR_TOOL = DR_TOOL
         self.DR_AXIS_Z = DR_AXIS_Z
-        self.DR_SPIRAL_OUTWARD = DR_SPIRAL_OUTWARD
-        self.DR_SPIRAL_INWARD = DR_SPIRAL_INWARD
-        self.DR_ROT_FORWARD = DR_ROT_FORWARD
 
         self.motion = RobotMotion()
         self.force = self.motion.force
@@ -1590,11 +1584,10 @@ class SolarMotion:
             frame_place_force_threshold = 측정 Force 성공 threshold (기본 10N)
 
         Release 후 Spiral:
-            TOOL Z축 기준.
-            Outward 2.5회 + Inward 2.5회로 총 5회.
-            최대 반경 50mm(5cm). 값은 코드에 고정.
-            축방향 이동 lmax=0mm.
-            따라서 중심으로 복귀한 뒤 Safe Place로 상승한다.
+            TOOL Z축 기준으로 바깥쪽 5회전한다.
+            최대 반경 50mm(5cm), 축방향 이동 lmax=0mm로 코드에 고정한다.
+            SDK가 역방향 Spiral을 지원하지 않으므로 저장한 BASE 중심 pose로
+            직선 복귀한 뒤 Safe Place로 상승한다.
 
         순서:
             movec(FRAME_MOVEC_VIA -> Safe Place)
@@ -1602,7 +1595,7 @@ class SolarMotion:
             -> BASE -Z Force Place
             -> Release
             -> TOOL Z Spiral Outward
-            -> TOOL Z Spiral Inward
+            -> movel(저장한 Spiral 중심)
             -> movel(Safe Place)
         """
         self.node.get_logger().info("========== FRAME PLACE START ==========")
@@ -1698,50 +1691,48 @@ class SolarMotion:
             self.wait(0.2)
 
             # 5. TOOL Z축 기준 Spiral.
-            # Spiral 전용 파라미터는 DB에서 받지 않고 코드에 고정한다.
-            #
-            # 총 5회 회전:
-            #   Outward 2.5회 + Inward 2.5회
-            # 최대 반경:
-            #   50mm = 5cm
-            # 축방향 이동:
-            #   0mm
+            # 5. TOOL Z축 기준 Spiral.
+            # 시작 중심을 BASE 절대 pose로 저장하고, 바깥쪽 Spiral 후 같은
+            # 중심 pose로 직선 복귀하여 기존의 중심 복귀 동작을 유지한다.
+            spiral_center_pose, spiral_center_solution_space = (
+                self.motion.get_current_pose(ref=self.DR_BASE)
+            )
+
             self.node.get_logger().info(
                 "========== FRAME TOOL Z SPIRAL START =========="
             )
             self.node.get_logger().info(
                 "FRAME Spiral 고정 설정 - "
-                "outward_rev=2.5, inward_rev=2.5, "
-                "rmax=50.0mm, lmax=0.0mm, "
+                "total_rev=5.0, rmax=50.0mm, lmax=0.0mm, "
                 f"vel={settings['speed']:.1f}, "
                 f"acc={settings['acc']:.1f}, "
-                "ref=TOOL, axis=Z"
+                "ref=TOOL, axis=Z, "
+                f"center_pose={list(spiral_center_pose)}, "
+                f"solution_space={spiral_center_solution_space}"
             )
 
-            # 5-1. 중심 -> 최대 반경 50mm
-            self.move_spiral(
-                rev=2.5,
+            # 5-1. 중심 -> 최대 반경 50mm, 총 5회 회전
+            spiral_result = self.move_spiral(
+                rev=5.0,
                 rmax=50.0,
                 lmax=0.0,
                 vel=settings["speed"],
                 acc=settings["acc"],
                 axis=self.DR_AXIS_Z,
                 ref=self.DR_TOOL,
-                rad_dir=self.DR_SPIRAL_OUTWARD,
-                rot_dir=self.DR_ROT_FORWARD,
             )
+            if spiral_result != 0:
+                raise RuntimeError(
+                    "FRAME TOOL Z Spiral 이동 실패 - "
+                    f"result={spiral_result}"
+                )
 
-            # 5-2. 최대 반경 -> 원래 중심
-            self.move_spiral(
-                rev=2.5,
-                rmax=50.0,
-                lmax=0.0,
-                vel=settings["speed"],
+            # 5-2. Spiral 끝점 -> 저장한 원래 중심 BASE pose
+            self.motion.move_pose(
+                spiral_center_pose,
+                ref=self.DR_BASE,
+                velocity=settings["speed"],
                 acc=settings["acc"],
-                axis=self.DR_AXIS_Z,
-                ref=self.DR_TOOL,
-                rad_dir=self.DR_SPIRAL_INWARD,
-                rot_dir=self.DR_ROT_FORWARD,
             )
 
             self.node.get_logger().info(
