@@ -52,6 +52,7 @@ class SolarMotion:
         CMP-POST-*   : pickup_position / assembly_position
         PIN-A-*      : pickup_position / assembly_position
         SNAPFIT-A-*  : pickup_position / assembly_position
+        CMP-FRAME-*   : pickup_position / assembly_position
 
     Post place alignment는 코드 내부 정책으로 고정한다.
         - 첫 접촉: TOOL +Z
@@ -68,8 +69,27 @@ class SolarMotion:
     SNAPFIT_COMPONENT_PREFIX = "SNAPFIT-A-"
     FRAME_COMPONENT_PREFIX = "CMP-FRAME-"
 
-    FRAME_ARC_HEIGHT_MM = 100.0
-    FRAME_ARC_STEPS = 6
+    # FRAME Pick/Place 공통 movec 경유점 (BASE 절대좌표)
+    FRAME_MOVEC_VIA = (
+        -46.4,
+        472.47,
+        343.52,
+        95.74,
+        179.17,
+        9.5,
+    )
+
+    # FRAME Place: 정확한 assembly_position 도달 후 BASE -Z 방향으로 Force Place.
+    FRAME_PLACE_FORCE_AXIS = "z"
+    FRAME_PLACE_FORCE_DIRECTION = -1
+    FRAME_PLACE_FORCE_REFERENCE = "base"
+
+    # FRAME Release 후 TOOL Z축 기준 periodic 회전.
+    # amp=20deg 이므로 -20deg ~ +20deg 범위로 5회 반복한다.
+    FRAME_PERIODIC_RZ_DEG = 20.0
+    FRAME_PERIODIC_PERIOD_SEC = 1.0
+    FRAME_PERIODIC_ATIME_SEC = 0.2
+    FRAME_PERIODIC_REPEAT = 5
 
     POST_INSERT_DIRECTION = 1       # TOOL +Z
 
@@ -107,10 +127,21 @@ class SolarMotion:
     def __init__(self, node):
         self.node = node
 
-        from DSR_ROBOT2 import movel, posx, trans, wait, DR_BASE, DR_TOOL
+        from DSR_ROBOT2 import (
+            movel,
+            movec,
+            move_periodic,
+            posx,
+            trans,
+            wait,
+            DR_BASE,
+            DR_TOOL,
+        )
         from .robot_motion import RobotMotion
 
         self.movel = movel
+        self.movec = movec
+        self.move_periodic = move_periodic
         self.posx = posx
         self.trans = trans
         self.wait = wait
@@ -352,10 +383,20 @@ class SolarMotion:
         return settings
 
     def _load_frame_settings(self, parameters):
-        """FRAME(CMP-FRAME-*) Pick/Place 이동 설정.
+        """FRAME(CMP-FRAME-*) Pick/Place 이동/Force 설정.
 
-        pickup_position / assembly_position은 실제 작업 좌표다.
-        pick/place distance는 각각 BASE +Z 방향 안전 접근 거리로 사용한다.
+        pickup_position / assembly_position:
+            실제 Pick/Place 작업 좌표.
+
+        pick_distance / place_distance:
+            실제 작업 좌표에서 BASE +Z 방향으로 떨어진 안전 접근 거리.
+
+        FRAME 이동:
+            move_arc()를 사용하지 않고 공통 FRAME_MOVEC_VIA를 경유하는 movec() 사용.
+
+        FRAME Place:
+            assembly_position 도달 후 BASE -Z Force Place를 수행하고,
+            Release 후 TOOL Z축 periodic 회전 뒤 안전 위치로 복귀.
         """
         settings = self._load_travel_settings(parameters)
 
@@ -380,24 +421,75 @@ class SolarMotion:
             nonnegative=True,
         )
 
-        settings["arc_height"] = self._first_number(
+        settings["place_force"] = self._first_number(
             parameters,
-            ("frame_arc_height",),
-            self.FRAME_ARC_HEIGHT_MM,
+            (
+                "frame_place_force",
+                "place_force",
+            ),
+            30.0,
+            positive=True,
+        )
+
+        settings["contact_force"] = self._first_number(
+            parameters,
+            (
+                "frame_place_force_threshold",
+                "place_contact_force",
+            ),
+            20.0,
+            positive=True,
+        )
+
+        settings["stiffness_z"] = self._first_number(
+            parameters,
+            (
+                "frame_place_stiffness_z",
+                "place_stiffness_z",
+            ),
+            500.0,
+            positive=True,
+        )
+
+        settings["force_timeout"] = self._first_number(
+            parameters,
+            ("frame_place_timeout",),
+            10.0,
+            positive=True,
+        )
+
+        settings["periodic_rz_deg"] = self._first_number(
+            parameters,
+            ("frame_periodic_rz_deg",),
+            self.FRAME_PERIODIC_RZ_DEG,
+            positive=True,
+        )
+
+        settings["periodic_period"] = self._first_number(
+            parameters,
+            ("frame_periodic_period",),
+            self.FRAME_PERIODIC_PERIOD_SEC,
+            positive=True,
+        )
+
+        settings["periodic_atime"] = self._first_number(
+            parameters,
+            ("frame_periodic_atime",),
+            self.FRAME_PERIODIC_ATIME_SEC,
             nonnegative=True,
         )
 
-        settings["arc_steps"] = int(
+        settings["periodic_repeat"] = int(
             self._first_number(
                 parameters,
-                ("frame_arc_steps",),
-                self.FRAME_ARC_STEPS,
+                ("frame_periodic_repeat",),
+                self.FRAME_PERIODIC_REPEAT,
                 positive=True,
             )
         )
 
-        if settings["arc_steps"] < 2:
-            raise ValueError("frame_arc_steps는 2 이상이어야 합니다.")
+        if settings["periodic_repeat"] < 1:
+            raise ValueError("frame_periodic_repeat는 1 이상이어야 합니다.")
 
         return settings
 
@@ -1309,7 +1401,7 @@ class SolarMotion:
     # =========================================================
 
     def pick_frame(self, parameters, components, operation_context=None):
-        """FRAME을 정확한 pickup_position에서 파지한다.
+        """FRAME을 공통 경유점 기반 movec()로 접근해 정확한 위치에서 파지한다.
 
         pickup_position:
             실제 Gripper Close가 수행되는 정확한 Pick 좌표.
@@ -1319,11 +1411,10 @@ class SolarMotion:
 
         순서:
             Home
-            -> 현재 TCP(BASE) 측정
-            -> move_arc(Current -> Safe Pick)
-            -> pickup_position
+            -> movec(FRAME_MOVEC_VIA -> Safe Pick)
+            -> movel(pickup_position)
             -> Grasp
-            -> Safe Pick 복귀
+            -> movel(Safe Pick)
         """
         self.node.get_logger().info("========== FRAME PICK START ==========")
         self._publish_cycle_event(
@@ -1336,7 +1427,6 @@ class SolarMotion:
 
             pick_distance = settings["pick_distance"]
 
-            # DB pickup_position 자체가 실제 파지 좌표다.
             safe_pick_pose = self.posx([
                 float(pickup_pose[0]),
                 float(pickup_pose[1]),
@@ -1346,43 +1436,35 @@ class SolarMotion:
                 float(pickup_pose[5]),
             ])
 
-            # 1. Home 이동
+            via_pose = self.posx([
+                float(value)
+                for value in self.FRAME_MOVEC_VIA
+            ])
+
+            # 1. Home
             self.node.get_logger().info(
                 f"FRAME Pick 준비 -> Home 이동 - {component.get('code')}"
             )
             self.motion.move_home()
             self.wait(0.5)
 
-            # 2. Home 도착 후 실제 현재 TCP(BASE) 좌표 측정
-            current_pose, solution_space = self.motion.get_current_pose(
-                ref=self.DR_BASE
-            )
-
-            safe_pick_target = [
-                float(safe_pick_pose[i])
-                for i in range(6)
-            ]
-
-            # 3. 현재 TCP -> Pick 안전 접근점까지 Arc 이동
+            # 2. Home -> 공통 경유점 -> Pick 안전 접근점
             self.node.get_logger().info(
-                "FRAME Pick Arc 안전 접근 - "
-                f"start={current_pose}, "
-                f"safe_end={safe_pick_target}, "
-                f"BASE Z +{pick_distance:.1f}mm, "
-                f"height={settings['arc_height']:.1f}mm, "
-                f"steps={settings['arc_steps']}, "
-                f"solution_space={solution_space}"
+                "FRAME Pick MOVEC 안전 접근 - "
+                f"via={list(self.FRAME_MOVEC_VIA)}, "
+                f"safe_pick={[float(safe_pick_pose[i]) for i in range(6)]}, "
+                f"BASE Z +{pick_distance:.1f}mm"
             )
-
-            self.motion.move_arc(
-                start=current_pose,
-                end=safe_pick_target,
-                height=settings["arc_height"],
-                steps=settings["arc_steps"],
+            self.movec(
+                via_pose,
+                safe_pick_pose,
+                vel=settings["speed"],
+                acc=settings["acc"],
+                ref=self.DR_BASE,
             )
             self.wait(0.5)
 
-            # 4. 안전 접근점 -> 정확한 pickup_position으로 직선 하강
+            # 3. 정확한 Pick 위치로 직선 하강
             self.node.get_logger().info(
                 "FRAME 정확한 Pick 위치 이동 - "
                 f"BASE Z -{pick_distance:.1f}mm"
@@ -1395,12 +1477,12 @@ class SolarMotion:
             )
             self.wait(0.2)
 
-            # 5. FRAME 파지
+            # 4. Grasp
             self.node.get_logger().info("FRAME Gripper Close")
             self.motion.grasp()
             self.wait(0.2)
 
-            # 6. 동일한 Pick 안전 접근점으로 복귀
+            # 5. 같은 Safe Pick으로 복귀
             self.node.get_logger().info(
                 "FRAME Pick 완료 -> 안전 접근점 복귀 - "
                 f"BASE Z +{pick_distance:.1f}mm"
@@ -1422,10 +1504,10 @@ class SolarMotion:
                 status="COMPLETED",
                 detail={
                     "component_code": component.get("code"),
+                    "motion": "MOVEC",
+                    "movec_via": list(self.FRAME_MOVEC_VIA),
                     "pick_distance": pick_distance,
                     "safe_reference": "BASE_Z",
-                    "arc_height": settings["arc_height"],
-                    "arc_steps": settings["arc_steps"],
                 },
             )
             return True
@@ -1441,20 +1523,28 @@ class SolarMotion:
             raise FramePickError(str(e)) from e
 
     def place_frame(self, parameters, components, operation_context=None):
-        """FRAME을 정확한 assembly_position에 배치한다.
+        """FRAME을 movec()로 접근한 뒤 Force Place하고 periodic 회전 후 이탈한다.
 
         assembly_position:
-            실제 Gripper Release가 수행되는 정확한 Place 좌표.
+            Force Place를 시작하는 정확한 Place 좌표.
 
         frame_place_distance / place_distance / place_retreat_distance:
             assembly_position에서 BASE +Z 방향으로 떨어진 안전 접근 거리.
 
+        Force:
+            BASE -Z 방향.
+
+        Release 후:
+            TOOL Z축 기준 ±20deg periodic 회전 5회.
+            정상 종료하면 periodic 시작 자세로 돌아온 뒤 Safe Place로 상승.
+
         순서:
-            현재 TCP(BASE) 측정
-            -> move_arc(Current -> Safe Place)
-            -> assembly_position
+            movec(FRAME_MOVEC_VIA -> Safe Place)
+            -> movel(assembly_position)
+            -> BASE -Z Force Place
             -> Release
-            -> Safe Place 복귀
+            -> TOOL Rz periodic
+            -> movel(Safe Place)
         """
         self.node.get_logger().info("========== FRAME PLACE START ==========")
         self._publish_cycle_event(
@@ -1467,7 +1557,6 @@ class SolarMotion:
 
             place_distance = settings["place_distance"]
 
-            # DB assembly_position 자체가 실제 Place 좌표다.
             safe_place_pose = self.posx([
                 float(assembly_pose[0]),
                 float(assembly_pose[1]),
@@ -1477,36 +1566,28 @@ class SolarMotion:
                 float(assembly_pose[5]),
             ])
 
-            # 1. Pick 완료 후 현재 실제 TCP(BASE) 좌표 측정
-            current_pose, solution_space = self.motion.get_current_pose(
-                ref=self.DR_BASE
-            )
+            via_pose = self.posx([
+                float(value)
+                for value in self.FRAME_MOVEC_VIA
+            ])
 
-            safe_place_target = [
-                float(safe_place_pose[i])
-                for i in range(6)
-            ]
-
-            # 2. 현재 TCP -> Place 안전 접근점까지 Arc 이동
+            # 1. 현재 Pick 안전점 -> 공통 경유점 -> Place 안전 접근점
             self.node.get_logger().info(
-                "FRAME Place Arc 안전 접근 - "
-                f"start={current_pose}, "
-                f"safe_end={safe_place_target}, "
-                f"BASE Z +{place_distance:.1f}mm, "
-                f"height={settings['arc_height']:.1f}mm, "
-                f"steps={settings['arc_steps']}, "
-                f"solution_space={solution_space}"
+                "FRAME Place MOVEC 안전 접근 - "
+                f"via={list(self.FRAME_MOVEC_VIA)}, "
+                f"safe_place={[float(safe_place_pose[i]) for i in range(6)]}, "
+                f"BASE Z +{place_distance:.1f}mm"
             )
-
-            self.motion.move_arc(
-                start=current_pose,
-                end=safe_place_target,
-                height=settings["arc_height"],
-                steps=settings["arc_steps"],
+            self.movec(
+                via_pose,
+                safe_place_pose,
+                vel=settings["speed"],
+                acc=settings["acc"],
+                ref=self.DR_BASE,
             )
             self.wait(0.5)
 
-            # 3. 안전 접근점 -> 정확한 assembly_position으로 직선 하강
+            # 2. 정확한 assembly_position으로 직선 하강
             self.node.get_logger().info(
                 "FRAME 정확한 Place 위치 이동 - "
                 f"BASE Z -{place_distance:.1f}mm"
@@ -1519,12 +1600,77 @@ class SolarMotion:
             )
             self.wait(0.2)
 
-            # 4. FRAME 놓기
-            self.node.get_logger().info("FRAME Gripper Release")
+            # 3. BASE -Z Force Place
+            self.node.get_logger().info(
+                "========== FRAME BASE -Z FORCE PLACE START =========="
+            )
+            self.node.get_logger().info(
+                "FRAME Force 설정 - "
+                f"force={settings['place_force']:.2f}N, "
+                f"threshold={settings['contact_force']:.2f}N, "
+                f"stiffness_z={settings['stiffness_z']:.2f}, "
+                f"timeout={settings['force_timeout']:.2f}s"
+            )
+
+            force_result = self.motion.place(
+                axis=self.FRAME_PLACE_FORCE_AXIS,
+                direction=self.FRAME_PLACE_FORCE_DIRECTION,
+                force=settings["place_force"],
+                threshold=settings["contact_force"],
+                timeout=settings["force_timeout"],
+                stiffness={
+                    self.FRAME_PLACE_FORCE_AXIS: settings["stiffness_z"]
+                },
+                reference=self.FRAME_PLACE_FORCE_REFERENCE,
+            )
+
+            if not force_result:
+                raise RuntimeError(
+                    "FRAME BASE -Z Force Place가 성공을 반환하지 않았습니다."
+                )
+
+            self.wait(0.2)
+
+            # 4. Force 종료 후 Frame 놓기
+            self.node.get_logger().info(
+                "FRAME Force Place 완료 -> Gripper Release"
+            )
             self.motion.release()
             self.wait(0.2)
 
-            # 5. 동일한 Place 안전 접근점으로 복귀
+            # 5. TOOL Z축 기준 periodic 회전
+            self.node.get_logger().info(
+                "========== FRAME TOOL Z PERIODIC START =========="
+            )
+            self.node.get_logger().info(
+                "FRAME Periodic 설정 - "
+                f"Rz=±{settings['periodic_rz_deg']:.1f}deg, "
+                f"period={settings['periodic_period']:.2f}s, "
+                f"atime={settings['periodic_atime']:.2f}s, "
+                f"repeat={settings['periodic_repeat']}"
+            )
+
+            self.move_periodic(
+                amp=[
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    settings["periodic_rz_deg"],
+                ],
+                period=settings["periodic_period"],
+                atime=settings["periodic_atime"],
+                repeat=settings["periodic_repeat"],
+                ref=self.DR_TOOL,
+            )
+
+            self.node.get_logger().info(
+                "FRAME TOOL Z Periodic 완료 -> 원래 자세 복귀 완료"
+            )
+            self.wait(0.2)
+
+            # 6. 동일한 Place 안전 접근점으로 상승
             self.node.get_logger().info(
                 "FRAME Place 완료 -> 안전 접근점 복귀 - "
                 f"BASE Z +{place_distance:.1f}mm"
@@ -1546,10 +1692,19 @@ class SolarMotion:
                 status="COMPLETED",
                 detail={
                     "component_code": component.get("code"),
+                    "motion": "MOVEC",
+                    "movec_via": list(self.FRAME_MOVEC_VIA),
                     "place_distance": place_distance,
                     "safe_reference": "BASE_Z",
-                    "arc_height": settings["arc_height"],
-                    "arc_steps": settings["arc_steps"],
+                    "force_reference": "BASE",
+                    "force_axis": "BASE_Z",
+                    "force_direction": self.FRAME_PLACE_FORCE_DIRECTION,
+                    "force": settings["place_force"],
+                    "threshold": settings["contact_force"],
+                    "periodic_reference": "TOOL",
+                    "periodic_axis": "RZ",
+                    "periodic_amplitude_deg": settings["periodic_rz_deg"],
+                    "periodic_repeat": settings["periodic_repeat"],
                 },
             )
             return True
@@ -1562,6 +1717,10 @@ class SolarMotion:
                 status="FAILED",
                 error=e,
             )
+            try:
+                self.force.all_off()
+            except Exception:
+                pass
             raise FramePlaceError(str(e)) from e
 
     # =========================================================
