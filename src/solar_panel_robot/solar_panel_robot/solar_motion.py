@@ -54,6 +54,11 @@ class SolarMotion:
         SNAPFIT-A-*  : pickup_position / assembly_position
         CMP-FRAME-*   : pickup_position / assembly_position
 
+    좌표/안전거리 정책:
+        - PIN은 기존 실험 코드를 유지한다.
+        - POST/FRAME/SNAPFIT의 pickup_position / assembly_position은 실제 작업 좌표다.
+        - pick_distance / place_retreat_distance는 안전 접근/복귀 거리로 사용한다.
+
     Post place alignment는 코드 내부 정책으로 고정한다.
         - 첫 접촉: TOOL +Z
         - 1차 Contact Seek 완료 후 BASE Z < 182mm이면 이미 정상 진입으로 판단
@@ -746,6 +751,20 @@ class SolarMotion:
     # =========================================================
 
     def pick_post(self, parameters, components, operation_context=None):
+        """POST를 정확한 pickup_position에서 파지한다.
+
+        pickup_position:
+            실제 Gripper Close가 수행되는 정확한 Pick 좌표.
+
+        pick_distance:
+            pickup_position에서 BASE +Z 방향으로 떨어진 안전 접근 거리.
+
+        순서:
+            Safe Pick
+            -> pickup_position
+            -> Grasp
+            -> Safe Pick 복귀
+        """
         self.node.get_logger().info("========== POST PICK START ==========")
         self._publish_cycle_event(
             operation_context, phase="POST_PICK", status="STARTED"
@@ -755,8 +774,35 @@ class SolarMotion:
             settings = self._load_pick_settings(parameters)
             component, pickup_pose = self._post_pickup_input(components)
 
+            pick_distance = settings["pick_distance"]
+
+            # DB pickup_position 자체가 실제 파지 좌표다.
+            safe_pick_pose = self.posx([
+                float(pickup_pose[0]),
+                float(pickup_pose[1]),
+                float(pickup_pose[2]) + pick_distance,
+                float(pickup_pose[3]),
+                float(pickup_pose[4]),
+                float(pickup_pose[5]),
+            ])
+
+            # 1. Pick 안전 접근점
             self.node.get_logger().info(
-                f"Post Pick 시작 위치 이동 - {component.get('code')}"
+                "POST Pick 안전 접근 - "
+                f"component={component.get('code')}, "
+                f"BASE Z +{pick_distance:.1f}mm"
+            )
+            self.movel(
+                safe_pick_pose,
+                vel=settings["speed"],
+                acc=settings["acc"],
+                ref=self.DR_BASE,
+            )
+            self.wait(0.5)
+
+            # 2. 정확한 Pick 위치
+            self.node.get_logger().info(
+                "POST 정확한 Pick 위치 이동"
             )
             self.movel(
                 pickup_pose,
@@ -764,21 +810,37 @@ class SolarMotion:
                 acc=settings["acc"],
                 ref=self.DR_BASE,
             )
-            self.wait(0.5)
+            self.wait(0.2)
 
-            self.motion.pick(
-                distance=settings["pick_distance"],
-                velocity=settings["speed"],
+            # 3. 파지
+            self.node.get_logger().info("POST Gripper Close")
+            self.motion.grasp()
+            self.wait(0.2)
+
+            # 4. 동일한 안전 접근점으로 복귀
+            self.node.get_logger().info(
+                "POST Pick 완료 -> 안전 접근점 복귀"
+            )
+            self.movel(
+                safe_pick_pose,
+                vel=settings["speed"],
                 acc=settings["acc"],
+                ref=self.DR_BASE,
             )
             self.wait(0.5)
 
-            self.node.get_logger().info("========== POST PICK COMPLETE ==========")
+            self.node.get_logger().info(
+                "========== POST PICK COMPLETE =========="
+            )
             self._publish_cycle_event(
                 operation_context,
                 phase="POST_PICK",
                 status="COMPLETED",
-                detail={"component_code": component.get("code")},
+                detail={
+                    "component_code": component.get("code"),
+                    "pick_distance": pick_distance,
+                    "safe_reference": "BASE_Z",
+                },
             )
             return True
 
@@ -988,8 +1050,35 @@ class SolarMotion:
             direction = self.POST_INSERT_DIRECTION
             direction_label = "+Z" if direction > 0 else "-Z"
 
+            place_distance = settings["retreat_distance"]
+
+            # DB assembly_position 자체가 실제 Place/Force 시작 좌표다.
+            safe_place_pose = self.posx([
+                float(assembly_pose[0]),
+                float(assembly_pose[1]),
+                float(assembly_pose[2]) + place_distance,
+                float(assembly_pose[3]),
+                float(assembly_pose[4]),
+                float(assembly_pose[5]),
+            ])
+
+            # 1. Place 안전 접근점
             self.node.get_logger().info(
-                f"Post Place 시작 위치 이동 - {component.get('code')}"
+                "POST Place 안전 접근 - "
+                f"component={component.get('code')}, "
+                f"BASE Z +{place_distance:.1f}mm"
+            )
+            self.movel(
+                safe_place_pose,
+                vel=settings["speed"],
+                acc=settings["acc"],
+                ref=self.DR_BASE,
+            )
+            self.wait(0.5)
+
+            # 2. 정확한 Place/Force 시작 위치
+            self.node.get_logger().info(
+                "POST 정확한 assembly_position 이동"
             )
             self.movel(
                 assembly_pose,
@@ -997,7 +1086,7 @@ class SolarMotion:
                 acc=settings["acc"],
                 ref=self.DR_BASE,
             )
-            self.wait(0.5)
+            self.wait(0.2)
 
             contact = self.motion.seek_contact(
                 axis="z",
@@ -1094,6 +1183,8 @@ class SolarMotion:
                 "contact_axis_force_delta": float(contact["axis_force_delta"]),
                 "contact_base_z": current_base_z,
                 "search_skipped": bool(search_skipped),
+                "place_distance": place_distance,
+                "safe_reference": "BASE_Z",
             }
             if best is not None:
                 detail.update(
@@ -2004,14 +2095,27 @@ class SolarMotion:
             self.wait(0.5)
 
             if post_retreat > 0:
+                # assembly_position을 실제 Place 좌표로 보고,
+                # DB place_retreat_distance만큼 BASE +Z에 있는 동일 Safe Place로 복귀한다.
+                _, post_assembly_pose = self._post_assembly_input(components)
+                post_safe_place_pose = self.posx([
+                    float(post_assembly_pose[0]),
+                    float(post_assembly_pose[1]),
+                    float(post_assembly_pose[2]) + post_retreat,
+                    float(post_assembly_pose[3]),
+                    float(post_assembly_pose[4]),
+                    float(post_assembly_pose[5]),
+                ])
+
                 self.node.get_logger().info(
-                    f"Post Release 완료 -> BASE +Z {post_retreat}mm 이탈"
+                    "Post Release 완료 -> 동일한 Place 안전 접근점 복귀 - "
+                    f"BASE Z +{post_retreat:.1f}mm"
                 )
-                self.motion.move_z(
-                    post_retreat,
-                    ref=self.DR_BASE,
-                    velocity=settings["speed"],
+                self.movel(
+                    post_safe_place_pose,
+                    vel=settings["speed"],
                     acc=settings["acc"],
+                    ref=self.DR_BASE,
                 )
                 self.wait(0.5)
 
