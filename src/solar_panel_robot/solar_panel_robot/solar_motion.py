@@ -957,7 +957,8 @@ class SolarMotion:
             1. pickup_position으로 이동
             2. BASE -Z 방향으로 pick_distance만큼 하강
             3. Gripper Close
-            4. BASE +Z 방향으로 pick_distance만큼 상승
+            4. BASE -X 방향으로 50mm 이동
+            5. BASE +Z 방향으로 pick_distance만큼 상승
         """
         self.node.get_logger().info("========== PIN PICK START ==========")
         self._publish_cycle_event(
@@ -1001,7 +1002,19 @@ class SolarMotion:
             self.motion.grasp()
             self.wait(0.2)
 
-            # 4. 처음 접근 위치까지 다시 상승
+            # 4. 파지 후 BASE -X 방향으로 50mm 이동
+            self.node.get_logger().info(
+                "PIN Pick 파지 후 이동 - BASE X -50.0mm"
+            )
+            self.motion.move_x(
+                -50.0,
+                ref=self.DR_BASE,
+                velocity=settings["speed"],
+                acc=settings["acc"],
+            )
+            self.wait(0.2)
+
+            # 5. Z 방향으로 다시 상승
             self.node.get_logger().info(
                 f"PIN Pick 상승 - BASE Z +{pick_distance:.1f}mm"
             )
