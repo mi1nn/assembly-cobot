@@ -2168,8 +2168,8 @@ class SolarMotion:
             second_result = self.motion.place(
                 axis=self.SNAPFIT_INSERT_AXIS,
                 direction=self.SNAPFIT_INSERT_DIRECTION,
-                force=50.0,
-                threshold=40.0,
+                force=20.0,
+                threshold=10.0,
                 timeout=settings["timeout"],
                 stiffness={
                     self.SNAPFIT_INSERT_AXIS: settings["stiffness"]
