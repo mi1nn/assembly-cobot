@@ -131,6 +131,7 @@ class SolarMotion:
         from DSR_ROBOT2 import (
             movel,
             movec,
+            mwait,
             move_periodic,
             posx,
             trans,
@@ -142,6 +143,7 @@ class SolarMotion:
 
         self.movel = movel
         self.movec = movec
+        self.mwait = mwait
         self.move_periodic = move_periodic
         self.posx = posx
         self.trans = trans
@@ -334,11 +336,16 @@ class SolarMotion:
         return settings
 
     def _load_snapfit_pick_settings(self, parameters):
-        """SNAPFIT-A-* Pick 설정. 기존 POST_PIN용 키도 호환한다."""
+        """SNAPFIT-A-* Pick 설정. snap_fit/snapfit 키를 모두 호환한다."""
         settings = self._load_travel_settings(parameters)
-        settings["pick_distance"] = self._first_number(
+        settings["snapfit_pick_distance"] = self._first_number(
             parameters,
-            ("snapfit_pick_distance", "post_pin_pick_distance", "pick_distance"),
+            (
+                "snap_fit_pick_distance",
+                "snapfit_pick_distance",
+                "post_pin_pick_distance",
+                "pick_distance",
+            ),
             50.0,
             positive=True,
         )
@@ -1871,42 +1878,56 @@ class SolarMotion:
             settings = self._load_snapfit_pick_settings(parameters)
             component, pickup_pose = self._snapfit_pickup_input(components)
 
-            pick_distance = settings["pick_distance"]
+            snapfit_pick_distance = settings["snapfit_pick_distance"]
 
             # DB pickup_position 자체가 실제 파지 좌표다.
             safe_pick_pose = self.posx([
                 float(pickup_pose[0]),
                 float(pickup_pose[1]),
-                float(pickup_pose[2]) + pick_distance,
+                float(pickup_pose[2]) + snapfit_pick_distance,
                 float(pickup_pose[3]),
                 float(pickup_pose[4]),
                 float(pickup_pose[5]),
             ])
 
-            # 1. 안전 접근점
+            # 1. 안전 접근점. SDK 반환값을 검사하고 실제 완료까지 대기한다.
             self.node.get_logger().info(
                 "SNAPFIT Pick 안전 접근 - "
                 f"component={component.get('code')}, "
-                f"BASE Z +{pick_distance:.1f}mm"
+                f"distance=BASE +Z {snapfit_pick_distance:.1f}mm, "
+                f"target_pose={list(safe_pick_pose)}"
             )
-            self.movel(
+            safe_move_result = self.movel(
                 safe_pick_pose,
                 vel=settings["speed"],
                 acc=settings["acc"],
                 ref=self.DR_BASE,
             )
-            self.wait(0.5)
+            if safe_move_result != 0:
+                raise RuntimeError(
+                    "SNAPFIT Pick 안전 접근 MOVEL 실패 - "
+                    f"result={safe_move_result}, target={list(safe_pick_pose)}"
+                )
+            self.mwait()
+            self.wait(0.2)
 
-            # 2. 실제 Pick 위치
+            # 2. 실제 Pick 위치. SDK 반환값을 검사하고 완료까지 대기한다.
             self.node.get_logger().info(
-                "SNAPFIT 정확한 Pick 위치 이동"
+                "SNAPFIT 정확한 Pick 위치 이동 - "
+                f"target_pose={list(pickup_pose)}"
             )
-            self.movel(
+            pickup_move_result = self.movel(
                 pickup_pose,
                 vel=settings["speed"],
                 acc=settings["acc"],
                 ref=self.DR_BASE,
             )
+            if pickup_move_result != 0:
+                raise RuntimeError(
+                    "SNAPFIT Pick 위치 MOVEL 실패 - "
+                    f"result={pickup_move_result}, target={list(pickup_pose)}"
+                )
+            self.mwait()
             self.wait(0.2)
 
             # 3. 파지
@@ -1914,17 +1935,19 @@ class SolarMotion:
             self.motion.grasp()
             self.wait(0.2)
 
-            # 4. 동일한 안전 접근점으로 복귀
+            # 4. Grasp 위치에서 DB 거리만큼 BASE +Z 상대 상승
             self.node.get_logger().info(
-                "SNAPFIT Pick 완료 -> 안전 접근점 복귀"
+                "SNAPFIT Grasp 완료 -> BASE +Z 상대 상승 - "
+                f"distance={snapfit_pick_distance:.1f}mm"
             )
-            self.movel(
-                safe_pick_pose,
-                vel=settings["speed"],
-                acc=settings["acc"],
+            self.motion.move_z(
+                snapfit_pick_distance,
                 ref=self.DR_BASE,
+                velocity=settings["speed"],
+                acc=settings["acc"],
             )
-            self.wait(0.5)
+            self.mwait()
+            self.wait(0.2)
 
             self.node.get_logger().info(
                 "========== SNAPFIT PICK COMPLETE =========="
@@ -1935,7 +1958,7 @@ class SolarMotion:
                 status="COMPLETED",
                 detail={
                     "component_code": component.get("code"),
-                    "pick_distance": pick_distance,
+                    "snapfit_pick_distance": snapfit_pick_distance,
                     "safe_reference": "BASE_Z",
                 },
             )
