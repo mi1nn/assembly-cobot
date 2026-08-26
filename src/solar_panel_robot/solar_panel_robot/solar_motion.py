@@ -83,6 +83,16 @@ class SolarMotion:
         179.17,
         9.5,
     )
+    # SNAPFIT Pick 후 모든 Place로 이동하기 전 대기하는 공통 BASE 기준점.
+    SNAPFIT_TRANSFER_POSE = (
+        382.99,
+        -117.23,
+        304.27,
+        156.18,
+        177.92,
+        63.5,
+    )
+
 
     # FRAME Place: 정확한 assembly_position 도달 후 BASE -Z 방향으로 Force Place.
     FRAME_PLACE_FORCE_AXIS = "z"
@@ -104,16 +114,6 @@ class SolarMotion:
     SNAPFIT_INSERT_DIRECTION = 1    # TOOL +Z
     SNAPFIT_INSERT_REFERENCE = "tool"
 
-    # SNAPFIT Pick 진입용 move_arc 고정 도착점 (BASE 절대좌표)
-    SNAPFIT_PICK_ARC_TARGET = (
-        382.99,
-        -117.23,
-        304.27,
-        156.18,
-        177.92,
-        63.5,
-    )
-    SNAPFIT_PICK_ARC_HEIGHT_MM = 320.0
 
     CONTACT_THRESHOLD_N = 5.0
     CONTACT_POLL_INTERVAL = 0.02
@@ -145,7 +145,6 @@ class SolarMotion:
             mwait,
             move_periodic,
             posx,
-            trans,
             wait,
             DR_BASE,
             DR_TOOL,
@@ -157,7 +156,6 @@ class SolarMotion:
         self.mwait = mwait
         self.move_periodic = move_periodic
         self.posx = posx
-        self.trans = trans
         self.wait = wait
         self.DR_BASE = DR_BASE
         self.DR_TOOL = DR_TOOL
@@ -358,6 +356,18 @@ class SolarMotion:
                 "pick_distance",
             ),
             50.0,
+            positive=True,
+        )
+        settings["snapfit_arc_height"] = self._first_number(
+            parameters,
+            ("snapfit_arc_height",),
+            100.0,
+            nonnegative=True,
+        )
+        settings["snapfit_arc_steps"] = self._first_number(
+            parameters,
+            ("snapfit_arc_steps",),
+            6.0,
             positive=True,
         )
         return settings
@@ -1361,8 +1371,8 @@ class SolarMotion:
                 "PIN Place 설정 - "
                 f"component={component.get('code')}, "
                 f"reference=TOOL, axis=+X, "
-                f"force={settings['place_force']:.2f}N, "
-                f"threshold={settings['contact_force']:.2f}N"
+                "1st_force=20.00N, 1st_threshold=10.00N, "
+                "2nd_force=50.00N, 2nd_threshold=40.00N"
             )
 
             # 1. place 위치
@@ -1464,8 +1474,10 @@ class SolarMotion:
                     "axis": "TOOL_X",
                     "direction": self.PIN_INSERT_DIRECTION,
                     "push_count": 2,
-                    "force": settings["place_force"],
-                    "threshold": settings["contact_force"],
+                    "first_force": 20.0,
+                    "first_threshold": 10.0,
+                    "second_force": 50.0,
+                    "second_threshold": 40.0,
                 },
             )
             return True
@@ -1869,24 +1881,13 @@ class SolarMotion:
     # =========================================================
 
     def pick_snapfit(self, parameters, components, operation_context=None):
-        """SNAPFIT Pick 진입을 move_arc -> movel 두 단계로 수행한다.
+        """안전 접근 후 SNAPFIT을 파지하고 공통 전송 기준점까지 Arc 이동한다.
 
-        pickup_position:
-            실제 Gripper Close가 수행되는 정확한 Pick 좌표.
-
-        pick_distance:
-            Grasp 완료 후 BASE +Z 방향으로 상승하는 안전거리.
-
-        진입 순서:
-            1. 실행 당시 현재 TCP(BASE) 좌표 측정
-            2. move_arc(
-                   start=현재 TCP,
-                   end=SNAPFIT_PICK_ARC_TARGET,
-                   height=320mm
-               )
-            3. movel(pickup_position)
-            4. Grasp
-            5. BASE +Z pick_distance 상승
+        순서:
+            pickup_position의 BASE +Z snapfit_pick_distance 안전점
+            -> pickup_position
+            -> Grasp
+            -> 현재 TCP에서 SNAPFIT_TRANSFER_POSE까지 move_arc
         """
         self.node.get_logger().info("========== SNAPFIT PICK START ==========")
         self._publish_cycle_event(
@@ -1896,87 +1897,81 @@ class SolarMotion:
         try:
             settings = self._load_snapfit_pick_settings(parameters)
             component, pickup_pose = self._snapfit_pickup_input(components)
+            pick_distance = settings["snapfit_pick_distance"]
+            arc_steps = int(settings["snapfit_arc_steps"])
+            if arc_steps < 2:
+                raise ValueError("snapfit_arc_steps는 2 이상이어야 합니다.")
 
-            snapfit_pick_distance = settings["snapfit_pick_distance"]
+            safe_pick_pose = self.posx([
+                float(pickup_pose[0]),
+                float(pickup_pose[1]),
+                float(pickup_pose[2]) + pick_distance,
+                float(pickup_pose[3]),
+                float(pickup_pose[4]),
+                float(pickup_pose[5]),
+            ])
 
-            # -----------------------------------------------------
-            # 1. 실행 당시 현재 TCP(BASE) 좌표 측정
-            # -----------------------------------------------------
-            current_pose, solution_space = self.motion.get_current_pose(
-                ref=self.DR_BASE
-            )
-            current_pose = [
-                float(current_pose[i])
-                for i in range(6)
-            ]
-
-            arc_target = [
-                float(value)
-                for value in self.SNAPFIT_PICK_ARC_TARGET
-            ]
-
+            # 1. pickup_position 기준 BASE +Z 안전 접근점
             self.node.get_logger().info(
-                "SNAPFIT Pick 현재 TCP 측정 - "
-                f"pose={current_pose}, "
-                f"solution_space={solution_space}"
+                "SNAPFIT Pick 안전 접근 MOVEL - "
+                f"distance=BASE +Z {pick_distance:.1f}mm, "
+                f"target={list(safe_pick_pose)}"
             )
-
-            # -----------------------------------------------------
-            # 2. 현재 TCP -> 고정 Arc 도착점
-            # -----------------------------------------------------
-            self.node.get_logger().info(
-                "SNAPFIT Pick move_arc 이동 - "
-                f"start={current_pose}, "
-                f"end={arc_target}, "
-                f"height={self.SNAPFIT_PICK_ARC_HEIGHT_MM:.1f}mm"
+            safe_result = self.movel(
+                safe_pick_pose,
+                vel=settings["speed"],
+                acc=settings["acc"],
+                ref=self.DR_BASE,
             )
-
-            self.motion.move_arc(
-                current_pose,
-                arc_target,
-                height=self.SNAPFIT_PICK_ARC_HEIGHT_MM,
-            )
+            if safe_result != 0:
+                raise RuntimeError(
+                    "SNAPFIT Pick 안전 접근 MOVEL 실패 - "
+                    f"result={safe_result}, target={list(safe_pick_pose)}"
+                )
             self.mwait()
             self.wait(0.2)
 
-            # -----------------------------------------------------
-            # 3. Arc 도착점 -> 실제 Pick 위치 MOVEL
-            # -----------------------------------------------------
+            # 2. 실제 Pick 위치
             self.node.get_logger().info(
-                "SNAPFIT move_arc 완료 -> 정확한 Pick 위치 MOVEL - "
-                f"target_pose={list(pickup_pose)}"
+                "SNAPFIT 정확한 Pick 위치 MOVEL - "
+                f"target={list(pickup_pose)}"
             )
-            pickup_move_result = self.movel(
+            pickup_result = self.movel(
                 pickup_pose,
                 vel=settings["speed"],
                 acc=settings["acc"],
                 ref=self.DR_BASE,
             )
-            if pickup_move_result != 0:
+            if pickup_result != 0:
                 raise RuntimeError(
                     "SNAPFIT Pick 위치 MOVEL 실패 - "
-                    f"result={pickup_move_result}, target={list(pickup_pose)}"
+                    f"result={pickup_result}, target={list(pickup_pose)}"
                 )
             self.mwait()
             self.wait(0.2)
 
-            # -----------------------------------------------------
-            # 4. 파지
-            # -----------------------------------------------------
+            # 3. 파지
             self.node.get_logger().info("SNAPFIT Gripper Close")
             self.motion.grasp()
             self.wait(0.2)
 
-            # -----------------------------------------------------
-            # 5. Grasp 완료 후 기존 안전거리만큼 BASE +Z 상승
-            # -----------------------------------------------------
-            self.node.get_logger().info(
-                "SNAPFIT Grasp 완료 -> BASE +Z 상대 상승 - "
-                f"distance={snapfit_pick_distance:.1f}mm"
+            # 4. Grasp 위치 -> 공통 전송 기준점 Arc 이동
+            arc_start_pose, solution_space = self.motion.get_current_pose(
+                ref=self.DR_BASE
             )
-            self.motion.move_z(
-                snapfit_pick_distance,
-                ref=self.DR_BASE,
+            transfer_pose = list(self.SNAPFIT_TRANSFER_POSE)
+            self.node.get_logger().info(
+                "SNAPFIT Grasp 완료 -> 공통 기준점 ARC - "
+                f"start={arc_start_pose}, end={transfer_pose}, "
+                f"height={settings['snapfit_arc_height']:.1f}mm, "
+                f"steps={arc_steps}, speed={settings['speed']:.1f}, "
+                f"acc={settings['acc']:.1f}, solution_space={solution_space}"
+            )
+            self.motion.move_arc(
+                arc_start_pose,
+                transfer_pose,
+                height=settings["snapfit_arc_height"],
+                steps=arc_steps,
                 velocity=settings["speed"],
                 acc=settings["acc"],
             )
@@ -1992,12 +1987,12 @@ class SolarMotion:
                 status="COMPLETED",
                 detail={
                     "component_code": component.get("code"),
-                    "approach_motion": "MOVE_ARC_THEN_MOVEL",
-                    "arc_start": "CURRENT_TCP_BASE",
-                    "arc_target": list(self.SNAPFIT_PICK_ARC_TARGET),
-                    "arc_height_mm": self.SNAPFIT_PICK_ARC_HEIGHT_MM,
-                    "snapfit_pick_distance": snapfit_pick_distance,
+                    "snapfit_pick_distance": pick_distance,
                     "safe_reference": "BASE_Z",
+                    "arc_start": arc_start_pose,
+                    "arc_target": transfer_pose,
+                    "arc_height_mm": settings["snapfit_arc_height"],
+                    "arc_steps": arc_steps,
                 },
             )
             return True
@@ -2013,19 +2008,27 @@ class SolarMotion:
             raise SnapfitPickError(str(e)) from e
 
     def place_snapfit(self, parameters, components, operation_context=None):
-        """SNAPFIT을 TOOL +Z 방향으로 Force 삽입한다.
+        """SNAPFIT을 TOOL +Z 방향으로 2단계 Force 삽입한다.
 
         assembly_position:
             실제 Place/Force 삽입을 시작하는 정확한 좌표.
 
         place_distance:
-            assembly_position에서 TOOL -Z 방향으로 떨어진 안전 접근 거리.
+            assembly_position에서 BASE +Z 방향으로 떨어진 안전 접근/복귀 거리.
+
+        Force 설정:
+            1차: Desired Force 20N / Threshold 10N
+            2차: Desired Force 50N / Threshold 40N
 
         순서:
-            Safe Place(TOOL -Z)
+            Safe Place(BASE +Z)
             -> assembly_position
-            -> TOOL +Z Force Insert
+            -> 1차 TOOL +Z Force Insert
             -> Gripper Release
+            -> Safe Place 복귀
+            -> Gripper Close
+            -> assembly_position 재접근
+            -> 2차 TOOL +Z Force Push
             -> Safe Place 복귀
         """
         self.node.get_logger().info("========== SNAPFIT PLACE START ==========")
@@ -2039,13 +2042,15 @@ class SolarMotion:
 
             place_distance = settings["place_distance"]
 
-            # assembly_position은 BASE 절대 좌표다.
-            # 안전 접근점은 그 pose에서 TOOL -Z 방향으로 place_distance만큼 이격한다.
-            safe_place_pose = self.trans(
-                assembly_pose,
-                [0.0, 0.0, -place_distance, 0.0, 0.0, 0.0],
-                self.DR_TOOL,
-            )
+            # 다른 POST/FRAME과 동일하게 BASE +Z 기준으로 안전점을 직접 계산한다.
+            safe_place_pose = self.posx([
+                float(assembly_pose[0]),
+                float(assembly_pose[1]),
+                float(assembly_pose[2]) + place_distance,
+                float(assembly_pose[3]),
+                float(assembly_pose[4]),
+                float(assembly_pose[5]),
+            ])
 
             self.node.get_logger().info(
                 "SNAPFIT Place 설정 - "
@@ -2056,10 +2061,10 @@ class SolarMotion:
                 f"threshold={settings['contact_force']:.2f}N"
             )
 
-            # 1. TOOL -Z 안전 접근점으로 이동
+            # 1. BASE +Z 안전 접근점
             self.node.get_logger().info(
                 "SNAPFIT Place 안전 접근 - "
-                f"assembly_position 기준 TOOL -Z {place_distance:.1f}mm"
+                f"assembly_position 기준 BASE +Z {place_distance:.1f}mm"
             )
             self.movel(
                 safe_place_pose,
@@ -2067,11 +2072,12 @@ class SolarMotion:
                 acc=settings["acc"],
                 ref=self.DR_BASE,
             )
-            self.wait(0.5)
+            self.mwait()
+            self.wait(0.2)
 
-            # 2. 실제 Place/Force 시작 좌표로 이동
+            # 2. 실제 Place/Force 시작 좌표
             self.node.get_logger().info(
-                "SNAPFIT 정확한 assembly_position 이동"
+                "SNAPFIT 1차 Force 준비 -> assembly_position 이동"
             )
             self.movel(
                 assembly_pose,
@@ -2079,49 +2085,105 @@ class SolarMotion:
                 acc=settings["acc"],
                 ref=self.DR_BASE,
             )
+            self.mwait()
             self.wait(0.2)
 
-            # 3. TOOL +Z Force 삽입
+            # 3. 1차 TOOL +Z Force 삽입
             self.node.get_logger().info(
-                "========== SNAPFIT TOOL +Z FORCE INSERT START =========="
+                "========== SNAPFIT PLACE 1ST FORCE START =========="
             )
-            result = self.motion.place(
+            first_result = self.motion.place(
                 axis=self.SNAPFIT_INSERT_AXIS,
                 direction=self.SNAPFIT_INSERT_DIRECTION,
-                force=settings["place_force"],
-                threshold=settings["contact_force"],
+                force=20.0,
+                threshold=10.0,
                 timeout=settings["timeout"],
                 stiffness={
                     self.SNAPFIT_INSERT_AXIS: settings["stiffness"]
                 },
                 reference=self.SNAPFIT_INSERT_REFERENCE,
             )
-            if not result:
+            if not first_result:
                 raise RuntimeError(
-                    "SNAPFIT TOOL +Z Force Place가 성공을 반환하지 않았습니다."
+                    "SNAPFIT 1차 TOOL +Z Force Place가 성공을 반환하지 않았습니다."
                 )
 
             self.wait(0.2)
 
-            # 4. 삽입 완료 후 놓기
+            # 4. 1차 삽입 후 부품을 놓음
             self.node.get_logger().info(
-                "SNAPFIT Force 삽입 완료 -> Gripper Release"
+                "SNAPFIT 1차 Force 완료 -> Gripper Release"
             )
             self.motion.release()
             self.wait(0.5)
 
-            # 5. 처음 계산한 동일한 안전 접근점으로 복귀
-            if place_distance > 0:
-                self.node.get_logger().info(
-                    "SNAPFIT Place 완료 -> TOOL -Z 안전 접근점 복귀"
+            # 5. 동일한 BASE +Z 안전거리로 복귀
+            self.node.get_logger().info(
+                "SNAPFIT 1차 삽입 완료 -> BASE +Z 안전 접근점 복귀"
+            )
+            self.movel(
+                safe_place_pose,
+                vel=settings["speed"],
+                acc=settings["acc"],
+                ref=self.DR_BASE,
+            )
+            self.mwait()
+            self.wait(0.2)
+
+            # 6. 빈 Gripper를 닫아 2차 Push 준비
+            self.node.get_logger().info(
+                "SNAPFIT 2차 Push 준비 -> Gripper Close"
+            )
+            self.motion.grasp()
+            self.wait(0.5)
+
+            # 7. 다시 정확한 Place/Force 시작 좌표로 이동
+            self.node.get_logger().info(
+                "SNAPFIT 2차 Force 준비 -> assembly_position 재접근"
+            )
+            self.movel(
+                assembly_pose,
+                vel=settings["speed"],
+                acc=settings["acc"],
+                ref=self.DR_BASE,
+            )
+            self.mwait()
+            self.wait(0.2)
+
+            # 8. 2차 TOOL +Z Force Push
+            self.node.get_logger().info(
+                "========== SNAPFIT PLACE 2ND FORCE START =========="
+            )
+            second_result = self.motion.place(
+                axis=self.SNAPFIT_INSERT_AXIS,
+                direction=self.SNAPFIT_INSERT_DIRECTION,
+                force=50.0,
+                threshold=40.0,
+                timeout=settings["timeout"],
+                stiffness={
+                    self.SNAPFIT_INSERT_AXIS: settings["stiffness"]
+                },
+                reference=self.SNAPFIT_INSERT_REFERENCE,
+            )
+            if not second_result:
+                raise RuntimeError(
+                    "SNAPFIT 2차 TOOL +Z Force Place가 성공을 반환하지 않았습니다."
                 )
-                self.movel(
-                    safe_place_pose,
-                    vel=settings["speed"],
-                    acc=settings["acc"],
-                    ref=self.DR_BASE,
-                )
-                self.wait(0.5)
+
+            self.wait(0.2)
+
+            # 9. 2차 Push 완료 후 안전거리로 최종 복귀
+            self.node.get_logger().info(
+                "SNAPFIT 2차 Force 완료 -> BASE +Z 안전 접근점 복귀"
+            )
+            self.movel(
+                safe_place_pose,
+                vel=settings["speed"],
+                acc=settings["acc"],
+                ref=self.DR_BASE,
+            )
+            self.mwait()
+            self.wait(0.2)
 
             self.node.get_logger().info(
                 "========== SNAPFIT PLACE COMPLETE =========="
@@ -2136,6 +2198,8 @@ class SolarMotion:
                     "axis": "TOOL_Z",
                     "direction": self.SNAPFIT_INSERT_DIRECTION,
                     "place_distance": place_distance,
+                    "safe_reference": "BASE_Z",
+                    "push_count": 2,
                     "force": settings["place_force"],
                     "threshold": settings["contact_force"],
                 },
