@@ -89,8 +89,8 @@ class SolarMotion:
     FRAME_PLACE_FORCE_DIRECTION = -1
     FRAME_PLACE_FORCE_REFERENCE = "base"
 
-    # FRAME Release 후 TOOL Z축 기준 Spiral은 place_frame()에서 고정값으로 사용한다.
-    # Outward 2.5회 + Inward 2.5회, 최대 반경 50mm, 축방향 이동 0mm.
+    # FRAME Release 후 TOOL 좌표 기준 X/Y Periodic 이동을 수행한다.
+    # 기본 진폭은 X 5mm, Y 90mm이며 X 1주기 후 Y 1주기를 반복한다.
 
     POST_INSERT_DIRECTION = 1       # TOOL +Z
 
@@ -103,6 +103,17 @@ class SolarMotion:
     SNAPFIT_INSERT_AXIS = "z"
     SNAPFIT_INSERT_DIRECTION = 1    # TOOL +Z
     SNAPFIT_INSERT_REFERENCE = "tool"
+
+    # SNAPFIT Place 진입용 move_arc 고정 도착점 (BASE 절대좌표)
+    SNAPFIT_PLACE_ARC_TARGET = (
+        382.99,
+        -117.23,
+        304.27,
+        156.18,
+        177.92,
+        63.5,
+    )
+    SNAPFIT_PLACE_ARC_HEIGHT_MM = 320.0
 
     CONTACT_THRESHOLD_N = 5.0
     CONTACT_POLL_INTERVAL = 0.02
@@ -131,31 +142,25 @@ class SolarMotion:
         from DSR_ROBOT2 import (
             movel,
             movec,
-            move_spiral,
+            mwait,
+            move_periodic,
             posx,
             trans,
             wait,
             DR_BASE,
             DR_TOOL,
-            DR_AXIS_Z,
-            DR_SPIRAL_OUTWARD,
-            DR_SPIRAL_INWARD,
-            DR_ROT_FORWARD,
         )
         from .robot_motion import RobotMotion
 
         self.movel = movel
         self.movec = movec
-        self.move_spiral = move_spiral
+        self.mwait = mwait
+        self.move_periodic = move_periodic
         self.posx = posx
         self.trans = trans
         self.wait = wait
         self.DR_BASE = DR_BASE
         self.DR_TOOL = DR_TOOL
-        self.DR_AXIS_Z = DR_AXIS_Z
-        self.DR_SPIRAL_OUTWARD = DR_SPIRAL_OUTWARD
-        self.DR_SPIRAL_INWARD = DR_SPIRAL_INWARD
-        self.DR_ROT_FORWARD = DR_ROT_FORWARD
 
         self.motion = RobotMotion()
         self.force = self.motion.force
@@ -342,11 +347,16 @@ class SolarMotion:
         return settings
 
     def _load_snapfit_pick_settings(self, parameters):
-        """SNAPFIT-A-* Pick 설정. 기존 POST_PIN용 키도 호환한다."""
+        """SNAPFIT-A-* Pick 설정. snap_fit/snapfit 키를 모두 호환한다."""
         settings = self._load_travel_settings(parameters)
-        settings["pick_distance"] = self._first_number(
+        settings["snapfit_pick_distance"] = self._first_number(
             parameters,
-            ("snapfit_pick_distance", "post_pin_pick_distance", "pick_distance"),
+            (
+                "snap_fit_pick_distance",
+                "snapfit_pick_distance",
+                "post_pin_pick_distance",
+                "pick_distance",
+            ),
             50.0,
             positive=True,
         )
@@ -392,7 +402,7 @@ class SolarMotion:
         return settings
 
     def _load_frame_settings(self, parameters):
-        """FRAME(CMP-FRAME-*) Pick/Place 이동/Force/Spiral 설정.
+        """FRAME(CMP-FRAME-*) Pick/Place 이동/Force/Periodic 설정.
 
         pickup_position / assembly_position:
             실제 Pick/Place 작업 좌표.
@@ -406,8 +416,8 @@ class SolarMotion:
         FRAME Place:
             assembly_position 도달 후 BASE -Z Force Place.
             측정 Force threshold는 frame_place_force_threshold를 사용한다.
-            Release 후 TOOL Z축 기준 Spiral을 고정값으로 수행하고
-            중심으로 복귀한 뒤 상승한다.
+            Release 후 DB에서 읽은 설정으로 TOOL X/Y Periodic을 수행하고
+            완료 후 안전 접근점으로 상승한다.
         """
         settings = self._load_travel_settings(parameters)
 
@@ -455,8 +465,36 @@ class SolarMotion:
             positive=True,
         )
 
-        # Spiral 파라미터는 DB에서 읽지 않는다.
-        # place_frame()에서 고정값으로 사용한다.
+        settings["periodic_x_amplitude"] = self._first_number(
+            parameters,
+            ("frame_periodic_x_amplitude",),
+            5.0,
+            nonnegative=True,
+        )
+        settings["periodic_y_amplitude"] = self._first_number(
+            parameters,
+            ("frame_periodic_y_amplitude",),
+            90.0,
+            nonnegative=True,
+        )
+        settings["periodic_period"] = self._first_number(
+            parameters,
+            ("frame_periodic_period",),
+            2.0,
+            positive=True,
+        )
+        settings["periodic_atime"] = self._first_number(
+            parameters,
+            ("frame_periodic_atime",),
+            0.5,
+            nonnegative=True,
+        )
+        settings["periodic_repeat"] = self._first_number(
+            parameters,
+            ("frame_periodic_repeat",),
+            2.0,
+            positive=True,
+        )
 
         return settings
 
@@ -1254,7 +1292,7 @@ class SolarMotion:
             self.motion.grasp()
             self.wait(0.2)
 
-            # 4. 파지 후 BASE -X 방향으로 50mm 이동
+            # 4. 파지 후 BASE +X 방향으로 50mm 이동
             self.node.get_logger().info(
                 "PIN Pick 파지 후 이동 - TOOL X -50.0mm"
             )
@@ -1576,7 +1614,7 @@ class SolarMotion:
             raise FramePickError(str(e)) from e
 
     def place_frame(self, parameters, components, operation_context=None):
-        """FRAME을 movec()로 접근한 뒤 Force Place하고 Spiral 후 이탈한다.
+        """FRAME을 movec()로 접근한 뒤 Force Place하고 Periodic 후 이탈한다.
 
         assembly_position:
             Force Place를 시작하는 정확한 Place 좌표.
@@ -1589,20 +1627,16 @@ class SolarMotion:
             frame_place_force       = Desired Force
             frame_place_force_threshold = 측정 Force 성공 threshold (기본 10N)
 
-        Release 후 Spiral:
-            TOOL Z축 기준.
-            Outward 2.5회 + Inward 2.5회로 총 5회.
-            최대 반경 50mm(5cm). 값은 코드에 고정.
-            축방향 이동 lmax=0mm.
-            따라서 중심으로 복귀한 뒤 Safe Place로 상승한다.
+        Release 후 Periodic:
+            TOOL X 5mm 1주기 후 TOOL Y 90mm 1주기를 순차 실행한다.
+            두 축 동작 전체를 DB의 반복 횟수만큼 반복한다.
 
         순서:
             movec(FRAME_MOVEC_VIA -> Safe Place)
             -> movel(assembly_position)
             -> BASE -Z Force Place
             -> Release
-            -> TOOL Z Spiral Outward
-            -> TOOL Z Spiral Inward
+            -> (TOOL X Periodic -> TOOL Y Periodic) x sequence_repeat
             -> movel(Safe Place)
         """
         self.node.get_logger().info("========== FRAME PLACE START ==========")
@@ -1697,57 +1731,82 @@ class SolarMotion:
             self.motion.release()
             self.wait(0.2)
 
-            # 5. TOOL Z축 기준 Spiral.
-            # Spiral 전용 파라미터는 DB에서 받지 않고 코드에 고정한다.
-            #
-            # 총 5회 회전:
-            #   Outward 2.5회 + Inward 2.5회
-            # 최대 반경:
-            #   50mm = 5cm
-            # 축방향 이동:
-            #   0mm
-            self.node.get_logger().info(
-                "========== FRAME TOOL Z SPIRAL START =========="
-            )
-            self.node.get_logger().info(
-                "FRAME Spiral 고정 설정 - "
-                "outward_rev=2.5, inward_rev=2.5, "
-                "rmax=50.0mm, lmax=0.0mm, "
-                f"vel={settings['speed']:.1f}, "
-                f"acc={settings['acc']:.1f}, "
-                "ref=TOOL, axis=Z"
-            )
+            # 5. Gripper Release 후 TOOL X 1주기 -> TOOL Y 1주기를
+            # DB의 frame_periodic_repeat 횟수만큼 순차 반복한다.
+            x_periodic_amp = [
+                settings["periodic_x_amplitude"],
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+            ]
+            y_periodic_amp = [
+                0.0,
+                settings["periodic_y_amplitude"],
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+            ]
+            periodic_period = settings["periodic_period"]
+            sequence_repeat = int(settings["periodic_repeat"])
 
-            # 5-1. 중심 -> 최대 반경 50mm
-            self.move_spiral(
-                rev=2.5,
-                rmax=50.0,
-                lmax=0.0,
-                vel=settings["speed"],
-                acc=settings["acc"],
-                axis=self.DR_AXIS_Z,
-                ref=self.DR_TOOL,
-                rad_dir=self.DR_SPIRAL_OUTWARD,
-                rot_dir=self.DR_ROT_FORWARD,
-            )
-
-            # 5-2. 최대 반경 -> 원래 중심
-            self.move_spiral(
-                rev=2.5,
-                rmax=50.0,
-                lmax=0.0,
-                vel=settings["speed"],
-                acc=settings["acc"],
-                axis=self.DR_AXIS_Z,
-                ref=self.DR_TOOL,
-                rad_dir=self.DR_SPIRAL_INWARD,
-                rot_dir=self.DR_ROT_FORWARD,
-            )
+            if sequence_repeat < 1:
+                raise ValueError("frame_periodic_repeat는 1 이상이어야 합니다.")
 
             self.node.get_logger().info(
-                "FRAME TOOL Z Spiral 완료 -> 중심 복귀 완료"
+                "========== FRAME TOOL X -> Y PERIODIC START =========="
             )
-            self.wait(0.2)
+            self.node.get_logger().info(
+                "FRAME Periodic 순차 설정 - "
+                f"x_amp={x_periodic_amp}, y_amp={y_periodic_amp}, "
+                f"period={periodic_period:.2f}s, "
+                f"atime={settings['periodic_atime']:.2f}s, "
+                f"sequence_repeat={sequence_repeat}, ref=TOOL"
+            )
+
+            for sequence_index in range(sequence_repeat):
+                current_sequence = sequence_index + 1
+                self.node.get_logger().info(
+                    f"FRAME Periodic sequence "
+                    f"{current_sequence}/{sequence_repeat} - TOOL X START"
+                )
+                x_result = self.move_periodic(
+                    amp=x_periodic_amp,
+                    period=periodic_period,
+                    atime=settings["periodic_atime"],
+                    repeat=1.0,
+                    ref=self.DR_TOOL,
+                )
+                if x_result != 0:
+                    raise RuntimeError(
+                        "FRAME TOOL X Periodic 이동 실패 - "
+                        f"sequence={current_sequence}, result={x_result}"
+                    )
+                self.wait(0.2)
+
+                self.node.get_logger().info(
+                    f"FRAME Periodic sequence "
+                    f"{current_sequence}/{sequence_repeat} - TOOL Y START"
+                )
+                y_result = self.move_periodic(
+                    amp=y_periodic_amp,
+                    period=periodic_period,
+                    atime=settings["periodic_atime"],
+                    repeat=1.0,
+                    ref=self.DR_TOOL,
+                )
+                if y_result != 0:
+                    raise RuntimeError(
+                        "FRAME TOOL Y Periodic 이동 실패 - "
+                        f"sequence={current_sequence}, result={y_result}"
+                    )
+                self.wait(0.2)
+
+            self.node.get_logger().info(
+                "FRAME TOOL X -> Y Periodic 순차 반복 완료"
+            )
 
             # 6. 동일한 Place 안전 접근점으로 상승
             self.node.get_logger().info(
@@ -1780,11 +1839,13 @@ class SolarMotion:
                     "force_direction": self.FRAME_PLACE_FORCE_DIRECTION,
                     "frame_place_force": settings["place_force"],
                     "frame_place_force_threshold": settings["contact_force"],
-                    "spiral_reference": "TOOL",
-                    "spiral_axis": "Z",
-                    "spiral_total_revolutions": 5.0,
-                    "spiral_radius_mm": 50.0,
-                    "spiral_lmax_mm": 0.0,
+                    "periodic_reference": "TOOL",
+                    "periodic_x_amplitude": x_periodic_amp,
+                    "periodic_y_amplitude": y_periodic_amp,
+                    "periodic_period_sec": periodic_period,
+                    "periodic_atime_sec": settings["periodic_atime"],
+                    "periodic_sequence_repeat": sequence_repeat,
+                    "periodic_axis_repeat": 1,
                 },
             )
             return True
@@ -1828,42 +1889,56 @@ class SolarMotion:
             settings = self._load_snapfit_pick_settings(parameters)
             component, pickup_pose = self._snapfit_pickup_input(components)
 
-            pick_distance = settings["pick_distance"]
+            snapfit_pick_distance = settings["snapfit_pick_distance"]
 
             # DB pickup_position 자체가 실제 파지 좌표다.
             safe_pick_pose = self.posx([
                 float(pickup_pose[0]),
                 float(pickup_pose[1]),
-                float(pickup_pose[2]) + pick_distance,
+                float(pickup_pose[2]) + snapfit_pick_distance,
                 float(pickup_pose[3]),
                 float(pickup_pose[4]),
                 float(pickup_pose[5]),
             ])
 
-            # 1. 안전 접근점
+            # 1. 안전 접근점. SDK 반환값을 검사하고 실제 완료까지 대기한다.
             self.node.get_logger().info(
                 "SNAPFIT Pick 안전 접근 - "
                 f"component={component.get('code')}, "
-                f"BASE Z +{pick_distance:.1f}mm"
+                f"distance=BASE +Z {snapfit_pick_distance:.1f}mm, "
+                f"target_pose={list(safe_pick_pose)}"
             )
-            self.movel(
+            safe_move_result = self.movel(
                 safe_pick_pose,
                 vel=settings["speed"],
                 acc=settings["acc"],
                 ref=self.DR_BASE,
             )
-            self.wait(0.5)
+            if safe_move_result != 0:
+                raise RuntimeError(
+                    "SNAPFIT Pick 안전 접근 MOVEL 실패 - "
+                    f"result={safe_move_result}, target={list(safe_pick_pose)}"
+                )
+            self.mwait()
+            self.wait(0.2)
 
-            # 2. 실제 Pick 위치
+            # 2. 실제 Pick 위치. SDK 반환값을 검사하고 완료까지 대기한다.
             self.node.get_logger().info(
-                "SNAPFIT 정확한 Pick 위치 이동"
+                "SNAPFIT 정확한 Pick 위치 이동 - "
+                f"target_pose={list(pickup_pose)}"
             )
-            self.movel(
+            pickup_move_result = self.movel(
                 pickup_pose,
                 vel=settings["speed"],
                 acc=settings["acc"],
                 ref=self.DR_BASE,
             )
+            if pickup_move_result != 0:
+                raise RuntimeError(
+                    "SNAPFIT Pick 위치 MOVEL 실패 - "
+                    f"result={pickup_move_result}, target={list(pickup_pose)}"
+                )
+            self.mwait()
             self.wait(0.2)
 
             # 3. 파지
@@ -1871,17 +1946,19 @@ class SolarMotion:
             self.motion.grasp()
             self.wait(0.2)
 
-            # 4. 동일한 안전 접근점으로 복귀
+            # 4. Grasp 위치에서 DB 거리만큼 BASE +Z 상대 상승
             self.node.get_logger().info(
-                "SNAPFIT Pick 완료 -> 안전 접근점 복귀"
+                "SNAPFIT Grasp 완료 -> BASE +Z 상대 상승 - "
+                f"distance={snapfit_pick_distance:.1f}mm"
             )
-            self.movel(
-                safe_pick_pose,
-                vel=settings["speed"],
-                acc=settings["acc"],
+            self.motion.move_z(
+                snapfit_pick_distance,
                 ref=self.DR_BASE,
+                velocity=settings["speed"],
+                acc=settings["acc"],
             )
-            self.wait(0.5)
+            self.mwait()
+            self.wait(0.2)
 
             self.node.get_logger().info(
                 "========== SNAPFIT PICK COMPLETE =========="
@@ -1892,7 +1969,7 @@ class SolarMotion:
                 status="COMPLETED",
                 detail={
                     "component_code": component.get("code"),
-                    "pick_distance": pick_distance,
+                    "snapfit_pick_distance": snapfit_pick_distance,
                     "safe_reference": "BASE_Z",
                 },
             )
@@ -1909,20 +1986,28 @@ class SolarMotion:
             raise SnapfitPickError(str(e)) from e
 
     def place_snapfit(self, parameters, components, operation_context=None):
-        """SNAPFIT을 TOOL +Z 방향으로 Force 삽입한다.
+        """SNAPFIT을 move_arc 진입 후 TOOL +Z 방향으로 Force 삽입한다.
 
         assembly_position:
             실제 Place/Force 삽입을 시작하는 정확한 좌표.
 
         place_distance:
-            assembly_position에서 TOOL -Z 방향으로 떨어진 안전 접근 거리.
+            Force 삽입/Release 완료 후 복귀할 안전거리.
+            assembly_position에서 TOOL -Z 방향으로 떨어진 위치를 사용한다.
 
-        순서:
-            Safe Place(TOOL -Z)
-            -> assembly_position
-            -> TOOL +Z Force Insert
+        진입 순서:
+            1. 실행 당시 현재 TCP(BASE) 좌표 측정
+            2. move_arc(
+                   start=현재 TCP,
+                   end=SNAPFIT_PLACE_ARC_TARGET,
+                   height=320mm
+               )
+            3. movel(assembly_position)
+
+        이후:
+            TOOL +Z Force Insert
             -> Gripper Release
-            -> Safe Place 복귀
+            -> TOOL -Z Safe Place 복귀
         """
         self.node.get_logger().info("========== SNAPFIT PLACE START ==========")
         self._publish_cycle_event(
@@ -1935,13 +2020,18 @@ class SolarMotion:
 
             place_distance = settings["place_distance"]
 
-            # assembly_position은 BASE 절대 좌표다.
-            # 안전 접근점은 그 pose에서 TOOL -Z 방향으로 place_distance만큼 이격한다.
+            # Force/Release 완료 후 복귀할 안전 접근점.
+            # assembly_position에서 TOOL -Z 방향으로 place_distance만큼 이격한다.
             safe_place_pose = self.trans(
                 assembly_pose,
                 [0.0, 0.0, -place_distance, 0.0, 0.0, 0.0],
                 self.DR_TOOL,
             )
+
+            arc_target = [
+                float(value)
+                for value in self.SNAPFIT_PLACE_ARC_TARGET
+            ]
 
             self.node.get_logger().info(
                 "SNAPFIT Place 설정 - "
@@ -1952,22 +2042,41 @@ class SolarMotion:
                 f"threshold={settings['contact_force']:.2f}N"
             )
 
-            # 1. TOOL -Z 안전 접근점으로 이동
-            self.node.get_logger().info(
-                "SNAPFIT Place 안전 접근 - "
-                f"assembly_position 기준 TOOL -Z {place_distance:.1f}mm"
+            # -----------------------------------------------------
+            # 1. 실행 당시 현재 TCP(BASE) 좌표 측정
+            # -----------------------------------------------------
+            current_pose, solution_space = self.motion.get_current_pose(
+                ref=self.DR_BASE
             )
-            self.movel(
-                safe_place_pose,
-                vel=settings["speed"],
-                acc=settings["acc"],
-                ref=self.DR_BASE,
+
+            self.node.get_logger().info(
+                "SNAPFIT Place 현재 TCP 측정 - "
+                f"pose={current_pose}, "
+                f"solution_space={solution_space}"
+            )
+
+            # -----------------------------------------------------
+            # 2. 현재 TCP -> 고정 중간 도착점 move_arc
+            # -----------------------------------------------------
+            self.node.get_logger().info(
+                "SNAPFIT Place move_arc 이동 - "
+                f"start={current_pose}, "
+                f"end={arc_target}, "
+                f"height={self.SNAPFIT_PLACE_ARC_HEIGHT_MM:.1f}mm"
+            )
+
+            self.motion.move_arc(
+                start=current_pose,
+                end=arc_target,
+                height=self.SNAPFIT_PLACE_ARC_HEIGHT_MM,
             )
             self.wait(0.5)
 
-            # 2. 실제 Place/Force 시작 좌표로 이동
+            # -----------------------------------------------------
+            # 3. move_arc 도착점 -> 정확한 assembly_position movel
+            # -----------------------------------------------------
             self.node.get_logger().info(
-                "SNAPFIT 정확한 assembly_position 이동"
+                "SNAPFIT move_arc 완료 -> 정확한 assembly_position MOVEL"
             )
             self.movel(
                 assembly_pose,
@@ -1977,7 +2086,9 @@ class SolarMotion:
             )
             self.wait(0.2)
 
-            # 3. TOOL +Z Force 삽입
+            # -----------------------------------------------------
+            # 4. TOOL +Z Force 삽입
+            # -----------------------------------------------------
             self.node.get_logger().info(
                 "========== SNAPFIT TOOL +Z FORCE INSERT START =========="
             )
@@ -1999,14 +2110,19 @@ class SolarMotion:
 
             self.wait(0.2)
 
-            # 4. 삽입 완료 후 놓기
+            # -----------------------------------------------------
+            # 5. 삽입 완료 후 Gripper Release
+            # -----------------------------------------------------
             self.node.get_logger().info(
                 "SNAPFIT Force 삽입 완료 -> Gripper Release"
             )
             self.motion.release()
             self.wait(0.5)
 
-            # 5. 처음 계산한 동일한 안전 접근점으로 복귀
+            # -----------------------------------------------------
+            # 6. 기존 안전거리 정책 유지:
+            #    assembly_position 기준 TOOL -Z 안전점으로 복귀
+            # -----------------------------------------------------
             if place_distance > 0:
                 self.node.get_logger().info(
                     "SNAPFIT Place 완료 -> TOOL -Z 안전 접근점 복귀"
@@ -2028,6 +2144,10 @@ class SolarMotion:
                 status="COMPLETED",
                 detail={
                     "component_code": component.get("code"),
+                    "approach_motion": "MOVE_ARC_THEN_MOVEL",
+                    "arc_start": "CURRENT_TCP_BASE",
+                    "arc_target": list(self.SNAPFIT_PLACE_ARC_TARGET),
+                    "arc_height_mm": self.SNAPFIT_PLACE_ARC_HEIGHT_MM,
                     "reference": "TOOL",
                     "axis": "TOOL_Z",
                     "direction": self.SNAPFIT_INSERT_DIRECTION,
