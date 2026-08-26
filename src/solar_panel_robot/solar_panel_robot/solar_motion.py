@@ -64,7 +64,7 @@ class SolarMotion:
     # PIN/SNAPFIT은 기존 POST_PIN 설계와 동일하게 TOOL +X 삽입을 기본으로 둔다.
     # 실제 지그에서 삽입축이 다르면 아래 axis/direction만 변경하면 된다.
     PIN_INSERT_AXIS = "x"
-    PIN_INSERT_DIRECTION = 1        # BASE +X
+    PIN_INSERT_DIRECTION = -1        # BASE -X
     PIN_INSERT_REFERENCE = "base"
     SNAPFIT_INSERT_AXIS = "x"
     SNAPFIT_INSERT_DIRECTION = 1    # TOOL +X
@@ -957,7 +957,7 @@ class SolarMotion:
             1. pickup_position으로 이동
             2. BASE -Z 방향으로 pick_distance만큼 하강
             3. Gripper Close
-            4. BASE -X 방향으로 50mm 이동
+            4. BASE +X 방향으로 50mm 이동
             5. BASE +Z 방향으로 pick_distance만큼 상승
         """
         self.node.get_logger().info("========== PIN PICK START ==========")
@@ -1002,12 +1002,12 @@ class SolarMotion:
             self.motion.grasp()
             self.wait(0.2)
 
-            # 4. 파지 후 BASE -X 방향으로 50mm 이동
+            # 4. 파지 후 BASE +X 방향으로 50mm 이동
             self.node.get_logger().info(
-                "PIN Pick 파지 후 이동 - BASE X -50.0mm"
+                "PIN Pick 파지 후 이동 - BASE X +50.0mm"
             )
             self.motion.move_x(
-                -50.0,
+                +50.0,
                 ref=self.DR_BASE,
                 velocity=settings["speed"],
                 acc=settings["acc"],
@@ -1046,16 +1046,16 @@ class SolarMotion:
             raise PinPickError(str(e)) from e
 
     def place_pin(self, parameters, components, operation_context=None):
-        """PIN-A-*를 BASE +X 방향으로 두 번 밀어 넣는다.
+        """PIN-A-*를 BASE -X 방향으로 두 번 밀어 넣는다.
 
         순서:
             place 위치 이동
-            -> BASE +X Force Push #1
+            -> BASE -X Force Push #1
             -> 반력 감지
             -> Gripper Release
             -> place 위치 복귀
             -> Gripper Close
-            -> BASE +X Force Push #2
+            -> BASE -X Force Push #2
             -> 반력 감지
         """
         self.node.get_logger().info("========== PIN PLACE START ==========")
@@ -1106,7 +1106,7 @@ class SolarMotion:
 
             if not first_result:
                 raise RuntimeError(
-                    "PIN 1차 BASE +X Force Place가 성공을 반환하지 않았습니다."
+                    "PIN 1차 BASE -X Force Place가 성공을 반환하지 않았습니다."
                 )
 
             self.wait(0.2)
@@ -1156,7 +1156,7 @@ class SolarMotion:
 
             if not second_result:
                 raise RuntimeError(
-                    "PIN 2차 BASE +X Force Place가 성공을 반환하지 않았습니다."
+                    "PIN 2차 BASE -X Force Place가 성공을 반환하지 않았습니다."
                 )
 
             self.wait(0.5)
