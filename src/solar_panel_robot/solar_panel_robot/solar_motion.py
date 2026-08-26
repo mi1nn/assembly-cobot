@@ -63,7 +63,7 @@ class SolarMotion:
 
     # 1차 Contact Seek에서 이 BASE Z 아래까지 이미 내려갔다면
     # 포스트가 정상적으로 구멍에 진입한 것으로 보고 25-point Search를 생략한다.
-    DIRECT_INSERT_BASE_Z_THRESHOLD_MM = 170.0
+    DIRECT_INSERT_BASE_Z_THRESHOLD_MM = 190.0
 
     SEARCH_X_OFFSETS_MM = (-0.6, -0.3, 0.0, 0.3, 0.6)
     SEARCH_Y_OFFSETS_MM = (-0.6, -0.3, 0.0, 0.3, 0.6)

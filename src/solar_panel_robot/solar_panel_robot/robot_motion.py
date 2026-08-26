@@ -119,6 +119,7 @@ class RobotMotion:
         """정지 후 Force 상태를 해제하고 안전 기본 Home 자세로 복귀한다."""
         print("[MOTION RESTORE] 시작", flush=True)
         self.force.all_off()
+        self.release()
         self.move_home()
         print("[MOTION RESTORE] 완료", flush=True)
         return True

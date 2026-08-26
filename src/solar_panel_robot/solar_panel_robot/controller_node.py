@@ -828,9 +828,9 @@ class SolarPanelControllerNode(Node):
                 "SolarMotion이 준비되지 않았습니다."
             )
 
-        # DB postA~postF는 모두 하나의 Post Cycle로 실행한다.
-        # 1 Cycle:
-        #   POST PICK -> POST PLACE -> POST PIN PICK -> POST PIN PLACE
+        # DB Post 작업은 현재 포스트 삽입 검증 Cycle로 실행한다.
+        # POST PICK -> POST PLACE -> MOTION STOP -> RELEASE
+        # -> SAFE RETREAT -> HOME
         if operation_code in POST_OPERATION_CODES:
             return self.solar.install_post_cycle(
                 parameters,
