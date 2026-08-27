@@ -35,7 +35,7 @@ ON = 1
 # 작업별 speed/acc/좌표/Force 값은 SolarMotion이 DB에서 받아 각 함수에 전달한다.
 # 아래 값은 로봇 공통 기본값과 초기 Home/Gripper 설정에만 사용한다.
 DEFAULT_VELOCITY = 50.0
-DEFAULT_ACC = 100.0
+DEFAULT_ACC = 50.0
 HOME_POSITION = [0.0, 0.0, 90.0, 0.0, 90.0, 0.0]
 GRASP_PORT = 1
 RELEASE_PORT = 2
