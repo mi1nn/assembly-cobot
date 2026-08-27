@@ -374,12 +374,6 @@ class SolarMotion:
         settings = self._load_travel_settings(parameters)
         settings.update(
             {
-                "retreat_distance": self._first_number(
-                    parameters,
-                    ("pin_place_retreat_distance", "place_retreat_distance"),
-                    30.0,
-                    nonnegative=True,
-                ),
                 "place_force": self._first_number(
                     parameters,
                     ("pin_place_force", "place_force"),
@@ -490,7 +484,7 @@ class SolarMotion:
         return settings
 
     def _load_snapfit_place_settings(self, parameters):
-        """SNAPFIT-A-* Place 설정."""
+        """SNAPFIT-A-* Place의 접근 거리, 강성, timeout 설정."""
         settings = self._load_travel_settings(parameters)
         settings.update(
             {
@@ -507,28 +501,6 @@ class SolarMotion:
                     ),
                     30.0,
                     nonnegative=True,
-                ),
-                "place_force": self._first_number(
-                    parameters,
-                    (
-                        "snapfit_place_force",
-                        "post_pin_place_force",
-                        "place_force",
-                        "post_place_force",
-                    ),
-                    40.0,
-                    positive=True,
-                ),
-                "contact_force": self._first_number(
-                    parameters,
-                    (
-                        "snapfit_place_force_threshold",
-                        "post_pin_place_force_threshold",
-                        "place_contact_force",
-                        "post_place_force_threshold",
-                    ),
-                    20.0,
-                    positive=True,
                 ),
                 "stiffness": self._first_number(
                     parameters,
@@ -550,7 +522,7 @@ class SolarMotion:
         return settings
 
     def _load_panel_pick_settings(self, parameters):
-        """PANEL Pick 이동/파지 설정을 읽는다."""
+        """PANEL Pick에서 실제 사용하는 이동 설정만 읽는다."""
         settings = self._load_travel_settings(parameters)
         settings.update({
             "pick_distance": self._first_number(
@@ -559,28 +531,6 @@ class SolarMotion:
                 100.0,
                 positive=True,
             ),
-            "pick_speed": self._first_number(
-                parameters,
-                ("panel_pick_speed",),
-                30.0,
-                positive=True,
-            ),
-            "pick_acc": self._first_number(
-                parameters,
-                ("panel_pick_acceleration",),
-                50.0,
-                positive=True,
-            ),
-            "grasp_wait": self._first_number(
-                parameters,
-                ("panel_grasp_wait",),
-                1.0,
-                nonnegative=True,
-            ),
-            "movejx_solution": int(self._first_number(
-                parameters, ("panel_movejx_solution", "movejx_solution"), 2.0,
-                nonnegative=True,
-            )),
         })
         return settings
 
@@ -606,14 +556,8 @@ class SolarMotion:
             "release_retreat_distance": self._first_number(
                 parameters, ("panel_release_retreat_distance",), 50.0, positive=True
             ),
-            "periodic_x_amplitude": self._first_number(
-                parameters, ("panel_periodic_x_amplitude",), 5.0, nonnegative=True
-            ),
             "periodic_y_amplitude": self._first_number(
                 parameters, ("panel_periodic_y_amplitude",), 0.0, nonnegative=True
-            ),
-            "periodic_z_amplitude": self._first_number(
-                parameters, ("panel_periodic_z_amplitude",), 0.0, nonnegative=True
             ),
             "periodic_period": self._first_number(
                 parameters, ("panel_periodic_period",), 2.0, positive=True
@@ -631,14 +575,6 @@ class SolarMotion:
         component, assembly_pose = self._assembly_input(
             components, self.PANEL_COMPONENT_PREFIX, "PANEL"
         )
-        if "assembly_release_position" not in component: # 뺄것1
-            raise ValueError(
-                f"PANEL({component.get('code')}) assembly_release_position 누락"
-            )
-        release_pose = self._position_to_posx(
-            component["assembly_release_position"],
-            "PANEL.assembly_release_position",
-        )
         side_positions = component.get("assembly_side_positions")
         if not isinstance(side_positions, list) or len(side_positions) != 2:
             raise ValueError(
@@ -650,7 +586,7 @@ class SolarMotion:
             )
             for index, position in enumerate(side_positions)
         ]
-        return component, assembly_pose, release_pose, side_poses
+        return component, assembly_pose, side_poses
 
 
     def _get_component(self, components, prefix, label):
@@ -1501,10 +1437,10 @@ class SolarMotion:
                     "axis": "TOOL_X",
                     "direction": self.PIN_INSERT_DIRECTION,
                     "push_count": 2,
-                    "first_force": 20.0,
-                    "first_threshold": 10.0,
-                    "second_force": 50.0,
-                    "second_threshold": 40.0,
+                    "first_force": settings["place_force"],
+                    "first_threshold": settings["contact_force"],
+                    "second_force": settings["place_force"],
+                    "second_threshold": settings["contact_force"],
                 },
             )
             return True
@@ -1614,9 +1550,9 @@ class SolarMotion:
                 status="COMPLETED",
                 detail={
                     "component_code": component.get("code"),
-                    "motion": "MOVEL_X2_BLEND",
+                    "motion": "MOVEL_VIA_TO_PICK_BLEND",
                     "movel_via": list(self.PANEL_MOVE_VIA),
-                    "blend_radius_mm": 20.0,
+                    "blend_radius_mm": 30.0,
                     "pick_distance": pick_distance,
                     "safe_reference": "BASE_Z",
                 },
@@ -1642,7 +1578,7 @@ class SolarMotion:
 
             try:
                 settings = self._load_panel_place_settings(parameters)
-                component, assembly_pose, release_pose, side_poses = (
+                component, assembly_pose, side_poses = (
                     self._panel_place_input(components)
                 )
                 
@@ -1698,7 +1634,7 @@ class SolarMotion:
 
                 # 1-2. Panel 전용 경유점 -> Panel place 지점
                 self.node.get_logger().info(
-                    "PANEL Pick 2차 MOVEL - 경유점 -> Assembly Position - "
+                    "PANEL Place 2차 MOVEL - 경유점 -> Assembly Position - "
                     f"assembly_position={[float(assembly_pose[i]) for i in range(6)]}, "
                 )
                 second_move_result = self.movel(
@@ -1712,12 +1648,16 @@ class SolarMotion:
                     and second_move_result < 0
                 ):
                     raise RuntimeError(
-                        "PANEL Safe Pick MOVEL 실행 실패: "
+                        "PANEL Assembly Position MOVEL 실행 실패: "
                         f"result={second_move_result}"
                     )
                 self.wait(0.5)
 
 
+                self.node.get_logger().info(
+                    "PANEL Release 상대 위치 이동 - "
+                    "BASE offset=[-100.0, 0.0, -40.0, 0.0, -30.0, 0.0]"
+                )
                 self.movel(
                     self.posx([-100.0, 0.0, -40.0, 0.0, -30.0, 0.0]),
                     vel=settings["place_speed"],
@@ -1817,8 +1757,10 @@ class SolarMotion:
                     status="COMPLETED",
                     detail={
                         "component_code": component.get("code"),
-                        "motion": "MOVEC_TO_ASSEMBLY",
-                        "movec_via": list(self.PANEL_MOVE_VIA),
+                        "motion": "MOVEL_ROTATE_VIA_TO_ASSEMBLY",
+                        "movel_via": list(self.PANEL_MOVE_VIA),
+                        "release_move_reference": "BASE",
+                        "release_move_offset": [-100.0, 0.0, -40.0, 0.0, -30.0, 0.0],
                         "release_retreat_reference": "TOOL",
                         "release_retreat_axis": "TOOL_Z",
                         "release_retreat_direction": -1,
@@ -2326,8 +2268,8 @@ class SolarMotion:
                 f"place_distance={place_distance:.1f}mm, "
                 f"assembly_target={list(assembly_pose)}, "
                 f"safe_target={list(safe_place_pose)}, "
-                f"force={settings['place_force']:.2f}N, "
-                f"threshold={settings['contact_force']:.2f}N"
+                "first_force=20.00N, first_threshold=10.00N, "
+                "second_force=10.00N, second_threshold=5.00N"
             )
 
 
@@ -2469,8 +2411,10 @@ class SolarMotion:
                     "place_distance": place_distance,
                     "safe_reference": "BASE_Z",
                     "push_count": 2,
-                    "force": settings["place_force"],
-                    "threshold": settings["contact_force"],
+                    "first_force": 20.0,
+                    "first_threshold": 10.0,
+                    "second_force": 10.0,
+                    "second_threshold": 5.0,
                 },
             )
             return True

@@ -55,7 +55,7 @@ INSERT INTO operation (
  '[{"code":"CMP-FRAME-A","name":"프레임 A","quantity":1,"pickup_position":{"x":1100,"y":200,"z":300,"frame":"BASE"},"assembly_position":{"x":3000,"y":2500,"z":700,"frame":"BASE"}},{"code":"CMP-BRKT-L","name":"브라켓 L형","quantity":8},{"code":"CMP-BOLT-M16","name":"볼트 M16","quantity":32}]'),
 (8, 1, 'solarpanelA', '태양광 패널 A 설치', 8, '패널 배치 및 양측 위치 검사', TRUE, 1200,
  '{"speed":100,"acceleration":200,"panel_pick_distance":100.0,"panel_place_distance":50.0,"panel_place_speed":30.0,"panel_place_acceleration":50.0,"panel_release_wait":1.0,"panel_release_retreat_distance":30.0,"panel_periodic_y_amplitude":5.0,"panel_periodic_period":2.0,"panel_periodic_atime":0.5,"panel_periodic_repeat":1.0}',
- '[{"code":"CMP-PANEL-A","name":"태양광 패널 A","category":"태양광 패널","quantity":1,"pickup_position":{"x":-423.79,"y":-430.08,"z":158.03,"A":163.0,"B":179.65,"C":163.6},"assembly_position":{"x":470.11,"y":80.35,"z":348.06,"A":85.67,"B":-179.41,"C":86.05},"assembly_release_position":{"x":364.82,"y":71.54,"z":311.41,"A":173.77,"B":-138.44,"C":175.81},"assembly_side_positions":[{"x":384.96,"y":304.7,"z":220.0,"A":115.44,"B":-179.59,"C":116.03},{"x":366.34,"y":-138.45,"z":220.0,"A":157.72,"B":179.68,"C":158.07}]}]');
+ '[{"code":"CMP-PANEL-A","name":"태양광 패널 A","category":"태양광 패널","quantity":1,"pickup_position":{"x":-423.79,"y":-430.08,"z":158.03,"A":163.0,"B":179.65,"C":163.6},"assembly_position":{"x":470.11,"y":80.35,"z":348.06,"A":85.67,"B":-179.41,"C":86.05},"assembly_side_positions":[{"x":384.96,"y":304.7,"z":220.0,"A":115.44,"B":-179.59,"C":116.03},{"x":366.34,"y":-138.45,"z":220.0,"A":157.72,"B":179.68,"C":158.07}]}]');
 
 
 INSERT INTO robot (
