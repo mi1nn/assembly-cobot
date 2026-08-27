@@ -41,6 +41,22 @@ class PanelPlaceError(Exception):
     pass
 
 
+class PostCycleError(Exception):
+    pass
+
+
+class PostUnitCycleError(Exception):
+    pass
+
+
+class FrameSnapfitACycleError(Exception):
+    pass
+
+
+class PanelCycleError(Exception):
+    pass
+
+
 class SolarMotion:
     """DB 최종 계약에 맞춘 Post 1개 설치 Cycle.
 
@@ -680,6 +696,13 @@ class SolarMotion:
             ),
         })
         return settings
+
+    def _panel_pickup_input(self, components):
+        return self._pickup_input(
+            components,
+            self.PANEL_COMPONENT_PREFIX,
+            "PANEL",
+        )
 
     def _panel_place_input(self, components):
         component, assembly_pose = self._assembly_input(
@@ -1919,7 +1942,6 @@ class SolarMotion:
     # =========================================================
     # FRAME PICK / PLACE
     # =========================================================
-
     def pick_frame(self, parameters, components, operation_context=None):
         """FRAME을 공통 경유점 기반 movec()로 접근해 정확한 위치에서 파지한다."""
         self.node.get_logger().info("========== FRAME PICK START ==========")
@@ -2015,6 +2037,8 @@ class SolarMotion:
                 operation_context, phase="FRAME_PICK", status="FAILED", error=e
             )
             raise FramePickError(str(e)) from e
+
+
 
     def place_frame(self, parameters, components, operation_context=None):
         """FRAME을 movec()로 접근한 뒤 Force Place하고 Periodic 후 이탈한다.
@@ -2619,6 +2643,329 @@ class SolarMotion:
             except Exception:
                 pass
             raise SnapfitPlaceError(str(e)) from e
+
+    # =========================================================
+    # DB OPERATION UNIT CYCLES
+    # =========================================================
+
+    def install_post_pick_place_cycle(
+        self,
+        parameters,
+        components,
+        operation_context=None,
+    ):
+        """DB operation 1개로 POST Pick + Place 전체 동작을 수행한다.
+
+        실제 모션 전 pickup_position / assembly_position 및 필요한 parameter를
+        먼저 검증한 뒤 기존 install_post_cycle()을 그대로 실행한다.
+        """
+        self.node.get_logger().info(
+            "========== POST PICK + PLACE UNIT START =========="
+        )
+        self._publish_cycle_event(
+            operation_context,
+            phase="POST_PICK_PLACE_UNIT",
+            status="STARTED",
+        )
+
+        try:
+            post_component, _ = self._post_pickup_input(components)
+            self._post_assembly_input(components)
+            self._load_pick_settings(parameters)
+            self._load_post_place_settings(parameters)
+
+            self.node.get_logger().info(
+                "POST Unit Preflight 완료 - "
+                f"component={post_component.get('code')}"
+            )
+
+            result = self.install_post_cycle(
+                parameters,
+                components,
+                operation_context,
+            )
+
+            self._publish_cycle_event(
+                operation_context,
+                phase="POST_PICK_PLACE_UNIT",
+                status="COMPLETED",
+                detail={
+                    "post_component_code": post_component.get("code"),
+                },
+            )
+            return result
+
+        except Exception as e:
+            self.node.get_logger().error(
+                f"POST Pick + Place Unit 실패: {e}"
+            )
+            self._publish_cycle_event(
+                operation_context,
+                phase="POST_PICK_PLACE_UNIT",
+                status="FAILED",
+                error=e,
+            )
+            try:
+                self.force.all_off()
+            except Exception:
+                pass
+            raise PostUnitCycleError(str(e)) from e
+
+    def install_frame_snapfit_a_cycle(
+        self,
+        parameters,
+        components,
+        operation_context=None,
+    ):
+        """DB operation 1개로 FRAME + SNAPFIT-A 6개 전체 조립을 수행한다.
+
+        순서:
+            FRAME Pick
+            -> FRAME Place
+            -> Home
+            -> SNAPFIT-A-01 Pick/Place
+            -> Home
+            -> SNAPFIT-A-02 Pick/Place
+            -> Home
+            -> ...
+            -> SNAPFIT-A-06 Pick/Place
+            -> Gripper Open
+            -> Home
+
+        SNAPFIT-A-01~06은 operation_code가 아니라 components 내부의 component code다.
+        따라서 DB operation_code는 frameA 하나만 사용하고, 이 Cycle 내부에서
+        SNAPFIT-A-* component를 모두 찾아 code 순서대로 처리한다.
+        """
+        self.node.get_logger().info(
+            "========== FRAME + SNAPFIT-A UNIT START =========="
+        )
+        self._publish_cycle_event(
+            operation_context,
+            phase="FRAME_SNAPFIT_A_UNIT",
+            status="STARTED",
+        )
+
+        try:
+            # -------------------------------------------------
+            # 1. 전체 입력 선검증
+            # -------------------------------------------------
+            frame_component, _ = self._frame_pickup_input(components)
+            self._frame_assembly_input(components)
+
+            snapfit_components = []
+            for component in components:
+                if not isinstance(component, dict):
+                    continue
+                code = str(component.get("code", "")).strip()
+                if code.startswith(self.SNAPFIT_COMPONENT_PREFIX):
+                    snapfit_components.append(component)
+
+            # SNAPFIT-A-01 ~ SNAPFIT-A-06 순서 보장
+            snapfit_components.sort(
+                key=lambda item: str(item.get("code", "")).strip()
+            )
+
+            if len(snapfit_components) != 6:
+                raise ValueError(
+                    "frameA operation에는 SNAPFIT-A component가 "
+                    f"정확히 6개 필요합니다. received={len(snapfit_components)}"
+                )
+
+            expected_codes = [
+                f"{self.SNAPFIT_COMPONENT_PREFIX}{index:02d}"
+                for index in range(1, 7)
+            ]
+            received_codes = [
+                str(component.get("code", "")).strip()
+                for component in snapfit_components
+            ]
+            if received_codes != expected_codes:
+                raise ValueError(
+                    "SNAPFIT-A component code가 SNAPFIT-A-01~06과 일치해야 합니다. "
+                    f"received={received_codes}"
+                )
+
+            # 각 SNAPFIT의 pickup/assembly 좌표를 로봇 이동 전에 전부 검증한다.
+            for component in snapfit_components:
+                single_component = [component]
+                self._snapfit_pickup_input(single_component)
+                self._snapfit_assembly_input(single_component)
+
+            self._load_frame_settings(parameters)
+            self._load_snapfit_pick_settings(parameters)
+            self._load_snapfit_place_settings(parameters)
+
+            self.node.get_logger().info(
+                "FRAME + SNAPFIT-A Unit Preflight 완료 - "
+                f"frame={frame_component.get('code')}, "
+                f"snapfits={received_codes}"
+            )
+
+            # -------------------------------------------------
+            # 2. FRAME Pick + Place
+            # -------------------------------------------------
+            self.pick_frame(parameters, components, operation_context)
+            self.place_frame(parameters, components, operation_context)
+
+            self.node.get_logger().info(
+                "FRAME 완료 -> SNAPFIT-A 작업 전 Home 이동"
+            )
+            self.motion.move_home()
+            self.wait(0.5)
+
+            # -------------------------------------------------
+            # 3. SNAPFIT-A-01 ~ 06 순차 Pick + Place
+            # -------------------------------------------------
+            for index, snapfit_component in enumerate(
+                snapfit_components, start=1
+            ):
+                snapfit_code = str(
+                    snapfit_component.get("code", "")
+                ).strip()
+
+                self.node.get_logger().info(
+                    "========== SNAPFIT-A UNIT "
+                    f"{index}/6 START : {snapfit_code} =========="
+                )
+
+                # 이전 Snapfit의 2차 Push 종료 후 Gripper가 닫혀 있을 수 있으므로
+                # 다음 부품 Pick 전에 항상 Open 상태를 보장한다.
+                self.force.all_off()
+                self.motion.release()
+                self.wait(0.2)
+
+                # 기존 pick_snapfit/place_snapfit은 prefix 첫 항목을 선택하므로
+                # 현재 처리할 component 하나만 전달한다.
+                single_component = [snapfit_component]
+
+                self.pick_snapfit(
+                    parameters,
+                    single_component,
+                    operation_context,
+                )
+                self.place_snapfit(
+                    parameters,
+                    single_component,
+                    operation_context,
+                )
+
+                self.force.all_off()
+                self.motion.release()
+                self.wait(0.2)
+
+                self.node.get_logger().info(
+                    "SNAPFIT-A "
+                    f"{index}/6 COMPLETE : {snapfit_code}"
+                )
+
+                # 각 Snapfit 사이의 이동 경로를 동일하게 유지한다.
+                self.motion.move_home()
+                self.wait(0.5)
+
+            # -------------------------------------------------
+            # 4. Unit 완료
+            # -------------------------------------------------
+            self.node.get_logger().info(
+                "========== FRAME + SNAPFIT-A UNIT COMPLETE =========="
+            )
+            self._publish_cycle_event(
+                operation_context,
+                phase="FRAME_SNAPFIT_A_UNIT",
+                status="COMPLETED",
+                detail={
+                    "frame_component_code": frame_component.get("code"),
+                    "snapfit_component_codes": received_codes,
+                    "snapfit_count": len(snapfit_components),
+                },
+            )
+            return True
+
+        except Exception as e:
+            self.node.get_logger().error(
+                f"FRAME + SNAPFIT-A Unit 실패: {e}"
+            )
+            self._publish_cycle_event(
+                operation_context,
+                phase="FRAME_SNAPFIT_A_UNIT",
+                status="FAILED",
+                error=e,
+            )
+            try:
+                self.force.all_off()
+            except Exception:
+                pass
+            raise FrameSnapfitACycleError(str(e)) from e
+
+    def install_panel_cycle(
+        self,
+        parameters,
+        components,
+        operation_context=None,
+    ):
+        """DB operation 1개로 PANEL Pick + Place 전체 동작을 수행한다.
+
+        place_panel() 내부의 Release / 이탈 / 양측 검사까지 모두 포함하며,
+        완료 후 Home으로 복귀한다.
+        """
+        self.node.get_logger().info(
+            "========== PANEL PICK + PLACE UNIT START =========="
+        )
+        self._publish_cycle_event(
+            operation_context,
+            phase="PANEL_PICK_PLACE_UNIT",
+            status="STARTED",
+        )
+
+        try:
+            # Place는 assembly_position 외 release/side 좌표도 필요하므로 선검증한다.
+            panel_component, _ = self._panel_pickup_input(components)
+            self._panel_place_input(components)
+            self._load_panel_pick_settings(parameters)
+            self._load_panel_place_settings(parameters)
+
+            self.node.get_logger().info(
+                "PANEL Unit Preflight 완료 - "
+                f"component={panel_component.get('code')}"
+            )
+
+            self.pick_panel(parameters, components, operation_context)
+            self.place_panel(parameters, components, operation_context)
+
+            self.force.all_off()
+            self.node.get_logger().info(
+                "PANEL Pick + Place 완료 -> Home 이동"
+            )
+            self.motion.move_home()
+            self.wait(0.5)
+
+            self.node.get_logger().info(
+                "========== PANEL PICK + PLACE UNIT COMPLETE =========="
+            )
+            self._publish_cycle_event(
+                operation_context,
+                phase="PANEL_PICK_PLACE_UNIT",
+                status="COMPLETED",
+                detail={
+                    "panel_component_code": panel_component.get("code"),
+                },
+            )
+            return True
+
+        except Exception as e:
+            self.node.get_logger().error(
+                f"PANEL Pick + Place Unit 실패: {e}"
+            )
+            self._publish_cycle_event(
+                operation_context,
+                phase="PANEL_PICK_PLACE_UNIT",
+                status="FAILED",
+                error=e,
+            )
+            try:
+                self.force.all_off()
+            except Exception:
+                pass
+            raise PanelCycleError(str(e)) from e
 
     # =========================================================
     # Full Post cycle
