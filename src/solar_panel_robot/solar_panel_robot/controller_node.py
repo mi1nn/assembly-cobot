@@ -76,19 +76,8 @@ POST_OPERATION_CODES = {
 SUPPORTED_OPERATION_CODES = POST_OPERATION_CODES | {
     "POST_PICK",
     "POST_PLACE",
-<<<<<<< HEAD
-    "PIN_PICK",
-    "PIN_PLACE",
-    "FRAME_PICK",
-    "FRAME_PLACE",
-    "PANEL_PICK",
-    "PANEL_PLACE",
-    "SNAPFIT_PICK",
-    "SNAPFIT_PLACE",
-=======
     "POST_PIN_PICK",
     "POST_PIN_PLACE",
->>>>>>> origin/feature
     "POST_INSTALL",
     "PANEL_PICK",
     "SOLAR_FULL",
