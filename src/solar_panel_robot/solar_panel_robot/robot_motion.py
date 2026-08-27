@@ -328,69 +328,51 @@ class RobotMotion:
         end,
         height=500,
         steps=6,
+        velocity=None,
+        acc=None,
     ):
-        """
-        start -> end 사이에 포물선 형태의 중간점을 생성하고
-        movesx()로 spline 이동한다.
-        """
-
+        """start -> end 포물선 점열을 생성해 BASE 기준 movesx()로 이동한다."""
         if steps < 2:
-            raise ValueError(
-                "steps must be 2 or greater"
-            )
-
+            raise ValueError("steps must be 2 or greater")
         if len(start) != 6 or len(end) != 6:
-            raise ValueError(
-                "start and end must contain 6 values"
-            )
+            raise ValueError("start and end must contain 6 values")
 
+        height = float(height)
+        velocity = self.velocity if velocity is None else float(velocity)
+        acc = self.acc if acc is None else float(acc)
         points = []
 
         for i in range(1, steps + 1):
             t = float(i) / steps
-
             x = start[0] + (end[0] - start[0]) * t
             y = start[1] + (end[1] - start[1]) * t
-
-            z_linear = (
-                start[2]
-                + (end[2] - start[2]) * t
-            )
-            z_arc = 4 * height * t * (1 - t)
-            z = z_linear + z_arc
-
-            rx = start[3] + (end[3] - start[3]) * t
-            ry = start[4] + (end[4] - start[4]) * t
-            rz = start[5] + (end[5] - start[5]) * t
-
-            points.append(
-                posx(
-                    x,
-                    y,
-                    z,
-                    rx,
-                    ry,
-                    rz,
-                )
-            )
+            z_linear = start[2] + (end[2] - start[2]) * t
+            z = z_linear + 4 * height * t * (1 - t)
+            angles = []
+            for start_angle, end_angle in zip(start[3:], end[3:]):
+                # -180/180 경계를 가로지를 때 불필요한 장회전을 피한다.
+                delta = (end_angle - start_angle + 180.0) % 360.0 - 180.0
+                angles.append(start_angle + delta * t)
+            points.append(posx(x, y, z, *angles))
 
         print(
-            f"[ARC] spline 이동 시작: "
-            f"height={height}, steps={steps}",
+            "[ARC] spline 이동 시작: "
+            f"start={[float(v) for v in start]}, "
+            f"end={[float(v) for v in end]}, "
+            f"height={height}, steps={steps}, vel={velocity}, acc={acc}",
             flush=True,
         )
-
-        movesx(
+        result = movesx(
             points,
-            v=self.velocity,
-            a=self.acc,
+            v=velocity,
+            a=acc,
             ref=DR_BASE,
         )
+        if result != 0:
+            raise RuntimeError(f"Arc spline 이동 실패: result={result}")
 
-        print(
-            "[ARC] spline 이동 완료",
-            flush=True,
-        )
+        print("[ARC] spline 이동 명령 완료", flush=True)
+        return True
 
     # =========================================================
     # Current Pose / Force Probe
