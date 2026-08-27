@@ -8,6 +8,9 @@ const DASHBOARD_API_URL =
 const WORK_ORDERS_API_URL =
     "/api/v1/work-orders";
 
+const ACTIVE_INSTALLATIONS_API_URL =
+    "/api/v1/installations/active";
+
 const WORK_EXECUTIONS_API_URL =
     "/api/v1/executions/work-executions";
 
@@ -44,7 +47,10 @@ document.addEventListener(
 
         refreshButton.addEventListener(
             "click",
-            () => loadWorkOrders(true),
+            () => Promise.all([
+                loadActiveInstallations(true),
+                loadWorkOrders(true),
+            ]),
         );
 
         historyRefreshButton.addEventListener(
@@ -75,6 +81,7 @@ async function loadInitialData() {
     await loadDashboard();
 
     await Promise.all([
+        loadActiveInstallations(),
         loadWorkOrders(),
         loadSystemLogs(),
         loadRecentLogs(),
@@ -86,6 +93,7 @@ async function refreshApplicationData() {
     await loadDashboard(false);
 
     await Promise.all([
+        loadActiveInstallations(false),
         loadWorkOrders(false),
         loadSystemLogs(false),
         loadRecentLogs(false),
@@ -2260,4 +2268,85 @@ function formatLogTimestamp(value) {
     }
 
     return timestamp.toLocaleString("ko-KR");
+}
+
+async function loadActiveInstallations(showLoading = true) {
+    const list = document.getElementById("active-installation-list");
+
+    if (showLoading) {
+        list.textContent = "Installation Target을 불러오는 중입니다.";
+    }
+
+    try {
+        const response = await fetch(ACTIVE_INSTALLATIONS_API_URL, {
+            method: "GET",
+            headers: {"Accept": "application/json"},
+        });
+        const responseData = await response.json();
+
+        if (!response.ok || !responseData.success) {
+            throw new Error(responseData.error?.message
+                ?? "Installation Target 조회에 실패했습니다.");
+        }
+
+        renderActiveInstallations(responseData.data);
+    } catch (error) {
+        list.className = "error-message";
+        list.textContent = "Installation Target을 불러오지 못했습니다.";
+        console.error("Failed to load active installations:", error);
+    }
+}
+
+function renderActiveInstallations(installations) {
+    const list = document.getElementById("active-installation-list");
+    list.replaceChildren();
+    list.className = "active-installation-list";
+
+    if (!Array.isArray(installations)) {
+        list.className = "error-message";
+        list.textContent = "올바르지 않은 Installation Target 응답입니다.";
+        return;
+    }
+
+    if (installations.length === 0) {
+        const emptyMessage = document.createElement("p");
+        emptyMessage.className = "empty-message";
+        emptyMessage.textContent =
+            "현재 ACTIVE 상태인 Installation Target이 없습니다.";
+        list.appendChild(emptyMessage);
+        return;
+    }
+
+    for (const installation of installations) {
+        const card = document.createElement("article");
+        card.className = "installation-target-card";
+
+        const header = document.createElement("div");
+        header.className = "work-order-card-header";
+        const titleArea = document.createElement("div");
+        const targetCode = document.createElement("p");
+        targetCode.className = "order-number";
+        targetCode.textContent = installation.target_code ?? "-";
+        const targetName = document.createElement("h3");
+        targetName.textContent = installation.target_name ?? "-";
+        titleArea.append(targetCode, targetName);
+
+        const status = document.createElement("span");
+        status.className = "status-badge";
+        status.dataset.status = installation.status;
+        status.textContent = installation.status ?? "UNKNOWN";
+        header.append(titleArea, status);
+
+        const details = document.createElement("div");
+        details.className = "work-order-details";
+        details.append(
+            createDetail("Project", installation.project_name ?? "-"),
+            createDetail("Project Code", installation.project_code ?? "-"),
+            createDetail("Site", installation.site_name ?? "-"),
+            createDetail("Installation ID", installation.installation_id),
+        );
+
+        card.append(header, details);
+        list.appendChild(card);
+    }
 }
