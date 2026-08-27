@@ -76,13 +76,10 @@ POST_OPERATION_CODES = {
 SUPPORTED_OPERATION_CODES = POST_OPERATION_CODES | {
     "POST_PICK",
     "POST_PLACE",
-    "PIN_PICK",
-    "PIN_PLACE",
-    "FRAME_PICK",
-    "FRAME_PLACE",
-    "SNAPFIT_PICK",
-    "SNAPFIT_PLACE",
+    "POST_PIN_PICK",
+    "POST_PIN_PLACE",
     "POST_INSTALL",
+    "PANEL_PICK",
     "SOLAR_FULL",
 }
 
@@ -832,7 +829,9 @@ class SolarPanelControllerNode(Node):
                 "SolarMotion이 준비되지 않았습니다."
             )
 
-        # 모든 post 작업은 POST 설치 후 해당 PIN 체결까지 하나의 공정으로 실행한다.
+        # DB Post 작업은 현재 포스트 삽입 검증 Cycle로 실행한다.
+        # POST PICK -> POST PLACE -> MOTION STOP -> RELEASE
+        # -> SAFE RETREAT -> HOME
         if operation_code in POST_OPERATION_CODES:
             return self.solar.install_post_cycle(
                 parameters,
@@ -855,42 +854,15 @@ class SolarPanelControllerNode(Node):
                 operation_context=operation_context,
             )
 
-        if operation_code == "PIN_PICK":
-            return self.solar.pick_pin(
+        if operation_code == "POST_PIN_PICK":
+            return self.solar.pick_post_pin(
                 parameters,
                 components,
                 operation_context=operation_context,
             )
 
-        if operation_code == "PIN_PLACE":
-            return self.solar.place_pin(
-                parameters,
-                components,
-                operation_context=operation_context,
-            )
-        if operation_code == "FRAME_PICK":
-            return self.solar.pick_frame(
-                parameters,
-                components,
-                operation_context=operation_context,
-            )
-
-        if operation_code == "FRAME_PLACE":
-            return self.solar.place_frame(
-                parameters,
-                components,
-                operation_context=operation_context,
-            )
-
-        if operation_code == "SNAPFIT_PICK":
-            return self.solar.pick_snapfit(
-                parameters,
-                components,
-                operation_context=operation_context,
-            )
-
-        if operation_code == "SNAPFIT_PLACE":
-            return self.solar.place_snapfit(
+        if operation_code == "POST_PIN_PLACE":
+            return self.solar.place_post_pin(
                 parameters,
                 components,
                 operation_context=operation_context,
@@ -899,6 +871,15 @@ class SolarPanelControllerNode(Node):
         # POST_INSTALL은 직접 테스트용 Post Cycle 별칭으로 유지한다.
         if operation_code == "POST_INSTALL":
             return self.solar.install_post_cycle(
+                parameters,
+                components,
+                operation_context=operation_context,
+            )
+
+        # PANEL_PICK은 태양광 패널 Pick 단독 테스트용 Operation Code.
+        # PANEL Pick만 수행하고 Place는 실행하지 않는다.
+        if operation_code == "PANEL_PICK":
+            return self.solar.pick_panel(
                 parameters,
                 components,
                 operation_context=operation_context,
