@@ -89,8 +89,19 @@ class SolarMotion:
         9.5,
     )
 
-    # PANEL Pick도 FRAME에서 검증한 동일 MOVEC 경유점을 재사용한다.
-    PANEL_MOVEC_VIA = FRAME_MOVEC_VIA
+    # PANEL Pick 전용 MOVEL 경유점 (BASE 절대좌표)
+    # 현재 TCP 위치 -> 이 경유점 -> Panel Safe Pick을 두 번의 직선 이동으로 접근한다.
+    PANEL_MOVEL_VIA = (
+        389.65,
+        -329.83,
+        402.33,
+        153.5,
+        -176.71,
+        161.71,
+    )
+
+    # 두 번째 MOVEL 완료 후 Panel Safe Pick의 XYZ 도달 여부를 검증하는 허용 오차.
+    PANEL_SAFE_PICK_POSITION_TOLERANCE_MM = 2.0
 
     # SNAPFIT Pick 후 모든 Place로 이동하기 전 대기하는 공통 BASE 기준점.
     SNAPFIT_TRANSFER_POSE = (
@@ -155,6 +166,7 @@ class SolarMotion:
             move_periodic,
             posx,
             wait,
+            get_current_posx,
             DR_BASE,
             DR_TOOL,
         )
@@ -166,6 +178,7 @@ class SolarMotion:
         self.move_periodic = move_periodic
         self.posx = posx
         self.wait = wait
+        self.get_current_posx = get_current_posx
         self.DR_BASE = DR_BASE
         self.DR_TOOL = DR_TOOL
 
@@ -1535,18 +1548,23 @@ class SolarMotion:
     # =========================================================
 
     def pick_panel(self, parameters, components, operation_context=None):
-        """태양광 패널을 기존 FRAME MOVEC 경유점으로 접근해 파지한다.
+        """태양광 패널 Pick 테스트.
 
         현재 테스트 범위는 Pick까지만 수행한다.
 
         순서:
-            Home
-            -> movec(PANEL_MOVEC_VIA -> Safe Pick)
+            현재 TCP 위치
+            -> movel(PANEL_MOVEL_VIA, radius=20mm)
+            -> movel(Safe Pick, radius=0mm)
+            -> Safe Pick 실제 XYZ 도달 검증
             -> movel(pickup_position)
             -> Grasp
             -> movel(Safe Pick)
 
-        Safe Pick은 DB pickup_position의 BASE Z에 pick_distance를 더해 만든다.
+        첫 번째 MOVEL은 실행 시점의 현재 TCP 위치에서 PANEL_MOVEL_VIA 방향으로
+        직선 이동하며 radius=20mm 블렌딩으로 경유점 부근에서 두 번째 MOVEL로
+        부드럽게 이어진다. 두 번째 MOVEL은 Safe Pick을 최종 목표로 하며 radius=0mm로
+        정확히 도달한다.
         """
         self.node.get_logger().info("========== PANEL PICK START ==========")
         self._publish_cycle_event(
@@ -1570,33 +1588,89 @@ class SolarMotion:
 
             via_pose = self.posx([
                 float(value)
-                for value in self.PANEL_MOVEC_VIA
+                for value in self.PANEL_MOVEL_VIA
             ])
 
-            # 1. 테스트 시작 자세를 Home으로 통일
+            # 1. 현재 TCP 위치 -> Panel 전용 경유점
             self.node.get_logger().info(
-                f"PANEL Pick 준비 -> Home 이동 - {component.get('code')}"
+                "PANEL Pick 1차 MOVEL - 현재 위치 -> 경유점 - "
+                f"via={list(self.PANEL_MOVEL_VIA)}"
             )
-            self.motion.move_home()
-            self.wait(0.5)
+            first_move_result = self.movel(
+                via_pose,
+                vel=settings["speed"],
+                acc=settings["acc"],
+                radius=20.0,
+                ref=self.DR_BASE,
+            )
+            if (
+                isinstance(first_move_result, (int, float))
+                and first_move_result < 0
+            ):
+                raise RuntimeError(
+                    "PANEL 경유점 MOVEL 실행 실패: "
+                    f"result={first_move_result}"
+                )
+            # 첫 번째 MOVEL과 두 번째 MOVEL 사이에는 wait를 넣지 않는다.
+            # radius=20mm 블렌딩이 경유점 부근에서 다음 MOVEL로 자연스럽게 이어지게 한다.
 
-            # 2. Home -> 기존 FRAME 경유점 -> Panel Pick 안전점
+            # 2. Panel 전용 경유점 -> Panel Pick 안전점
             self.node.get_logger().info(
-                "PANEL Pick MOVEC 안전 접근 - "
-                f"via={list(self.PANEL_MOVEC_VIA)}, "
+                "PANEL Pick 2차 MOVEL - 경유점 -> Safe Pick - "
                 f"safe_pick={[float(safe_pick_pose[i]) for i in range(6)]}, "
                 f"BASE Z +{pick_distance:.1f}mm"
             )
-            self.movec(
-                via_pose,
+            second_move_result = self.movel(
                 safe_pick_pose,
                 vel=settings["speed"],
                 acc=settings["acc"],
+                radius=0.0,
                 ref=self.DR_BASE,
             )
+            if (
+                isinstance(second_move_result, (int, float))
+                and second_move_result < 0
+            ):
+                raise RuntimeError(
+                    "PANEL Safe Pick MOVEL 실행 실패: "
+                    f"result={second_move_result}"
+                )
             self.wait(0.5)
 
-            # 3. 실제 Panel Pick 좌표로 직선 하강
+            # 두 번째 MOVEL 종료 후 실제 TCP가 Safe Pick XYZ에 도달했는지 검증한다.
+            current_pose, solution_space = self.get_current_posx(
+                ref=self.DR_BASE
+            )
+            xyz_error = [
+                abs(
+                    float(current_pose[i])
+                    - float(safe_pick_pose[i])
+                )
+                for i in range(3)
+            ]
+            max_xyz_error = max(xyz_error)
+
+            self.node.get_logger().info(
+                "PANEL Safe Pick 도달 검증 - "
+                f"current_xyz={[float(current_pose[i]) for i in range(3)]}, "
+                f"target_xyz={[float(safe_pick_pose[i]) for i in range(3)]}, "
+                f"xyz_error={xyz_error}, "
+                f"max_error={max_xyz_error:.3f}mm, "
+                f"solution_space={solution_space}"
+            )
+
+            if (
+                max_xyz_error
+                > self.PANEL_SAFE_PICK_POSITION_TOLERANCE_MM
+            ):
+                raise RuntimeError(
+                    "PANEL Safe Pick 도달 실패: "
+                    f"max_xyz_error={max_xyz_error:.3f}mm > "
+                    f"tolerance="
+                    f"{self.PANEL_SAFE_PICK_POSITION_TOLERANCE_MM:.3f}mm"
+                )
+
+            # 3. Safe Pick -> 실제 Panel Pick 위치로 직선 하강
             self.node.get_logger().info(
                 "PANEL 정확한 Pick 위치 이동 - "
                 f"BASE Z -{pick_distance:.1f}mm"
@@ -1636,8 +1710,9 @@ class SolarMotion:
                 status="COMPLETED",
                 detail={
                     "component_code": component.get("code"),
-                    "motion": "MOVEC",
-                    "movec_via": list(self.PANEL_MOVEC_VIA),
+                    "motion": "MOVEL_X2_BLEND",
+                    "movel_via": list(self.PANEL_MOVEL_VIA),
+                    "blend_radius_mm": 20.0,
                     "pick_distance": pick_distance,
                     "safe_reference": "BASE_Z",
                 },
