@@ -1920,6 +1920,102 @@ class SolarMotion:
     # FRAME PICK / PLACE
     # =========================================================
 
+    def pick_frame(self, parameters, components, operation_context=None):
+        """FRAME을 공통 경유점 기반 movec()로 접근해 정확한 위치에서 파지한다."""
+        self.node.get_logger().info("========== FRAME PICK START ==========")
+        self._publish_cycle_event(
+            operation_context, phase="FRAME_PICK", status="STARTED"
+        )
+
+        try:
+            settings = self._load_frame_settings(parameters)
+            component, pickup_pose = self._frame_pickup_input(components)
+            pick_distance = settings["pick_distance"]
+            safe_pick_pose = self.posx([
+                float(pickup_pose[0]),
+                float(pickup_pose[1]),
+                float(pickup_pose[2]) + pick_distance,
+                float(pickup_pose[3]),
+                float(pickup_pose[4]),
+                float(pickup_pose[5]),
+            ])
+            via_pose = self.posx([
+                float(value) for value in self.FRAME_MOVEC_VIA
+            ])
+
+            self.node.get_logger().info(
+                f"FRAME Pick 준비 -> Home 이동 - {component.get('code')}"
+            )
+            self.motion.move_home()
+            self.wait(0.5)
+
+            self.node.get_logger().info(
+                "FRAME Pick MOVEC 안전 접근 - "
+                f"via={list(self.FRAME_MOVEC_VIA)}, "
+                f"safe_pick={[float(safe_pick_pose[i]) for i in range(6)]}, "
+                f"BASE Z +{pick_distance:.1f}mm"
+            )
+            self.movec(
+                via_pose,
+                safe_pick_pose,
+                vel=settings["speed"],
+                acc=settings["acc"],
+                ref=self.DR_BASE,
+            )
+            self.wait(0.5)
+
+            self.node.get_logger().info(
+                "FRAME 정확한 Pick 위치 이동 - "
+                f"BASE Z -{pick_distance:.1f}mm"
+            )
+            self.movel(
+                pickup_pose,
+                vel=settings["speed"],
+                acc=settings["acc"],
+                ref=self.DR_BASE,
+            )
+            self.wait(0.2)
+
+            self.node.get_logger().info("FRAME Gripper Close")
+            self.motion.grasp()
+            self.wait(0.2)
+
+            self.node.get_logger().info(
+                "FRAME Pick 완료 -> 안전 접근점 복귀 - "
+                f"BASE Z +{pick_distance:.1f}mm"
+            )
+            self.movel(
+                safe_pick_pose,
+                vel=settings["speed"],
+                acc=settings["acc"],
+                ref=self.DR_BASE,
+            )
+            self.wait(0.5)
+
+            self.node.get_logger().info(
+                "========== FRAME PICK COMPLETE =========="
+            )
+            self._publish_cycle_event(
+                operation_context,
+                phase="FRAME_PICK",
+                status="COMPLETED",
+                detail={
+                    "component_code": component.get("code"),
+                    "motion": "MOVEC",
+                    "movec_via": list(self.FRAME_MOVEC_VIA),
+                    "pick_distance": pick_distance,
+                    "safe_reference": "BASE_Z",
+                },
+            )
+            return True
+
+        except Exception as e:
+            self.node.get_logger().error(f"FRAME Pick 실패: {e}")
+            self._publish_cycle_event(
+                operation_context, phase="FRAME_PICK", status="FAILED", error=e
+            )
+            raise FramePickError(str(e)) from e
+
     def place_frame(self, parameters, components, operation_context=None):
         """FRAME을 movec()로 접근한 뒤 Force Place하고 Periodic 후 이탈한다.
 
