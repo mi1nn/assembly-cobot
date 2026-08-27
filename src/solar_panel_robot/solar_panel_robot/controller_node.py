@@ -28,47 +28,13 @@ from solar_panel_interface.srv import (
 import DR_init
 
 
-# =============================================================
-# Robot 기본 설정
-# =============================================================
-
 ROBOT_ID = "dsr01"
 ROBOT_MODEL = "m0609"
 
 
-
-
-# =============================================================
-# Bridge 기준 Action 이름
-#
-# ros2_bridge_node.py:
-#
-# ActionClient(
-#     self,
-#     ExecuteOperation,
-#     "execute_operation",
-# )
-#
-# Bridge Node에는 namespace가 없으므로 실제 Action:
-#
-# /execute_operation
-#
-# 따라서 Controller도 절대 이름으로 맞춤.
-# =============================================================
-
 ACTION_NAME = "/execute_operation"
 
 
-# =============================================================
-# Controller가 실행 가능한 Operation Code
-# =============================================================
-
-# DB Operation -> Robot Unit Motion mapping
-#
-# 실제 DB operation.code 기준:
-#   Unit 1: post1~post6       -> POST Pick + Place
-#   Unit 2: frameA            -> FRAME Pick + Place + SNAPFIT-A-01~06 Pick + Place
-#   Unit 3: solarpanelA       -> PANEL Pick + Place
 POST_OPERATION_CODES = {
     "post1",
     "post2",
@@ -86,7 +52,7 @@ PANEL_OPERATION_CODES = {
     "solarpanelA",
 }
 
-# 아래 대문자 코드는 DB 공정용이 아니라 개별 모션 직접 테스트/호환용.
+
 SUPPORTED_OPERATION_CODES = (
     POST_OPERATION_CODES
     | FRAME_SNAPFIT_A_OPERATION_CODES
@@ -108,7 +74,6 @@ SUPPORTED_OPERATION_CODES = (
 )
 
 
-
 class SolarPanelControllerNode(Node):
 
     SEVERITY_INFO = SystemEvent.SEVERITY_INFO
@@ -123,9 +88,6 @@ class SolarPanelControllerNode(Node):
             namespace=ROBOT_ID,
         )
 
-        # =====================================================
-        # Components
-        # =====================================================
 
         self.robot = None
         self.solar = None
@@ -133,21 +95,13 @@ class SolarPanelControllerNode(Node):
         self._stop_requested = False
         self._robot_stopped = False
 
-        # =====================================================
-        # Controller 상태
-        # =====================================================
 
         self.current_status = "STARTING"
 
-        # Operation 중복 실행 방지
+
         self.operation_running = False
         self.operation_lock = threading.Lock()
 
-        # =====================================================
-        # Callback Groups
-        #
-        # Action과 Status Timer 분리
-        # =====================================================
 
         self.action_callback_group = ReentrantCallbackGroup()
 
@@ -157,13 +111,6 @@ class SolarPanelControllerNode(Node):
             MutuallyExclusiveCallbackGroup()
         )
 
-        # =====================================================
-        # Status Publisher
-        #
-        # Node namespace가 /dsr01 이므로:
-        #
-        # /dsr01/status
-        # =====================================================
 
         self.status_publisher = self.create_publisher(
             String,
@@ -182,11 +129,6 @@ class SolarPanelControllerNode(Node):
             10,
         )
 
-        # =====================================================
-        # Status Timer
-        #
-        # 현재 Controller 상태를 1초마다 Publish
-        # =====================================================
 
         self.status_timer = self.create_timer(
             1.0,
@@ -194,13 +136,6 @@ class SolarPanelControllerNode(Node):
             callback_group=self.status_callback_group,
         )
 
-        # =====================================================
-        # ExecuteOperation Action Server
-        #
-        # Bridge와 동일한:
-        #
-        # /execute_operation
-        # =====================================================
 
         self.action_server = ActionServer(
             self,
@@ -224,13 +159,6 @@ class SolarPanelControllerNode(Node):
             "STARTING"
         )
 
-        # =====================================================
-        # Service Server
-        #
-        # Bridge와 동일한:
-        #
-        # /execute_operation
-        # =====================================================
 
         self._stop_service = self.create_service(
             StopOperation,
@@ -246,9 +174,6 @@ class SolarPanelControllerNode(Node):
             callback_group=self.service_callback_group,
         )
 
-    # =========================================================
-    # 상태 변경
-    # =========================================================
 
     def set_status(
         self,
@@ -261,13 +186,9 @@ class SolarPanelControllerNode(Node):
             f"[STATUS] {status}"
         )
 
-        # 상태 변경 즉시 Publish
+
         self.publish_current_status()
 
-
-    # =========================================================
-    # 현재 상태 Publish
-    # =========================================================
 
     def publish_current_status(self):
 
@@ -293,16 +214,7 @@ class SolarPanelControllerNode(Node):
         status="",
         detail=None,
     ):
-        """
-        Controller -> /system_event 공통 이벤트 발행.
-
-        Operation과 무관한 초기화/Bridge 상태 이벤트는
-        기존처럼 severity/code/message만 넘겨도 된다.
-
-        Operation 관련 이벤트는 work_execution_id,
-        operation_execution_id, operation_code, phase, status를
-        함께 전달한다. detail은 JSON object 형태로 보낸다.
-        """
+        """Controller -> /system_event 공통 이벤트 발행."""
         if detail is None:
             detail_data = {}
         elif isinstance(detail, dict):
@@ -369,10 +281,6 @@ class SolarPanelControllerNode(Node):
         )
 
 
-    # =========================================================
-    # Robot / Motion 준비
-    # =========================================================
-
     def setup_components(self):
         from .robot_controller import RobotController
         from .solar_motion import SolarMotion
@@ -427,21 +335,6 @@ class SolarPanelControllerNode(Node):
         )
 
 
-    # =========================================================
-    # Bridge Parameter[] -> Python dict
-    #
-    # Bridge에서는:
-    #
-    # 문자열:
-    #   그대로 Parameter.value
-    #
-    # 숫자 / list / dict / bool:
-    #   json.dumps() 후 Parameter.value
-    #
-    # 따라서 Controller에서는 가능한 경우
-    # json.loads()로 원래 타입 복원.
-    # =========================================================
-
     def parse_parameters(
         self,
         parameters,
@@ -468,17 +361,13 @@ class SolarPanelControllerNode(Node):
                 TypeError,
             ):
 
-                # 일반 문자열
+
                 value = raw_value
 
             parsed[key] = value
 
         return parsed
 
-
-    # =========================================================
-    # Bridge components JSON 문자열 -> Python list
-    # =========================================================
 
     def parse_components(
         self,
@@ -520,14 +409,6 @@ class SolarPanelControllerNode(Node):
         return components
 
 
-    # =========================================================
-    # DB Operation Code 검증
-    #
-    # operation_id는 DB 추적용, operation_code는 동작 선택용이다.
-    # Backend -> Bridge -> ExecuteOperation.operation_code 경로로
-    # DB의 operation.code(postA, postB, ...)를 그대로 전달한다.
-    # =========================================================
-
     def resolve_operation_code(
         self,
         operation_code,
@@ -549,10 +430,6 @@ class SolarPanelControllerNode(Node):
 
         return operation_code
 
-
-    # =========================================================
-    # Action Goal 수락 여부
-    # =========================================================
 
     def goal_callback(
         self,
@@ -638,10 +515,6 @@ class SolarPanelControllerNode(Node):
         return GoalResponse.ACCEPT
 
 
-    # =========================================================
-    # Action Cancel
-    # =========================================================
-
     def cancel_callback(
         self,
         goal_handle,
@@ -675,10 +548,6 @@ class SolarPanelControllerNode(Node):
         return CancelResponse.ACCEPT
 
 
-    # =========================================================
-    # IF-15 Feedback
-    # =========================================================
-
     def publish_feedback(
         self,
         goal_handle,
@@ -704,9 +573,6 @@ class SolarPanelControllerNode(Node):
             f"message={feedback.message}"
         )
 
-    # =========================================================
-    # Stop/Recover Service 실행
-    # =========================================================
 
     def stop_operation_callback(self, request, response):
         with self.operation_lock:
@@ -837,9 +703,6 @@ class SolarPanelControllerNode(Node):
         self.set_status("STOPPED")
         return result
 
-    # =========================================================
-    # 실제 Robot Operation 실행
-    # =========================================================
 
     def execute_operation(
         self,
@@ -853,9 +716,7 @@ class SolarPanelControllerNode(Node):
                 "SolarMotion이 준비되지 않았습니다."
             )
 
-        # DB Post 작업은 현재 포스트 삽입 검증 Cycle로 실행한다.
-        # POST PICK -> POST PLACE -> MOTION STOP -> RELEASE
-        # -> SAFE RETREAT -> HOME
+
         if operation_code in POST_OPERATION_CODES:
             return self.solar.install_post_pick_place_cycle(
                 parameters,
@@ -863,7 +724,7 @@ class SolarPanelControllerNode(Node):
                 operation_context=operation_context,
             )
 
-        # 직접 Action 테스트용 세부 동작.
+
         if operation_code == "POST_PICK":
             return self.solar.pick_post(
                 parameters,
@@ -892,7 +753,7 @@ class SolarPanelControllerNode(Node):
                 operation_context=operation_context,
             )
 
-        # POST_INSTALL은 직접 테스트용 Post Cycle 별칭으로 유지한다.
+
         if operation_code == "POST_INSTALL":
             return self.solar.install_post_cycle(
                 parameters,
@@ -900,7 +761,7 @@ class SolarPanelControllerNode(Node):
                 operation_context=operation_context,
             )
 
-        # DB frameA: FRAME Pick/Place + SNAPFIT-A-01~06 Pick/Place
+
         if operation_code in FRAME_SNAPFIT_A_OPERATION_CODES:
             return self.solar.install_frame_snapfit_a_cycle(
                 parameters,
@@ -908,7 +769,7 @@ class SolarPanelControllerNode(Node):
                 operation_context=operation_context,
             )
 
-        # DB solarpanelA: PANEL Pick + Place
+
         if operation_code in PANEL_OPERATION_CODES:
             return self.solar.install_panel_cycle(
                 parameters,
@@ -916,7 +777,7 @@ class SolarPanelControllerNode(Node):
                 operation_context=operation_context,
             )
 
-        # FRAME / SNAPFIT-A 개별 모션 직접 테스트용.
+
         if operation_code == "FRAME_PICK":
             return self.solar.pick_frame(
                 parameters,
@@ -945,7 +806,7 @@ class SolarPanelControllerNode(Node):
                 operation_context=operation_context,
             )
 
-        # PANEL 개별 모션 직접 테스트용.
+
         if operation_code == "PANEL_PICK":
             return self.solar.pick_panel(
                 parameters,
@@ -960,7 +821,7 @@ class SolarPanelControllerNode(Node):
                 operation_context=operation_context,
             )
 
-        # 기존 전체 직접 테스트는 호환을 위해 유지. DB 3-unit 실행에는 사용하지 않는다.
+
         if operation_code == "SOLAR_FULL":
             return self.solar.run(
                 parameters,
@@ -973,10 +834,6 @@ class SolarPanelControllerNode(Node):
             f"{operation_code}"
         )
 
-
-    # =========================================================
-    # Action 실행
-    # =========================================================
 
     def execute_callback(
         self,
@@ -1225,10 +1082,6 @@ class SolarPanelControllerNode(Node):
             )
 
 
-    # =========================================================
-    # Node 종료
-    # =========================================================
-
     def destroy_node(self):
 
         if self.action_server is not None:
@@ -1238,68 +1091,38 @@ class SolarPanelControllerNode(Node):
         super().destroy_node()
 
 
-# =============================================================
-# MAIN
-# =============================================================
-
 def main(args=None):
 
-    # =========================================================
-    # ROS2 초기화
-    # =========================================================
 
     rclpy.init(
         args=args
     )
 
-    # =========================================================
-    # Doosan 설정
-    # =========================================================
 
     DR_init.__dsr__id = ROBOT_ID
     DR_init.__dsr__model = ROBOT_MODEL
 
-    # =========================================================
-    # Controller Node
-    #
-    # Action Server
-    # Status Publisher
-    # Status Timer
-    # =========================================================
 
     controller_node = (
         SolarPanelControllerNode()
     )
 
-    # =========================================================
-    # DSR_ROBOT2 전용 Node
-    #
-    # Controller Action/Timer Node와 분리
-    # =========================================================
 
     dsr_node = rclpy.create_node(
         "solar_robot_dsr_client",
         namespace=ROBOT_ID,
     )
 
-    # DSR_ROBOT2에서 사용할 Node
+
     DR_init.__dsr__node = dsr_node
 
     executor = None
 
     try:
 
-        # =====================================================
-        # Robot / SolarMotion 초기화
-        #
-        # DR_init.__dsr__node 설정 이후 실행
-        # =====================================================
 
         controller_node.setup_components()
 
-        # =====================================================
-        # Controller Executor
-        # =====================================================
 
         executor = MultiThreadedExecutor(
             num_threads=2
@@ -1351,25 +1174,16 @@ def main(args=None):
 
     finally:
 
-        # =====================================================
-        # Executor 종료
-        # =====================================================
 
         if executor is not None:
 
             executor.shutdown()
 
-        # =====================================================
-        # Node 종료
-        # =====================================================
 
         controller_node.destroy_node()
 
         dsr_node.destroy_node()
 
-        # =====================================================
-        # ROS2 종료
-        # =====================================================
 
         if rclpy.ok():
 

@@ -29,11 +29,7 @@ from DSR_ROBOT2 import (
 OFF = 0
 ON = 1
 
-# =========================================================
-# Robot default configuration (YAML/config_loader 제거)
-# =========================================================
-# 작업별 speed/acc/좌표/Force 값은 SolarMotion이 DB에서 받아 각 함수에 전달한다.
-# 아래 값은 로봇 공통 기본값과 초기 Home/Gripper 설정에만 사용한다.
+
 DEFAULT_VELOCITY = 50.0
 DEFAULT_ACC = 50.0
 HOME_POSITION = [0.0, 0.0, 60.0, 0.0, 115.0, 0.0]
@@ -43,9 +39,7 @@ GRIPPER_WAIT_TIME = 1.0
 
 
 class RobotMotion:
-    """
-    로봇의 기본 이동, 그리퍼 제어, Force 기반 Place를 담당한다.
-    """
+    """로봇의 기본 이동, 그리퍼 제어, Force 기반 Place를 담당한다."""
 
     FORCE_AXIS_INDEX = {
         "x": 0,
@@ -62,9 +56,7 @@ class RobotMotion:
             "dsr_controller2/motion/move_stop",
         )
 
-        # YAML 대신 robot_motion.py 내부 로봇 기본값 사용.
-        # 작업 실행 시에는 DB에서 받은 speed/acc 등이 함수 인자로 전달되어
-        # 이 기본값보다 우선한다.
+
         self.velocity = DEFAULT_VELOCITY
         self.acc = DEFAULT_ACC
 
@@ -72,9 +64,6 @@ class RobotMotion:
         self.release_port = RELEASE_PORT
         self.gripper_wait_time = GRIPPER_WAIT_TIME
 
-    # =========================================================
-    # Motion Stop / Restore
-    # =========================================================
 
     def stop_motion(self, mode=DR_SSTOP, timeout=2.0):
         """진행 중인 Robot Motion을 MoveStop service로 정지한다."""
@@ -124,9 +113,6 @@ class RobotMotion:
         print("[MOTION RESTORE] 완료", flush=True)
         return True
 
-    # =========================================================
-    # Gripper
-    # =========================================================
 
     def grasp(self):
         print(
@@ -162,9 +148,6 @@ class RobotMotion:
 
         wait(self.gripper_wait_time)
 
-    # =========================================================
-    # Basic motion
-    # =========================================================
 
     def move_home(self):
         """robot_motion.py에 고정된 기본 Home 관절 자세로 이동한다."""
@@ -318,9 +301,6 @@ class RobotMotion:
             mod=DR_MV_MOD_ABS,
         )
 
-    # =========================================================
-    # Arc motion
-    # =========================================================
 
     def move_arc(
         self,
@@ -350,7 +330,7 @@ class RobotMotion:
             z = z_linear + 4 * height * t * (1 - t)
             angles = []
             for start_angle, end_angle in zip(start[3:], end[3:]):
-                # -180/180 경계를 가로지를 때 불필요한 장회전을 피한다.
+
                 delta = (end_angle - start_angle + 180.0) % 360.0 - 180.0
                 angles.append(start_angle + delta * t)
             points.append(posx(x, y, z, *angles))
@@ -374,9 +354,6 @@ class RobotMotion:
         print("[ARC] spline 이동 명령 완료", flush=True)
         return True
 
-    # =========================================================
-    # Current Pose / Force Probe
-    # =========================================================
 
     def get_current_pose(
         self,
@@ -406,22 +383,7 @@ class RobotMotion:
         timeout=None,
         stiffness=None,
     ):
-        """
-        공중의 접근 위치에서 약한 Desired Force를 적용해 실제 접촉점을 찾는다.
-
-        동작:
-            1. TOOL 기준 Compliance ON
-            2. baseline force / 시작 TCP pose 저장
-            3. 지정 TOOL 축으로 Desired Force 적용
-            4. 매 poll마다 pose / Fx,Fy,Fz / delta / travel 출력
-            5. arm_delay 이후 선택 축 delta force가 threshold 이상이면 접촉
-            6. max_travel 초과 시 실패 (시간 제한 없음)
-            7. 성공/실패와 무관하게 Force / Compliance OFF
-
-        반환 dict의 contact_pose는 Force가 켜진 상태에서 접촉을 감지한 순간의
-        BASE TCP pose다. 상위 로직에서는 Force 해제 후 실제 현재 pose를 다시
-        측정해 Search P0로 사용하는 것을 권장한다.
-        """
+        """공중의 접근 위치에서 약한 Desired Force를 적용해 실제 접촉점을 찾는다."""
         axis = str(axis).lower()
         direction = int(direction)
         force = float(force)
@@ -654,20 +616,7 @@ class RobotMotion:
         poll_interval=0.02,
         stiffness=None,
     ):
-        """
-        짧은 Desired Force를 걸어 후보 pose의 삽입 가능성을 측정한다.
-
-        반환값:
-            travel_mm:
-                probe 시작 TCP 위치 대비 실제 이동 거리(mm)
-            side_force_delta:
-                Force 시작 전 baseline 대비 횡방향 힘 변화량(N)
-            axis_force_delta:
-                Force 축의 baseline 대비 힘 변화량(N)
-
-        probe_time 또는 max_travel 중 먼저 도달하는 조건에서 종료하고
-        Force / Compliance를 항상 해제한다.
-        """
+        """짧은 Desired Force를 걸어 후보 pose의 삽입 가능성을 측정한다."""
         axis = str(axis).lower()
         direction = int(direction)
         force = float(force)
@@ -743,9 +692,7 @@ class RobotMotion:
                 flush=True,
             )
 
-            # Probe를 걸기 전부터 삽입축 하중이 큰 경우에는
-            # 이미 지그/부품에 강하게 걸린 후보로 보고 Desired Force를
-            # 추가하지 않는다. set_desired_force()에서 멈추는 상황을 방지한다.
+
             baseline_axis_force_limit = max(20.0, force * 2.5)
             baseline_axis_force = abs(baseline_force[axis_index])
             if baseline_axis_force >= baseline_axis_force_limit:
@@ -881,9 +828,6 @@ class RobotMotion:
 
         return result
 
-    # =========================================================
-    # Pick & Place
-    # =========================================================
 
     def pick(
         self,
@@ -940,13 +884,7 @@ class RobotMotion:
         stiffness=None,
         reference="tool",
     ):
-        """
-        선택한 기준 좌표계에서 Force 기반 범용 Place 삽입 동작.
-
-        reference:
-            "tool" -> TOOL 좌표계 기준 Force / 반력 측정
-            "base" -> BASE 좌표계 기준 Force / 반력 측정
-        """
+        """선택한 기준 좌표계에서 Force 기반 범용 Place 삽입 동작."""
 
         axis = str(axis).lower()
         reference = str(reference).lower()
