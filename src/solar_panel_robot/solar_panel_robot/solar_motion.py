@@ -661,7 +661,7 @@ class SolarMotion:
             "place_distance": self._first_number(
                 parameters,
                 ("panel_place_distance", "place_retreat_distance"),
-                50.0,
+                100.0,
                 nonnegative=True,
             ),
             "place_speed": self._first_number(
