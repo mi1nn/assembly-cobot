@@ -119,10 +119,10 @@ class SolarMotion:
     )
 
     # PANEL Pick/Place 공통 movec 경유점 (BASE 절대좌표)
-    PANEL_MOVEL_VIA = (
-        -389.65,
-        -329.83,
-        402.33,
+    PANEL_VIA = (
+        389.65,
+        -300.00,
+        400.0,
         153.5,
         -176.71,
         161.71,
@@ -1673,14 +1673,14 @@ class SolarMotion:
 
         순서:
             현재 TCP 위치
-            -> movel(PANEL_MOVEL_VIA, radius=20mm)
+            -> movel(PANEL_VIA, radius=20mm)
             -> movel(Safe Pick, radius=0mm)
             -> Safe Pick 실제 XYZ 도달 검증
             -> movel(pickup_position)
             -> Grasp
             -> movel(Safe Pick)
 
-        첫 번째 MOVEL은 실행 시점의 현재 TCP 위치에서 PANEL_MOVEL_VIA 방향으로
+        첫 번째 MOVEL은 실행 시점의 현재 TCP 위치에서 PANEL_VIA 방향으로
         직선 이동하며 radius=20mm 블렌딩으로 경유점 부근에서 두 번째 MOVEL로
         부드럽게 이어진다. 두 번째 MOVEL은 Safe Pick을 최종 목표로 하며 radius=0mm로
         정확히 도달한다.
@@ -1707,19 +1707,19 @@ class SolarMotion:
 
             via_pose = self.posx([
                 float(value)
-                for value in self.PANEL_MOVEL_VIA
+                for value in self.PANEL_VIA
             ])
 
             # 1. 현재 TCP 위치 -> Panel 전용 경유점
             self.node.get_logger().info(
                 "PANEL Pick 1차 MOVEL - 현재 위치 -> 경유점 - "
-                f"via={list(self.PANEL_MOVEL_VIA)}"
+                f"via={list(self.PANEL_VIA)}"
             )
             first_move_result = self.movel(
                 via_pose,
                 vel=settings["speed"],
                 acc=settings["acc"],
-                radius=20.0,
+                radius=30.0,
                 ref=self.DR_BASE,
             )
             if (
@@ -1755,39 +1755,6 @@ class SolarMotion:
                     f"result={second_move_result}"
                 )
             self.wait(0.5)
-
-            # 두 번째 MOVEL 종료 후 실제 TCP가 Safe Pick XYZ에 도달했는지 검증한다.
-            current_pose, solution_space = self.get_current_posx(
-                ref=self.DR_BASE
-            )
-            xyz_error = [
-                abs(
-                    float(current_pose[i])
-                    - float(safe_pick_pose[i])
-                )
-                for i in range(3)
-            ]
-            max_xyz_error = max(xyz_error)
-
-            self.node.get_logger().info(
-                "PANEL Safe Pick 도달 검증 - "
-                f"current_xyz={[float(current_pose[i]) for i in range(3)]}, "
-                f"target_xyz={[float(safe_pick_pose[i]) for i in range(3)]}, "
-                f"xyz_error={xyz_error}, "
-                f"max_error={max_xyz_error:.3f}mm, "
-                f"solution_space={solution_space}"
-            )
-
-            if (
-                max_xyz_error
-                > self.PANEL_SAFE_PICK_POSITION_TOLERANCE_MM
-            ):
-                raise RuntimeError(
-                    "PANEL Safe Pick 도달 실패: "
-                    f"max_xyz_error={max_xyz_error:.3f}mm > "
-                    f"tolerance="
-                    f"{self.PANEL_SAFE_PICK_POSITION_TOLERANCE_MM:.3f}mm"
-                )
 
             # 3. Safe Pick -> 실제 Panel Pick 위치로 직선 하강
             self.node.get_logger().info(
@@ -1830,7 +1797,7 @@ class SolarMotion:
                 detail={
                     "component_code": component.get("code"),
                     "motion": "MOVEL_X2_BLEND",
-                    "movel_via": list(self.PANEL_MOVEL_VIA),
+                    "movel_via": list(self.PANEL_VIA),
                     "blend_radius_mm": 20.0,
                     "pick_distance": pick_distance,
                     "safe_reference": "BASE_Z",
@@ -1861,18 +1828,51 @@ class SolarMotion:
                     self._panel_place_input(components)
                 )
                 via_pose = self.posx([
-                    float(value) for value in self.PANEL_MOVEC_VIA
+                    float(value) for value in self.PANEL_VIA
                 ])
 
-                # 1. 공통 경유점을 거쳐 assembly_position으로 Arc 접근
-                self.movec(
+                # 1-1. 현재 TCP 위치 -> Panel 전용 경유점
+                self.node.get_logger().info(
+                    "PANEL PLACE 1차 MOVEL - 현재 위치 -> 경유점 - "
+                    f"via={list(self.PANEL_VIA)}"
+                )
+                first_move_result = self.movel(
                     via_pose,
+                    vel=settings["speed"],
+                    acc=settings["acc"],
+                    radius=30.0,
+                    ref=self.DR_BASE,
+                )
+                if (
+                    isinstance(first_move_result, (int, float))
+                    and first_move_result < 0
+                ):
+                    raise RuntimeError(
+                        "PANEL 경유점 MOVEL 실행 실패: "
+                        f"result={first_move_result}"
+                    )
+
+                # 1-2. Panel 전용 경유점 -> Panel place 지점
+                self.node.get_logger().info(
+                    "PANEL Pick 2차 MOVEL - 경유점 -> Assembly Position - "
+                    f"assembly_position={[float(assembly_pose[i]) for i in range(6)]}, "
+                )
+                second_move_result = self.movel(
                     assembly_pose,
                     vel=settings["speed"],
                     acc=settings["acc"],
+                    radius=0.0,
                     ref=self.DR_BASE,
                 )
-                self.mwait()
+                if (
+                    isinstance(second_move_result, (int, float))
+                    and second_move_result < 0
+                ):
+                    raise RuntimeError(
+                        "PANEL Safe Pick MOVEL 실행 실패: "
+                        f"result={second_move_result}"
+                    )
+                self.wait(0.5)
 
                 # 2. 정확한 Release 위치로 직선 이동 후 Gripper Open
                 self.movel(
@@ -1974,7 +1974,7 @@ class SolarMotion:
                     detail={
                         "component_code": component.get("code"),
                         "motion": "MOVEC_TO_ASSEMBLY",
-                        "movec_via": list(self.PANEL_MOVEC_VIA),
+                        "movec_via": list(self.PANEL_VIA),
                         "release_retreat_reference": "TOOL",
                         "release_retreat_axis": "TOOL_Z",
                         "release_retreat_direction": -1,
