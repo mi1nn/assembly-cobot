@@ -80,6 +80,8 @@ SUPPORTED_OPERATION_CODES = POST_OPERATION_CODES | {
     "PIN_PLACE",
     "FRAME_PICK",
     "FRAME_PLACE",
+    "PANEL_PICK",
+    "PANEL_PLACE",
     "SNAPFIT_PICK",
     "SNAPFIT_PLACE",
     "POST_INSTALL",
@@ -913,6 +915,16 @@ class SolarPanelControllerNode(Node):
                 parameters,
                 components,
                 operation_context=operation_context,
+            )
+
+        if operation_code == "PANEL_PICK":
+            return self.solar.pick_panel(
+                parameters, components, operation_context=operation_context
+            )
+
+        if operation_code == "PANEL_PLACE":
+            return self.solar.place_panel(
+                parameters, components, operation_context=operation_context
             )
 
         if operation_code == "SNAPFIT_PICK":

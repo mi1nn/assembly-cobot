@@ -51,7 +51,7 @@ INSERT INTO operation (
     {"code": "SNAPFIT-A-05", "name": "중앙 후단 포스트 체결용 핀 A", "category": "스냅핏", "pickup_position": {"x": 491.56, "y": -393.21, "z": 63.28, "A": 53.46, "B": -179.15, "C": -34.61}, "assembly_position": {"x": 282.47, "y": -114.30, "z": 264.28, "A": 0.95, "B": -177.65, "C": -87.88}},
     {"code": "SNAPFIT-A-06", "name": "우측 후단 포스트 체결용 핀 A", "category": "스냅핏", "pickup_position": {"x": 444.16, "y": -391.49, "z": 63.68, "A": 39.39, "B": -179.17, "C": -48.57}, "assembly_position": {"x": 481.73, "y": -118.74, "z": 215.07, "A": 26.15, "B": -177.74, "C": -62.31}}]'),
 (8, 1, 'solarpanelA', '태양광 패널 A 설치', 8, '패널 20장 양중 및 체결', TRUE, 1200,
-'{"ucs":null,"speed":100,"acceleration":200,"pick_distance":60,"place_retreat_distance":50,"place_search_limit_z":0.0,"place_force":40.0,"place_contact_force":20.0,"place_insert_force":12.0,"place_stiffness_z":500.0,"place_search_velocity":10.0,"place_search_acceleration":20.0,"place_search_timeout":null}',
+'{"ucs":null,"speed":100,"acceleration":200,"pick_distance":100,"place_retreat_distance":50,"place_search_limit_z":0.0,"place_force":40.0,"place_contact_force":20.0,"place_insert_force":12.0,"place_stiffness_z":500.0,"place_search_velocity":10.0,"place_search_acceleration":20.0,"place_search_timeout":null}',
  '[{"code": "CMP-PANEL-A", "name": "태양광 패널 A", "category": "태양광 패널", "pickup_position": {"x": -423.79, "y": -430.08, "z": 158.03, "A": 163.0, "B": 179.65, "C": 163.6}, "assembly_position": },
     {"code": "SNAPFIT-B-01", "name": "좌측 전단 포스트 체결용 핀 B", "category": "스냅핏", "pickup_position": null, "assembly_position": null},
     {"code": "SNAPFIT-B-02", "name": "중앙 전단 포스트 체결용 핀 B", "category": "스냅핏", "pickup_position": null, "assembly_position": null},

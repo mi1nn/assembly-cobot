@@ -33,6 +33,13 @@ class FramePlaceError(Exception):
 class PostCycleError(Exception):
     pass
 
+class PanelPickError(Exception):
+    pass
+
+
+class PanelPlaceError(Exception):
+    pass
+
 
 class SolarMotion:
     """DB 최종 계약에 맞춘 Post 1개 설치 Cycle.
@@ -73,6 +80,7 @@ class SolarMotion:
     PIN_COMPONENT_PREFIX = "PIN-A-"
     SNAPFIT_COMPONENT_PREFIX = "SNAPFIT-A-"
     FRAME_COMPONENT_PREFIX = "CMP-FRAME-"
+    PANEL_COMPONENT_PREFIX = "CMP-PANEL-"
 
     # FRAME Pick/Place 공통 movec 경유점 (BASE 절대좌표)
     FRAME_MOVEC_VIA = (
@@ -93,6 +101,15 @@ class SolarMotion:
         63.5,
     )
 
+    # PANEL Pick/Place 공통 movec 경유점 (BASE 절대좌표)
+    PANEL_MOVEC_VIA = (
+        -389.65,
+        -329.83,
+        402.33,
+        153.5,
+        -176.71,
+        161.71,
+    )
 
     # FRAME Place: 정확한 assembly_position 도달 후 BASE -Z 방향으로 Force Place.
     FRAME_PLACE_FORCE_AXIS = "z"
@@ -142,6 +159,7 @@ class SolarMotion:
         from DSR_ROBOT2 import (
             movel,
             movec,
+            movejx,
             mwait,
             move_periodic,
             posx,
@@ -153,6 +171,7 @@ class SolarMotion:
 
         self.movel = movel
         self.movec = movec
+        self.movejx = movejx
         self.mwait = mwait
         self.move_periodic = move_periodic
         self.posx = posx
@@ -571,6 +590,72 @@ class SolarMotion:
             }
         )
         return settings
+
+    def _load_panel_pick_settings(self, parameters):
+        settings = self._load_travel_settings(parameters)
+        settings.update({
+            "pick_distance": self._first_number(
+                parameters,
+                ("panel_pick_distance", "pick_distance"),
+                100.0,
+                positive=True,
+            ),
+            "pick_speed": self._first_number(
+                parameters,
+                ("panel_pick_speed",),
+                30.0,
+                positive=True,
+            ),
+            "pick_acc": self._first_number(
+                parameters,
+                ("panel_pick_acceleration",),
+                50.0,
+                positive=True,
+            ),
+            "grasp_wait": self._first_number(
+                parameters,
+                ("panel_grasp_wait",),
+                1.0,
+                nonnegative=True,
+            ),
+        })
+        return settings
+
+    def _load_panel_place_settings(self, parameters):
+        """PANEL Place의 안전 접근/복귀와 저속 배치 설정."""
+        settings = self._load_travel_settings(parameters)
+        settings.update({
+            "place_distance": self._first_number(
+                parameters,
+                ("panel_place_distance", "place_retreat_distance"),
+                50.0,
+                nonnegative=True,
+            ),
+            "place_speed": self._first_number(
+                parameters, ("panel_place_speed",), 30.0, positive=True
+            ),
+            "place_acc": self._first_number(
+                parameters, ("panel_place_acceleration",), 50.0, positive=True
+            ),
+            "release_wait": self._first_number(
+                parameters, ("panel_release_wait",), 1.0, nonnegative=True
+            ),
+        })
+        return settings
+
+    def _panel_pickup_input(self, components):
+        return self._pickup_input(
+            components,
+            self.PANEL_COMPONENT_PREFIX,
+            "PANEL",
+        )
+
+    def _panel_assembly_input(self, components):
+        return self._assembly_input(
+            components,
+            self.PANEL_COMPONENT_PREFIX,
+            "PANEL",
+        )
 
     # =========================================================
     # Components
@@ -1505,128 +1590,6 @@ class SolarMotion:
     # FRAME PICK / PLACE
     # =========================================================
 
-    def pick_frame(self, parameters, components, operation_context=None):
-        """FRAME을 공통 경유점 기반 movec()로 접근해 정확한 위치에서 파지한다.
-
-        pickup_position:
-            실제 Gripper Close가 수행되는 정확한 Pick 좌표.
-
-        frame_pick_distance / pick_distance:
-            pickup_position에서 BASE +Z 방향으로 떨어진 안전 접근 거리.
-
-        순서:
-            Home
-            -> movec(FRAME_MOVEC_VIA -> Safe Pick)
-            -> movel(pickup_position)
-            -> Grasp
-            -> movel(Safe Pick)
-        """
-        self.node.get_logger().info("========== FRAME PICK START ==========")
-        self._publish_cycle_event(
-            operation_context, phase="FRAME_PICK", status="STARTED"
-        )
-
-        try:
-            settings = self._load_frame_settings(parameters)
-            component, pickup_pose = self._frame_pickup_input(components)
-
-            pick_distance = settings["pick_distance"]
-
-            safe_pick_pose = self.posx([
-                float(pickup_pose[0]),
-                float(pickup_pose[1]),
-                float(pickup_pose[2]) + pick_distance,
-                float(pickup_pose[3]),
-                float(pickup_pose[4]),
-                float(pickup_pose[5]),
-            ])
-
-            via_pose = self.posx([
-                float(value)
-                for value in self.FRAME_MOVEC_VIA
-            ])
-
-            # 1. Home
-            self.node.get_logger().info(
-                f"FRAME Pick 준비 -> Home 이동 - {component.get('code')}"
-            )
-            self.motion.move_home()
-            self.wait(0.5)
-
-            # 2. Home -> 공통 경유점 -> Pick 안전 접근점
-            self.node.get_logger().info(
-                "FRAME Pick MOVEC 안전 접근 - "
-                f"via={list(self.FRAME_MOVEC_VIA)}, "
-                f"safe_pick={[float(safe_pick_pose[i]) for i in range(6)]}, "
-                f"BASE Z +{pick_distance:.1f}mm"
-            )
-            self.movec(
-                via_pose,
-                safe_pick_pose,
-                vel=settings["speed"],
-                acc=settings["acc"],
-                ref=self.DR_BASE,
-            )
-            self.wait(0.5)
-
-            # 3. 정확한 Pick 위치로 직선 하강
-            self.node.get_logger().info(
-                "FRAME 정확한 Pick 위치 이동 - "
-                f"BASE Z -{pick_distance:.1f}mm"
-            )
-            self.movel(
-                pickup_pose,
-                vel=settings["speed"],
-                acc=settings["acc"],
-                ref=self.DR_BASE,
-            )
-            self.wait(0.2)
-
-            # 4. Grasp
-            self.node.get_logger().info("FRAME Gripper Close")
-            self.motion.grasp()
-            self.wait(0.2)
-
-            # 5. 같은 Safe Pick으로 복귀
-            self.node.get_logger().info(
-                "FRAME Pick 완료 -> 안전 접근점 복귀 - "
-                f"BASE Z +{pick_distance:.1f}mm"
-            )
-            self.movel(
-                safe_pick_pose,
-                vel=settings["speed"],
-                acc=settings["acc"],
-                ref=self.DR_BASE,
-            )
-            self.wait(0.5)
-
-            self.node.get_logger().info(
-                "========== FRAME PICK COMPLETE =========="
-            )
-            self._publish_cycle_event(
-                operation_context,
-                phase="FRAME_PICK",
-                status="COMPLETED",
-                detail={
-                    "component_code": component.get("code"),
-                    "motion": "MOVEC",
-                    "movec_via": list(self.FRAME_MOVEC_VIA),
-                    "pick_distance": pick_distance,
-                    "safe_reference": "BASE_Z",
-                },
-            )
-            return True
-
-        except Exception as e:
-            self.node.get_logger().error(f"FRAME Pick 실패: {e}")
-            self._publish_cycle_event(
-                operation_context,
-                phase="FRAME_PICK",
-                status="FAILED",
-                error=e,
-            )
-            raise FramePickError(str(e)) from e
-
     def place_frame(self, parameters, components, operation_context=None):
         """FRAME을 movec()로 접근한 뒤 Force Place하고 Periodic 후 이탈한다.
 
@@ -1963,7 +1926,7 @@ class SolarMotion:
                 acc=settings["acc"],
                 ref=self.DR_BASE,
             )
-            
+
             # 4. Grasp 위치 -> 공통 전송 기준점 Arc 이동
             arc_start_pose, solution_space = self.motion.get_current_pose(
                 ref=self.DR_BASE
@@ -2230,6 +2193,176 @@ class SolarMotion:
             except Exception:
                 pass
             raise SnapfitPlaceError(str(e)) from e
+
+    # =========================================================
+    # Full Post cycle
+    # =========================================================
+    def pick_panel(self, parameters, components, operation_context=None):
+        self.node.get_logger().info(
+            "========== PANEL PICK START =========="
+        )
+        self._publish_cycle_event(
+            operation_context,
+            phase="PANEL_PICK",
+            status="STARTED",
+        )
+
+        try:
+            settings = self._load_panel_pick_settings(parameters)
+            component, pickup_pose = self._panel_pickup_input(components)
+
+            safe_pick_pose = self.posx([
+                float(pickup_pose[0]),
+                float(pickup_pose[1]),
+                float(pickup_pose[2]) + settings["pick_distance"],
+                float(pickup_pose[3]),
+                float(pickup_pose[4]),
+                float(pickup_pose[5]),
+            ])
+
+            # 파지 전에 그리퍼가 열려 있음을 보장
+            self.motion.release()
+            self.wait(0.5)
+
+            self.motion.move_home()
+            self.wait(0.5)
+
+            # 패널 전용 안전 접근점
+            safe_result = self.movejx(
+                safe_pick_pose,
+                vel=settings["speed"],
+                acc=settings["acc"],
+                sol=settings["movejx_solution"],
+                ref=self.DR_BASE,
+            )
+
+            if safe_result != 0:
+                raise RuntimeError(
+                    "PANEL Pick 안전 접근 MOVEJX 실패 - "
+                    f"result={safe_result}, "
+                    f"solution={settings['movejx_solution']}, "
+                    f"target={list(safe_pick_pose)}"
+                )
+
+            self.mwait()
+            self.wait(0.2)
+
+            # 실제 파지는 저속으로 접근
+            self.movel(
+                pickup_pose,
+                vel=settings["pick_speed"],
+                acc=settings["pick_acc"],
+                ref=self.DR_BASE,
+            )
+            self.mwait()
+
+            self.motion.grasp()
+            self.wait(settings["grasp_wait"])
+
+            # 파지 후 저속 수직 상승
+            self.movel(
+                safe_pick_pose,
+                vel=settings["pick_speed"],
+                acc=settings["pick_acc"],
+                ref=self.DR_BASE,
+            )
+            self.mwait()
+
+            self._publish_cycle_event(
+                operation_context,
+                phase="PANEL_PICK",
+                status="COMPLETED",
+                detail={
+                    "component_code": component.get("code"),
+                    "pick_distance": settings["pick_distance"],
+                    "safe_reference": "BASE_Z",
+                },
+            )
+            return True
+
+        except Exception as e:
+            self.node.get_logger().error(f"PANEL Pick 실패: {e}")
+            self._publish_cycle_event(
+                operation_context,
+                phase="PANEL_PICK",
+                status="FAILED",
+                error=e,
+            )
+            raise PanelPickError(str(e)) from e
+
+    def place_panel(self, parameters, components, operation_context=None):
+        """공통 경유점과 안전 접근점을 거쳐 PANEL을 배치한다."""
+        self.node.get_logger().info("========== PANEL PLACE START ==========")
+        self._publish_cycle_event(
+            operation_context, phase="PANEL_PLACE", status="STARTED"
+        )
+
+        try:
+            settings = self._load_panel_place_settings(parameters)
+            component, assembly_pose = self._panel_assembly_input(components)
+            place_distance = settings["place_distance"]
+            safe_place_pose = self.posx([
+                float(assembly_pose[0]),
+                float(assembly_pose[1]),
+                float(assembly_pose[2]) + place_distance,
+                float(assembly_pose[3]),
+                float(assembly_pose[4]),
+                float(assembly_pose[5]),
+            ])
+
+            via_pose = self.posx([
+                float(value)
+                for value in self.PANEL_MOVEC_VIA
+            ])
+
+            self.movec(
+                via_pose,
+                safe_place_pose,
+                vel=settings["speed"],
+                acc=settings["acc"],
+                ref=self.DR_BASE,
+            )
+            self.mwait()
+            self.movel(
+                assembly_pose,
+                vel=settings["place_speed"],
+                acc=settings["place_acc"],
+                ref=self.DR_BASE,
+            )
+            self.mwait()
+            self.motion.release()
+            self.wait(settings["release_wait"])
+            self.movel(
+                safe_place_pose,
+                vel=settings["place_speed"],
+                acc=settings["place_acc"],
+                ref=self.DR_BASE,
+            )
+            self.mwait()
+
+            self._publish_cycle_event(
+                operation_context,
+                phase="PANEL_PLACE",
+                status="COMPLETED",
+                detail={
+                    "component_code": component.get("code"),
+                    "motion": "MOVEC",
+                    "movec_via": list(self.WORK_POSE),
+                    "place_distance": place_distance,
+                    "safe_reference": "BASE_Z",
+                },
+            )
+            self.node.get_logger().info(
+                "========== PANEL PLACE COMPLETE =========="
+            )
+            return True
+
+        except Exception as e:
+            self.node.get_logger().error(f"PANEL Place 실패: {e}")
+            self._publish_cycle_event(
+                operation_context, phase="PANEL_PLACE", status="FAILED", error=e
+            )
+            raise PanelPlaceError(str(e)) from e
 
     # =========================================================
     # Full Post cycle
