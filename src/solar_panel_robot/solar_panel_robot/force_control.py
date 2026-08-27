@@ -14,11 +14,7 @@ from DSR_ROBOT2 import (
 
 class ForceController:
 
-    # =========================================================
-    # Axis / Reference / Mode Map
-    # =========================================================
 
-    # force vector의 index
     AXIS_MAP = {
         "x": 0,
         "y": 1,
@@ -39,28 +35,13 @@ class ForceController:
     }
 
 
-    # =========================================================
-    # Compliance
-    # =========================================================
-
     def compliance_on(
         self,
         stiffness=None,
         time=0.0,
         reference="base",
     ):
-        """
-        Compliance Control 시작
-
-        stiffness 예시:
-
-        {
-            "x": 300,
-            "z": 500,
-        }
-
-        지정하지 않은 축은 기본 stiffness를 사용한다.
-        """
+        """Compliance Control 시작"""
 
         reference = reference.lower()
 
@@ -69,7 +50,7 @@ class ForceController:
                 f"Invalid reference: {reference}"
             )
 
-        # 기본 stiffness
+
         stiffness_vector = [
             3000.0,
             3000.0,
@@ -79,7 +60,7 @@ class ForceController:
             200.0,
         ]
 
-        # 지정된 축만 stiffness 변경
+
         if stiffness is not None:
 
             if not isinstance(stiffness, dict):
@@ -109,7 +90,7 @@ class ForceController:
             flush=True,
         )
 
-        # 기준 좌표계 설정
+
         set_ref_coord(
             self.REFERENCE_MAP[reference]
         )
@@ -128,9 +109,7 @@ class ForceController:
 
 
     def compliance_off(self):
-        """
-        Compliance Control 종료
-        """
+        """Compliance Control 종료"""
 
         print(
             "[COMPLIANCE] OFF",
@@ -147,10 +126,6 @@ class ForceController:
         return result
 
 
-    # =========================================================
-    # Force
-    # =========================================================
-
     def force_on(
         self,
         forces,
@@ -158,21 +133,7 @@ class ForceController:
         mode="relative",
         reference="base",
     ):
-        """
-        Desired Force 적용
-
-        예:
-
-        {"z": -15}
-
-        또는
-
-        {
-            "x": 40,
-            "z": -10,
-            "a": 5,
-        }
-        """
+        """Desired Force 적용"""
 
         mode = mode.lower()
         reference = reference.lower()
@@ -219,8 +180,7 @@ class ForceController:
             flush=True,
         )
 
-        # 기준 좌표계는 compliance_on()에서 설정한 값을 유지한다.
-        # Compliance 활성화 이후 set_ref_coord()를 다시 호출하지 않는다.
+
         result = set_desired_force(
             fd=desired_force,
             dir=direction,
@@ -237,9 +197,7 @@ class ForceController:
 
 
     def force_off(self):
-        """
-        Desired Force 종료
-        """
+        """Desired Force 종료"""
 
         print(
             "[FORCE] OFF",
@@ -256,14 +214,8 @@ class ForceController:
         return result
 
 
-    # =========================================================
-    # All OFF
-    # =========================================================
-
     def all_off(self):
-        """
-        Force + Compliance Control 모두 종료
-        """
+        """Force + Compliance Control 모두 종료"""
 
         print(
             "[FORCE CONTROL] ALL OFF",
@@ -273,7 +225,7 @@ class ForceController:
         force_result = None
         compliance_result = None
 
-        # Force 해제
+
         try:
             force_result = release_force()
 
@@ -285,7 +237,7 @@ class ForceController:
                 flush=True,
             )
 
-        # Compliance 해제
+
         try:
             compliance_result = (
                 release_compliance_ctrl()
