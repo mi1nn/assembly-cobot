@@ -64,20 +64,24 @@ ACTION_NAME = "/execute_operation"
 # =============================================================
 
 POST_OPERATION_CODES = {
-    "postA",
-    "postB",
-    "postC",
-    "postD",
-    "postE",
-    "postF",
+    "post1",
+    "post2",
+    "post3",
+    "post4",
+    "post5",
+    "post6",
 }
 
 # DB operation code와 별개로 직접 Action 테스트에 사용할 수 있는 코드.
 SUPPORTED_OPERATION_CODES = POST_OPERATION_CODES | {
     "POST_PICK",
     "POST_PLACE",
-    "POST_PIN_PICK",
-    "POST_PIN_PLACE",
+    "PIN_PICK",
+    "PIN_PLACE",
+    "FRAME_PICK",
+    "FRAME_PLACE",
+    "SNAPFIT_PICK",
+    "SNAPFIT_PLACE",
     "POST_INSTALL",
     "SOLAR_FULL",
 }
@@ -749,7 +753,7 @@ class SolarPanelControllerNode(Node):
         try:
             if self.solar is None:
                 raise RuntimeError("SolarMotion is not initialized.")
-            self.solar.force.all_off()
+            self.solar.motion.restore_motion()
         except Exception as error:
             self.set_status("ERROR")
             response.recovered = False
@@ -828,9 +832,40 @@ class SolarPanelControllerNode(Node):
                 "SolarMotion이 준비되지 않았습니다."
             )
 
-        # DB postA~postF는 모두 하나의 Post Cycle로 실행한다.
-        # 1 Cycle:
-        #   POST PICK -> POST PLACE -> POST PIN PICK -> POST PIN PLACE
+        # =====================================================
+        # TEMP TEST: post1 -> PIN PICK -> PIN PLACE
+        # =====================================================
+        #
+        # 기존 post1의 POST 설치 Cycle은 PIN 단독 테스트 동안 잠시 비활성화한다.
+        #
+        # if operation_code == "post1":
+        #     return self.solar.install_post_cycle(
+        #         parameters,
+        #         components,
+        #         operation_context=operation_context,
+        #     )
+        #
+        # 현재 임시 실행:
+        #     PIN PICK -> PIN PLACE
+        #
+        if operation_code == "post1":
+            self.get_logger().warning(
+                "[TEMP TEST] post1 -> PIN PICK -> PIN PLACE"
+            )
+
+            self.solar.pick_pin(
+                parameters,
+                components,
+                operation_context=operation_context,
+            )
+
+            return self.solar.place_pin(
+                parameters,
+                components,
+                operation_context=operation_context,
+            )
+
+        # post2 ~ post6은 기존 POST 설치 Cycle을 그대로 유지한다.
         if operation_code in POST_OPERATION_CODES:
             return self.solar.install_post_cycle(
                 parameters,
@@ -853,15 +888,42 @@ class SolarPanelControllerNode(Node):
                 operation_context=operation_context,
             )
 
-        if operation_code == "POST_PIN_PICK":
-            return self.solar.pick_post_pin(
+        if operation_code == "PIN_PICK":
+            return self.solar.pick_pin(
                 parameters,
                 components,
                 operation_context=operation_context,
             )
 
-        if operation_code == "POST_PIN_PLACE":
-            return self.solar.place_post_pin(
+        if operation_code == "PIN_PLACE":
+            return self.solar.place_pin(
+                parameters,
+                components,
+                operation_context=operation_context,
+            )
+        if operation_code == "FRAME_PICK":
+            return self.solar.pick_frame(
+                parameters,
+                components,
+                operation_context=operation_context,
+            )
+
+        if operation_code == "FRAME_PLACE":
+            return self.solar.place_frame(
+                parameters,
+                components,
+                operation_context=operation_context,
+            )
+
+        if operation_code == "SNAPFIT_PICK":
+            return self.solar.pick_snapfit(
+                parameters,
+                components,
+                operation_context=operation_context,
+            )
+
+        if operation_code == "SNAPFIT_PLACE":
+            return self.solar.place_snapfit(
                 parameters,
                 components,
                 operation_context=operation_context,

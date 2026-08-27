@@ -1,6 +1,11 @@
 import math
 import time
 
+import rclpy
+import DR_init
+
+from dsr_msgs2.srv import MoveStop
+
 from .force_control import ForceController
 
 from DSR_ROBOT2 import (
@@ -17,6 +22,7 @@ from DSR_ROBOT2 import (
     DR_TOOL,
     DR_MV_MOD_REL,
     DR_MV_MOD_ABS,
+    DR_SSTOP,
 )
 
 
@@ -50,6 +56,12 @@ class RobotMotion:
     def __init__(self):
         self.force = ForceController()
 
+        self.dsr_node = getattr(DR_init, "__dsr__node")
+        self.stop_client = self.dsr_node.create_client(
+            MoveStop,
+            "dsr_controller2/motion/move_stop",
+        )
+
         # YAML 대신 robot_motion.py 내부 로봇 기본값 사용.
         # 작업 실행 시에는 DB에서 받은 speed/acc 등이 함수 인자로 전달되어
         # 이 기본값보다 우선한다.
@@ -59,6 +71,58 @@ class RobotMotion:
         self.grasp_port = GRASP_PORT
         self.release_port = RELEASE_PORT
         self.gripper_wait_time = GRIPPER_WAIT_TIME
+
+    # =========================================================
+    # Motion Stop / Restore
+    # =========================================================
+
+    def stop_motion(self, mode=DR_SSTOP, timeout=2.0):
+        """진행 중인 Robot Motion을 MoveStop service로 정지한다."""
+        print(f"[MOTION STOP] 요청 mode={mode}", flush=True)
+
+        if not self.stop_client.wait_for_service(timeout_sec=timeout):
+            raise RuntimeError(
+                "MoveStop service를 찾을 수 없습니다: "
+                "dsr_controller2/motion/move_stop"
+            )
+
+        request = MoveStop.Request()
+        request.stop_mode = int(mode)
+        future = self.stop_client.call_async(request)
+
+        rclpy.spin_until_future_complete(
+            self.dsr_node,
+            future,
+            timeout_sec=timeout,
+        )
+
+        if not future.done():
+            future.cancel()
+            raise RuntimeError("MoveStop service 응답 Timeout")
+
+        try:
+            result = future.result()
+        except Exception as error:
+            raise RuntimeError(
+                f"MoveStop service 호출 실패: {error}"
+            ) from error
+
+        if result is None:
+            raise RuntimeError("MoveStop service 응답이 없습니다.")
+        if not result.success:
+            raise RuntimeError("Robot Motion 정지 실패")
+
+        print("[MOTION STOP] 완료", flush=True)
+        return True
+
+    def restore_motion(self):
+        """정지 후 Force 상태를 해제하고 안전 기본 Home 자세로 복귀한다."""
+        print("[MOTION RESTORE] 시작", flush=True)
+        self.force.all_off()
+        self.release()
+        self.move_home()
+        print("[MOTION RESTORE] 완료", flush=True)
+        return True
 
     # =========================================================
     # Gripper
@@ -262,71 +326,53 @@ class RobotMotion:
         self,
         start,
         end,
-        height=100,
+        height=500,
         steps=6,
+        velocity=None,
+        acc=None,
     ):
-        """
-        start -> end 사이에 포물선 형태의 중간점을 생성하고
-        movesx()로 spline 이동한다.
-        """
-
+        """start -> end 포물선 점열을 생성해 BASE 기준 movesx()로 이동한다."""
         if steps < 2:
-            raise ValueError(
-                "steps must be 2 or greater"
-            )
-
+            raise ValueError("steps must be 2 or greater")
         if len(start) != 6 or len(end) != 6:
-            raise ValueError(
-                "start and end must contain 6 values"
-            )
+            raise ValueError("start and end must contain 6 values")
 
+        height = float(height)
+        velocity = self.velocity if velocity is None else float(velocity)
+        acc = self.acc if acc is None else float(acc)
         points = []
 
         for i in range(1, steps + 1):
             t = float(i) / steps
-
             x = start[0] + (end[0] - start[0]) * t
             y = start[1] + (end[1] - start[1]) * t
-
-            z_linear = (
-                start[2]
-                + (end[2] - start[2]) * t
-            )
-            z_arc = 4 * height * t * (1 - t)
-            z = z_linear + z_arc
-
-            rx = start[3] + (end[3] - start[3]) * t
-            ry = start[4] + (end[4] - start[4]) * t
-            rz = start[5] + (end[5] - start[5]) * t
-
-            points.append(
-                posx(
-                    x,
-                    y,
-                    z,
-                    rx,
-                    ry,
-                    rz,
-                )
-            )
+            z_linear = start[2] + (end[2] - start[2]) * t
+            z = z_linear + 4 * height * t * (1 - t)
+            angles = []
+            for start_angle, end_angle in zip(start[3:], end[3:]):
+                # -180/180 경계를 가로지를 때 불필요한 장회전을 피한다.
+                delta = (end_angle - start_angle + 180.0) % 360.0 - 180.0
+                angles.append(start_angle + delta * t)
+            points.append(posx(x, y, z, *angles))
 
         print(
-            f"[ARC] spline 이동 시작: "
-            f"height={height}, steps={steps}",
+            "[ARC] spline 이동 시작: "
+            f"start={[float(v) for v in start]}, "
+            f"end={[float(v) for v in end]}, "
+            f"height={height}, steps={steps}, vel={velocity}, acc={acc}",
             flush=True,
         )
-
-        movesx(
+        result = movesx(
             points,
-            v=self.velocity,
-            a=self.acc,
+            v=velocity,
+            a=acc,
             ref=DR_BASE,
         )
+        if result != 0:
+            raise RuntimeError(f"Arc spline 이동 실패: result={result}")
 
-        print(
-            "[ARC] spline 이동 완료",
-            flush=True,
-        )
+        print("[ARC] spline 이동 명령 완료", flush=True)
+        return True
 
     # =========================================================
     # Current Pose / Force Probe
@@ -892,42 +938,18 @@ class RobotMotion:
         poll_interval=0.02,
         arm_delay=0.10,
         stiffness=None,
+        reference="tool",
     ):
         """
-        TOOL 좌표계 Force 기반 범용 Place 삽입 동작.
+        선택한 기준 좌표계에서 Force 기반 범용 Place 삽입 동작.
 
-        Post 예시:
-            axis="z", direction=+1
-            -> TOOL +Z 방향 Force 삽입, Delta Fz 감시
-
-        Post Pin 예시:
-            axis="x", direction=+1
-            -> TOOL +X 방향 Force 삽입, Delta Fx 감시
-
-        get_tool_force(DR_TOOL)로 시작점 대비 힘 변화량을 직접 측정한다.
-
-        axis:
-            "x", "y", "z" 중 Force를 적용할 TOOL 축.
-
-        direction:
-            +1이면 해당 TOOL 축의 +방향, -1이면 -방향.
-
-        force:
-            Desired Force의 크기(N). 양수 값만 입력한다.
-
-        threshold:
-            Force 시작점 대비 선택 축 힘 변화량의 절대값(N).
-            이 값 이상인 상태가 hold_time 동안 연속 유지되면 완료로 판단한다.
-
-        timeout:
-            None이면 시간 제한 없이 threshold 조건을 기다린다.
-
-        hold_time:
-            threshold 이상 상태를 연속으로 유지해야 하는 시간(초).
-            0이면 기존처럼 즉시 완료한다.
+        reference:
+            "tool" -> TOOL 좌표계 기준 Force / 반력 측정
+            "base" -> BASE 좌표계 기준 Force / 반력 측정
         """
 
         axis = str(axis).lower()
+        reference = str(reference).lower()
         direction = int(direction)
         force = float(force)
         threshold = float(threshold)
@@ -941,20 +963,25 @@ class RobotMotion:
                 f"axis must be one of x, y, z: {axis}"
             )
 
-        if direction not in (-1, 1):
+        if reference == "tool":
+            force_ref = DR_TOOL
+            reference_label = "TOOL"
+        elif reference == "base":
+            force_ref = DR_BASE
+            reference_label = "BASE"
+        else:
             raise ValueError(
-                "direction must be +1 or -1"
+                f"reference must be 'tool' or 'base': {reference}"
             )
+
+        if direction not in (-1, 1):
+            raise ValueError("direction must be +1 or -1")
 
         if force <= 0:
-            raise ValueError(
-                "force must be greater than 0"
-            )
+            raise ValueError("force must be greater than 0")
 
         if threshold <= 0:
-            raise ValueError(
-                "threshold must be greater than 0"
-            )
+            raise ValueError("threshold must be greater than 0")
 
         if timeout is not None and timeout <= 0:
             raise ValueError(
@@ -962,9 +989,7 @@ class RobotMotion:
             )
 
         if hold_time < 0:
-            raise ValueError(
-                "hold_time must be >= 0"
-            )
+            raise ValueError("hold_time must be >= 0")
 
         if poll_interval <= 0:
             raise ValueError(
@@ -972,9 +997,7 @@ class RobotMotion:
             )
 
         if arm_delay < 0:
-            raise ValueError(
-                "arm_delay must be >= 0"
-            )
+            raise ValueError("arm_delay must be >= 0")
 
         axis_index = self.FORCE_AXIS_INDEX[axis]
         axis_label = axis.upper()
@@ -982,7 +1005,8 @@ class RobotMotion:
         direction_label = "+" if direction > 0 else "-"
 
         print(
-            f"[PLACE] 시작 axis=TOOL {axis_label}, "
+            f"[PLACE] 시작 reference={reference_label}, "
+            f"axis={axis_label}, "
             f"direction={direction_label}{axis_label}, "
             f"desired_force={force:.2f}N, "
             f"delta_threshold={threshold:.2f}N, "
@@ -994,49 +1018,34 @@ class RobotMotion:
         force_control_started = False
 
         try:
-            # 1. TOOL 기준 Compliance Control
-            print(
-                "[PLACE] Compliance ON (reference=TOOL)",
-                flush=True,
-            )
-
             self.force.compliance_on(
                 stiffness=stiffness,
-                reference="tool",
+                reference=reference,
             )
 
             wait(0.2)
 
-            # 2. Force 적용 직전 선택 축의 baseline 저장
             baseline_force = [
                 float(value)
-                for value in get_tool_force(DR_TOOL)
+                for value in get_tool_force(force_ref)
             ]
             baseline_value = float(
                 baseline_force[axis_index]
             )
 
             print(
-                f"[PLACE] Baseline F{axis}={baseline_value:.2f}N "
+                f"[PLACE] Baseline {reference_label} F{axis}="
+                f"{baseline_value:.2f}N "
                 f"| force=[Fx={baseline_force[0]:.2f}, "
                 f"Fy={baseline_force[1]:.2f}, "
                 f"Fz={baseline_force[2]:.2f}]N",
                 flush=True,
             )
 
-            # 3. 선택한 TOOL 축에 Desired Force 적용
-            print(
-                f"[PLACE] TOOL {direction_label}{axis_label} "
-                f"Desired Force {force:.2f}N 적용",
-                flush=True,
-            )
-
             self.force.force_on(
-                forces={
-                    axis: signed_force,
-                },
+                forces={axis: signed_force},
                 mode="relative",
-                reference="tool",
+                reference=reference,
             )
 
             force_control_started = True
@@ -1045,24 +1054,17 @@ class RobotMotion:
             if arm_delay > 0:
                 wait(arm_delay)
 
-            print(
-                f"[PLACE] Delta Force 판정 시작 "
-                f"|F{axis} - baseline| >= {threshold:.2f}N",
-                flush=True,
-            )
-
-            # 본 삽입은 0.1초마다 Force 상태를 출력한다.
             log_interval = 0.10
             next_log_time = 0.0
             sample_index = 0
             threshold_start = None
 
-            # 4. 선택 축의 힘 변화량을 직접 반복 측정
             while True:
                 measured_force = [
                     float(value)
-                    for value in get_tool_force(DR_TOOL)
+                    for value in get_tool_force(force_ref)
                 ]
+
                 current_value = float(
                     measured_force[axis_index]
                 )
@@ -1077,8 +1079,10 @@ class RobotMotion:
                         measured_force[i] - baseline_force[i]
                         for i in range(3)
                     ]
+
                     print(
                         f"[PLACE SAMPLE #{sample_index:04d}] "
+                        f"ref={reference_label} "
                         f"t={elapsed:.3f}s "
                         f"force=[Fx={measured_force[0]:.3f}, "
                         f"Fy={measured_force[1]:.3f}, "
@@ -1090,6 +1094,7 @@ class RobotMotion:
                         f"threshold={threshold:.3f}N",
                         flush=True,
                     )
+
                     next_log_time += log_interval
 
                 if delta_force >= threshold:
@@ -1100,59 +1105,24 @@ class RobotMotion:
 
                     if held >= hold_time:
                         print(
-                            "",
-                            flush=True,
-                        )
-                        print(
-                            "========================================",
-                            flush=True,
-                        )
-                        print(
-                            "[PLACE] COMPLETE - 삽입 Force 유지 조건 만족",
-                            flush=True,
-                        )
-                        print(
-                            f"[PLACE] Axis=TOOL {axis_label}",
-                            flush=True,
-                        )
-                        print(
-                            f"[PLACE] Baseline F{axis}="
-                            f"{baseline_value:.2f}N",
-                            flush=True,
-                        )
-                        print(
-                            f"[PLACE] Current F{axis}="
-                            f"{current_value:.2f}N",
-                            flush=True,
-                        )
-                        print(
-                            f"[PLACE] Delta F{axis}="
-                            f"{delta_force:.2f}N "
+                            f"[PLACE] COMPLETE - "
+                            f"{reference_label} {axis_label} "
+                            f"Delta Force {delta_force:.2f}N "
                             f">= {threshold:.2f}N",
                             flush=True,
                         )
-                        print(
-                            f"[PLACE] Threshold hold="
-                            f"{held:.3f}s >= {hold_time:.3f}s",
-                            flush=True,
-                        )
-                        print(
-                            "========================================",
-                            flush=True,
-                        )
-
                         return True
+
                 else:
-                    # threshold 아래로 떨어지면 연속 유지시간을 처음부터 다시 센다.
                     threshold_start = None
 
                 if timeout is not None and elapsed >= timeout:
                     raise RuntimeError(
                         "[PLACE] Delta Force threshold Timeout: "
                         f"{timeout:.1f}초 동안 "
+                        f"{reference_label} "
                         f"|F{axis} - baseline| >= "
-                        f"{threshold:.2f}N 조건을 만족하지 "
-                        "못했습니다. "
+                        f"{threshold:.2f}N 조건을 만족하지 못했습니다. "
                         f"baseline={baseline_value:.2f}N, "
                         f"current={current_value:.2f}N, "
                         f"delta={delta_force:.2f}N"
@@ -1167,5 +1137,4 @@ class RobotMotion:
                     flush=True,
                 )
 
-            # 성공/실패와 관계없이 Force와 Compliance를 반드시 해제한다.
             self.force.all_off()

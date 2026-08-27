@@ -13,6 +13,7 @@ from app.routes.logs import logs_bp
 from app.routes.robots import robots_bp
 from app.routes.dashboard import dashboard_bp
 from app.routes.sensor_data import sensor_data_bp
+from app.routes.installations import installations_bp
 
 def create_app():
     # Flask app 생성
@@ -38,5 +39,6 @@ def create_app():
     app.register_blueprint(robots_bp)
     app.register_blueprint(dashboard_bp)
     app.register_blueprint(sensor_data_bp)
+    app.register_blueprint(installations_bp)
     
     return app

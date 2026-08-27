@@ -6,11 +6,27 @@ class PostPlaceError(Exception):
     pass
 
 
-class PostPinPickError(Exception):
+class PinPickError(Exception):
     pass
 
 
-class PostPinPlaceError(Exception):
+class PinPlaceError(Exception):
+    pass
+
+
+class SnapfitPickError(Exception):
+    pass
+
+
+class SnapfitPlaceError(Exception):
+    pass
+
+
+class FramePickError(Exception):
+    pass
+
+
+class FramePlaceError(Exception):
     pass
 
 
@@ -25,16 +41,23 @@ class SolarMotion:
         DB 전체를 검증하지 않는다. 각 Pick/Place 단계가 실제로 필요한 값만
         실행 시점에 선택적으로 읽는다. 현재 사용하는 키:
             speed, acceleration, pick_distance, place_retreat_distance,
-            place_search_limit_z, place_force, place_contact_force,
-            place_insert_force, place_stiffness_z, place_search_velocity,
+            place_search_limit_z, post_place_force, post_contact_force,
+            post_insert_force, place_stiffness_z, place_search_velocity,
             place_search_acceleration, place_search_timeout
 
         아래 메타데이터는 DB에 존재해도 Post Motion에서는 사용하지 않는다.
             tcp, ucs, tool, fixture, coordinate_system
 
     operation.components
-        CMP-POST-* : pickup_position / assembly_position
-        PIN-*      : pickup_position / assembly_position
+        CMP-POST-*   : pickup_position / assembly_position
+        PIN-A-*      : pickup_position / assembly_position
+        SNAPFIT-A-*  : pickup_position / assembly_position
+        CMP-FRAME-*   : pickup_position / assembly_position
+
+    좌표/안전거리 정책:
+        - PIN은 기존 실험 코드를 유지한다.
+        - POST/FRAME/SNAPFIT의 pickup_position / assembly_position은 실제 작업 좌표다.
+        - pick_distance / place_retreat_distance는 안전 접근/복귀 거리로 사용한다.
 
     Post place alignment는 코드 내부 정책으로 고정한다.
         - 첫 접촉: TOOL +Z
@@ -47,10 +70,50 @@ class SolarMotion:
     """
 
     POST_COMPONENT_PREFIX = "CMP-POST-"
-    POST_PIN_COMPONENT_PREFIX = "PIN-"
+    PIN_COMPONENT_PREFIX = "PIN-A-"
+    SNAPFIT_COMPONENT_PREFIX = "SNAPFIT-A-"
+    FRAME_COMPONENT_PREFIX = "CMP-FRAME-"
 
-    POST_INSERT_DIRECTION = 1      # TOOL +Z
-    POST_PIN_INSERT_DIRECTION = 1  # TOOL +X
+    # FRAME Pick/Place 공통 movec 경유점 (BASE 절대좌표)
+    FRAME_MOVEC_VIA = (
+        -46.4,
+        472.47,
+        343.52,
+        95.74,
+        179.17,
+        9.5,
+    )
+    # SNAPFIT Pick 후 모든 Place로 이동하기 전 대기하는 공통 BASE 기준점.
+    SNAPFIT_TRANSFER_POSE = (
+        382.99,
+        -117.23,
+        304.27,
+        156.18,
+        177.92,
+        63.5,
+    )
+
+
+    # FRAME Place: 정확한 assembly_position 도달 후 BASE -Z 방향으로 Force Place.
+    FRAME_PLACE_FORCE_AXIS = "z"
+    FRAME_PLACE_FORCE_DIRECTION = -1
+    FRAME_PLACE_FORCE_REFERENCE = "base"
+
+    # FRAME Release 후 TOOL 좌표 기준 X/Y Periodic 이동을 수행한다.
+    # 기본 진폭은 X 5mm, Y 90mm이며 X 1주기 후 Y 1주기를 반복한다.
+
+    POST_INSERT_DIRECTION = 1       # TOOL +Z
+
+    # PIN은 기존 설계를 유지한다.
+    PIN_INSERT_AXIS = "x"
+    PIN_INSERT_DIRECTION = 1        # TOOL +X
+    PIN_INSERT_REFERENCE = "tool"
+
+    # SNAPFIT은 TOOL +Z 방향으로 Force 삽입한다.
+    SNAPFIT_INSERT_AXIS = "z"
+    SNAPFIT_INSERT_DIRECTION = 1    # TOOL +Z
+    SNAPFIT_INSERT_REFERENCE = "tool"
+
 
     CONTACT_THRESHOLD_N = 5.0
     CONTACT_POLL_INTERVAL = 0.02
@@ -58,12 +121,12 @@ class SolarMotion:
     CONTACT_DEFAULT_MAX_TRAVEL_MM = 150.0
 
     # 최적 위치 선정 후 POST 본 삽입 완료 조건
-    POST_FINAL_CONTACT_THRESHOLD_N = 65.0
+    POST_FINAL_CONTACT_THRESHOLD_N = 20.0
     POST_FINAL_CONTACT_HOLD_SEC = 0.50
 
     # 1차 Contact Seek에서 이 BASE Z 아래까지 이미 내려갔다면
     # 포스트가 정상적으로 구멍에 진입한 것으로 보고 25-point Search를 생략한다.
-    DIRECT_INSERT_BASE_Z_THRESHOLD_MM = 182.0
+    DIRECT_INSERT_BASE_Z_THRESHOLD_MM = 190.0
 
     SEARCH_X_OFFSETS_MM = (-0.6, -0.3, 0.0, 0.3, 0.6)
     SEARCH_Y_OFFSETS_MM = (-0.6, -0.3, 0.0, 0.3, 0.6)
@@ -76,10 +139,22 @@ class SolarMotion:
     def __init__(self, node):
         self.node = node
 
-        from DSR_ROBOT2 import movel, posx, wait, DR_BASE, DR_TOOL
+        from DSR_ROBOT2 import (
+            movel,
+            movec,
+            mwait,
+            move_periodic,
+            posx,
+            wait,
+            DR_BASE,
+            DR_TOOL,
+        )
         from .robot_motion import RobotMotion
 
         self.movel = movel
+        self.movec = movec
+        self.mwait = mwait
+        self.move_periodic = move_periodic
         self.posx = posx
         self.wait = wait
         self.DR_BASE = DR_BASE
@@ -206,21 +281,21 @@ class SolarMotion:
                     50.0,
                     nonnegative=True,
                 ),
-                # 최종 본 삽입 Desired Force
+                # POST 최종 본 삽입 Desired Force
                 "place_force": self._first_number(
-                    parameters, ("place_force", "post_place_force"), 40.0, positive=True
+                    parameters, ("post_place_force",), 40.0, positive=True
                 ),
-                # 최초 접촉을 찾기 위한 약한 Desired Force
+                # POST 최초 접촉을 찾기 위한 약한 Desired Force
                 "contact_seek_force": self._first_number(
-                    parameters, ("place_contact_force", "post_contact_force"), 20.0, positive=True
+                    parameters, ("post_contact_force",), 20.0, positive=True
                 ),
                 # 최종 삽입 성공 판정은 코드 정책으로 분리한다.
-                # place_contact_force는 최초 Contact Seek 용도이며 여기 재사용하지 않는다.
+                # post_contact_force는 최초 Contact Seek 용도이며 여기 재사용하지 않는다.
                 "final_contact_threshold": self.POST_FINAL_CONTACT_THRESHOLD_N,
                 "final_contact_hold_sec": self.POST_FINAL_CONTACT_HOLD_SEC,
-                # 각 위치 후보에서 사용하는 Probe Force
+                # POST 각 위치 후보에서 사용하는 Probe/Search Force
                 "insert_force": self._first_number(
-                    parameters, ("place_insert_force", "post_search_force"), 12.0, positive=True
+                    parameters, ("post_insert_force",), 12.0, positive=True
                 ),
                 "stiffness_z": self._first_number(
                     parameters, ("place_stiffness_z",), 500.0, positive=True
@@ -230,6 +305,11 @@ class SolarMotion:
                 ),
                 "search_acc": self._first_number(
                     parameters, ("place_search_acceleration",), 20.0, positive=True
+                ),
+                "direct_insert_base_z_threshold": self._first_number(
+                    parameters,
+                    ("place_direct_insert_base_z_threshold",),
+                    self.DIRECT_INSERT_BASE_Z_THRESHOLD_MM,
                 ),
             }
         )
@@ -253,22 +333,240 @@ class SolarMotion:
         )
         return settings
 
+    def _load_pin_pick_settings(self, parameters):
+        """얇은 PIN(PIN-A-*) Pick 설정."""
+        settings = self._load_travel_settings(parameters)
+        settings["pick_distance"] = self._first_number(
+            parameters,
+            ("pin_pick_distance", "pick_distance"),
+            50.0,
+            positive=True,
+        )
+        return settings
+
+    def _load_snapfit_pick_settings(self, parameters):
+        """SNAPFIT-A-* Pick 설정. snap_fit/snapfit 키를 모두 호환한다."""
+        settings = self._load_travel_settings(parameters)
+        settings["snapfit_pick_distance"] = self._first_number(
+            parameters,
+            (
+                "snap_fit_pick_distance",
+                "snapfit_pick_distance",
+                "post_pin_pick_distance",
+                "pick_distance",
+            ),
+            50.0,
+            positive=True,
+        )
+        settings["snapfit_arc_height"] = self._first_number(
+            parameters,
+            ("snapfit_arc_height",),
+            100.0,
+            nonnegative=True,
+        )
+        settings["snapfit_arc_steps"] = self._first_number(
+            parameters,
+            ("snapfit_arc_steps",),
+            6.0,
+            positive=True,
+        )
+        return settings
+
     def _load_pin_place_settings(self, parameters):
-        """PIN Place에서 실제로 사용하는 값만 읽는다."""
+        """얇은 PIN(PIN-A-*) Force Place 설정."""
         settings = self._load_travel_settings(parameters)
         settings.update(
             {
                 "retreat_distance": self._first_number(
                     parameters,
-                    ("place_retreat_distance", "post_place_retreat_distance"),
-                    50.0,
+                    ("pin_place_retreat_distance", "place_retreat_distance"),
+                    30.0,
                     nonnegative=True,
                 ),
                 "place_force": self._first_number(
-                    parameters, ("place_force", "post_pin_place_force", "post_place_force"), 40.0, positive=True
+                    parameters,
+                    ("pin_place_force", "place_force"),
+                    20.0,
+                    positive=True,
                 ),
                 "contact_force": self._first_number(
-                    parameters, ("place_contact_force", "post_pin_place_force_threshold", "post_place_force_threshold"), 20.0, positive=True
+                    parameters,
+                    ("pin_place_force_threshold", "place_contact_force"),
+                    10.0,
+                    positive=True,
+                ),
+                "stiffness": self._first_number(
+                    parameters,
+                    ("pin_place_stiffness_x",),
+                    500.0,
+                    positive=True,
+                ),
+                "timeout": self._first_number(
+                    parameters,
+                    ("pin_place_timeout",),
+                    10.0,
+                    positive=True,
+                ),
+            }
+        )
+        return settings
+
+    def _load_frame_settings(self, parameters):
+        """FRAME(CMP-FRAME-*) Pick/Place 이동/Force/Periodic 설정.
+
+        pickup_position / assembly_position:
+            실제 Pick/Place 작업 좌표.
+
+        pick_distance / place_distance:
+            실제 작업 좌표에서 BASE +Z 방향으로 떨어진 안전 접근 거리.
+
+        FRAME 이동:
+            공통 FRAME_MOVEC_VIA를 경유하는 movec() 사용.
+
+        FRAME Place:
+            assembly_position 도달 후 BASE -Z Force Place.
+            측정 Force threshold는 frame_place_force_threshold를 사용한다.
+            Release 후 DB에서 읽은 설정으로 TOOL X/Y Periodic을 수행하고
+            완료 후 안전 접근점으로 상승한다.
+        """
+        settings = self._load_travel_settings(parameters)
+
+        settings["pick_distance"] = self._first_number(
+            parameters,
+            ("frame_pick_distance", "pick_distance"),
+            50.0,
+            nonnegative=True,
+        )
+
+        settings["place_distance"] = self._first_number(
+            parameters,
+            ("frame_place_distance", "place_distance", "place_retreat_distance"),
+            50.0,
+            nonnegative=True,
+        )
+
+        # FRAME 전용 Desired Force.
+        settings["place_force"] = self._first_number(
+            parameters,
+            ("frame_place_force",),
+            30.0,
+            positive=True,
+        )
+
+        # FRAME에서 측정 Force가 이 값 이상이면 Place 성공으로 판단.
+        settings["contact_force"] = self._first_number(
+            parameters,
+            ("frame_place_force_threshold",),
+            10.0,
+            positive=True,
+        )
+
+        settings["stiffness_z"] = self._first_number(
+            parameters,
+            ("frame_place_stiffness_z", "place_stiffness_z"),
+            500.0,
+            positive=True,
+        )
+
+        settings["force_timeout"] = self._first_number(
+            parameters,
+            ("frame_place_timeout",),
+            10.0,
+            positive=True,
+        )
+
+        settings["periodic_x_amplitude"] = self._first_number(
+            parameters,
+            ("frame_periodic_x_amplitude",),
+            5.0,
+            nonnegative=True,
+        )
+        settings["periodic_y_amplitude"] = self._first_number(
+            parameters,
+            ("frame_periodic_y_amplitude",),
+            90.0,
+            nonnegative=True,
+        )
+        settings["periodic_period"] = self._first_number(
+            parameters,
+            ("frame_periodic_period",),
+            2.0,
+            positive=True,
+        )
+        settings["periodic_atime"] = self._first_number(
+            parameters,
+            ("frame_periodic_atime",),
+            0.5,
+            nonnegative=True,
+        )
+        settings["periodic_repeat"] = self._first_number(
+            parameters,
+            ("frame_periodic_repeat",),
+            2.0,
+            positive=True,
+        )
+
+        return settings
+
+    def _load_snapfit_place_settings(self, parameters):
+        """SNAPFIT-A-* Place 설정.
+
+        assembly_position은 실제 Place/Force 시작 좌표다.
+        place_distance는 해당 좌표에서 BASE +Z 방향으로 떨어진 안전 접근 거리다.
+        """
+        settings = self._load_travel_settings(parameters)
+        settings.update(
+            {
+                "place_distance": self._first_number(
+                    parameters,
+                    (
+                        "snap_fit_place_distance",
+                        "snapfit_place_distance",
+                        "place_distance",
+                        "snap_fit_place_retreat_distance",
+                        "snapfit_place_retreat_distance",
+                        "place_retreat_distance",
+                        "post_place_retreat_distance",
+                    ),
+                    30.0,
+                    nonnegative=True,
+                ),
+                "place_force": self._first_number(
+                    parameters,
+                    (
+                        "snapfit_place_force",
+                        "post_pin_place_force",
+                        "place_force",
+                        "post_place_force",
+                    ),
+                    40.0,
+                    positive=True,
+                ),
+                "contact_force": self._first_number(
+                    parameters,
+                    (
+                        "snapfit_place_force_threshold",
+                        "post_pin_place_force_threshold",
+                        "place_contact_force",
+                        "post_place_force_threshold",
+                    ),
+                    20.0,
+                    positive=True,
+                ),
+                "stiffness": self._first_number(
+                    parameters,
+                    (
+                        "snapfit_place_stiffness_z",
+                        "snapfit_place_stiffness_x",
+                    ),
+                    500.0,
+                    positive=True,
+                ),
+                "timeout": self._first_number(
+                    parameters,
+                    ("snapfit_place_timeout",),
+                    10.0,
+                    positive=True,
                 ),
             }
         )
@@ -293,23 +591,32 @@ class SolarMotion:
             f"{label} component를 찾을 수 없습니다. code prefix={prefix}"
         )
 
-    def _position_to_posx(self, position, label):
+    def _position_to_posx(
+        self,
+        position,
+        label,
+    ):
         if not isinstance(position, dict):
-            raise ValueError(f"{label}은 JSON object여야 합니다.")
+            raise ValueError(
+                f"{label}은 JSON object여야 합니다."
+            )
 
-        required = ("x", "y", "z", "rx", "ry", "rz", "frame")
-        missing = [key for key in required if position.get(key) is None]
+        required = (
+            "x", "y", "z",
+            "A", "B", "C",
+        )
+
+        missing = [
+            key
+            for key in required
+            if position.get(key) is None
+        ]
+
         if missing:
             raise ValueError(f"{label} 필드 누락: " + ", ".join(missing))
 
-        frame = str(position["frame"]).upper()
-        if frame != "BASE":
-            raise ValueError(
-                f"{label}.frame={frame}: 현재 Post Motion은 BASE 좌표만 지원합니다."
-            )
-
         values = []
-        for key in ("x", "y", "z", "rx", "ry", "rz"):
+        for key in ("x", "y", "z", "A", "B", "C"):
             try:
                 values.append(float(position[key]))
             except (TypeError, ValueError) as e:
@@ -351,14 +658,34 @@ class SolarMotion:
             components, self.POST_COMPONENT_PREFIX, "POST"
         )
 
-    def _post_pin_pickup_input(self, components):
+    def _pin_pickup_input(self, components):
         return self._pickup_input(
-            components, self.POST_PIN_COMPONENT_PREFIX, "POST_PIN"
+            components, self.PIN_COMPONENT_PREFIX, "PIN"
         )
 
-    def _post_pin_assembly_input(self, components):
+    def _pin_assembly_input(self, components):
         return self._assembly_input(
-            components, self.POST_PIN_COMPONENT_PREFIX, "POST_PIN"
+            components, self.PIN_COMPONENT_PREFIX, "PIN"
+        )
+
+    def _snapfit_pickup_input(self, components):
+        return self._pickup_input(
+            components, self.SNAPFIT_COMPONENT_PREFIX, "SNAPFIT"
+        )
+
+    def _snapfit_assembly_input(self, components):
+        return self._assembly_input(
+            components, self.SNAPFIT_COMPONENT_PREFIX, "SNAPFIT"
+        )
+
+    def _frame_pickup_input(self, components):
+        return self._pickup_input(
+            components, self.FRAME_COMPONENT_PREFIX, "FRAME"
+        )
+
+    def _frame_assembly_input(self, components):
+        return self._assembly_input(
+            components, self.FRAME_COMPONENT_PREFIX, "FRAME"
         )
 
     # =========================================================
@@ -436,6 +763,20 @@ class SolarMotion:
     # =========================================================
 
     def pick_post(self, parameters, components, operation_context=None):
+        """POST를 정확한 pickup_position에서 파지한다.
+
+        pickup_position:
+            실제 Gripper Close가 수행되는 정확한 Pick 좌표.
+
+        pick_distance:
+            pickup_position에서 BASE +Z 방향으로 떨어진 안전 접근 거리.
+
+        순서:
+            Safe Pick
+            -> pickup_position
+            -> Grasp
+            -> Safe Pick 복귀
+        """
         self.node.get_logger().info("========== POST PICK START ==========")
         self._publish_cycle_event(
             operation_context, phase="POST_PICK", status="STARTED"
@@ -445,8 +786,35 @@ class SolarMotion:
             settings = self._load_pick_settings(parameters)
             component, pickup_pose = self._post_pickup_input(components)
 
+            pick_distance = settings["pick_distance"]
+
+            # DB pickup_position 자체가 실제 파지 좌표다.
+            safe_pick_pose = self.posx([
+                float(pickup_pose[0]),
+                float(pickup_pose[1]),
+                float(pickup_pose[2]) + pick_distance,
+                float(pickup_pose[3]),
+                float(pickup_pose[4]),
+                float(pickup_pose[5]),
+            ])
+
+            # 1. Pick 안전 접근점
             self.node.get_logger().info(
-                f"Post Pick 시작 위치 이동 - {component.get('code')}"
+                "POST Pick 안전 접근 - "
+                f"component={component.get('code')}, "
+                f"BASE Z +{pick_distance:.1f}mm"
+            )
+            self.movel(
+                safe_pick_pose,
+                vel=settings["speed"],
+                acc=settings["acc"],
+                ref=self.DR_BASE,
+            )
+            self.wait(0.5)
+
+            # 2. 정확한 Pick 위치
+            self.node.get_logger().info(
+                "POST 정확한 Pick 위치 이동"
             )
             self.movel(
                 pickup_pose,
@@ -454,21 +822,37 @@ class SolarMotion:
                 acc=settings["acc"],
                 ref=self.DR_BASE,
             )
-            self.wait(0.5)
+            self.wait(0.2)
 
-            self.motion.pick(
-                distance=settings["pick_distance"],
-                velocity=settings["speed"],
+            # 3. 파지
+            self.node.get_logger().info("POST Gripper Close")
+            self.motion.grasp()
+            self.wait(0.2)
+
+            # 4. 동일한 안전 접근점으로 복귀
+            self.node.get_logger().info(
+                "POST Pick 완료 -> 안전 접근점 복귀"
+            )
+            self.movel(
+                safe_pick_pose,
+                vel=settings["speed"],
                 acc=settings["acc"],
+                ref=self.DR_BASE,
             )
             self.wait(0.5)
 
-            self.node.get_logger().info("========== POST PICK COMPLETE ==========")
+            self.node.get_logger().info(
+                "========== POST PICK COMPLETE =========="
+            )
             self._publish_cycle_event(
                 operation_context,
                 phase="POST_PICK",
                 status="COMPLETED",
-                detail={"component_code": component.get("code")},
+                detail={
+                    "component_code": component.get("code"),
+                    "pick_distance": pick_distance,
+                    "safe_reference": "BASE_Z",
+                },
             )
             return True
 
@@ -678,8 +1062,35 @@ class SolarMotion:
             direction = self.POST_INSERT_DIRECTION
             direction_label = "+Z" if direction > 0 else "-Z"
 
+            place_distance = settings["retreat_distance"]
+
+            # DB assembly_position 자체가 실제 Place/Force 시작 좌표다.
+            safe_place_pose = self.posx([
+                float(assembly_pose[0]),
+                float(assembly_pose[1]),
+                float(assembly_pose[2]) + place_distance,
+                float(assembly_pose[3]),
+                float(assembly_pose[4]),
+                float(assembly_pose[5]),
+            ])
+
+            # 1. Place 안전 접근점
             self.node.get_logger().info(
-                f"Post Place 시작 위치 이동 - {component.get('code')}"
+                "POST Place 안전 접근 - "
+                f"component={component.get('code')}, "
+                f"BASE Z +{place_distance:.1f}mm"
+            )
+            self.movel(
+                safe_place_pose,
+                vel=settings["speed"],
+                acc=settings["acc"],
+                ref=self.DR_BASE,
+            )
+            self.wait(0.5)
+
+            # 2. 정확한 Place/Force 시작 위치
+            self.node.get_logger().info(
+                "POST 정확한 assembly_position 이동"
             )
             self.movel(
                 assembly_pose,
@@ -687,19 +1098,7 @@ class SolarMotion:
                 acc=settings["acc"],
                 ref=self.DR_BASE,
             )
-            self.wait(0.5)
-
-            # 1) 공중 assembly_position -> 실제 접촉점 탐색.
-            self.node.get_logger().info(
-                "========== POST CONTACT SEEK START =========="
-            )
-            self.node.get_logger().info(
-                f"direction={direction_label}, desired_force="
-                f"{settings['contact_seek_force']:.2f}N, "
-                f"detect_threshold={self.CONTACT_THRESHOLD_N:.2f}N, "
-                f"max_travel={settings['search_limit_z']:.2f}mm, "
-                f"timeout={settings['search_timeout']}"
-            )
+            self.wait(0.2)
 
             contact = self.motion.seek_contact(
                 axis="z",
@@ -730,14 +1129,19 @@ class SolarMotion:
             #    Z < 182mm이면 25-point Search를 생략하고 현재 위치에서 바로 최종 삽입한다.
             current_base_z = float(contact_pose[2])
             best = None
-            search_skipped = current_base_z < self.DIRECT_INSERT_BASE_Z_THRESHOLD_MM
+            direct_insert_threshold = settings[
+                "direct_insert_base_z_threshold"
+            ]
+
+            search_skipped = (
+                current_base_z < direct_insert_threshold
+            )
 
             self.node.get_logger().info(
                 "========== POST DIRECT INSERT CHECK =========="
-            )
-            self.node.get_logger().info(
                 f"Contact BASE Z={current_base_z:.3f}mm, "
-                f"direct_threshold={self.DIRECT_INSERT_BASE_Z_THRESHOLD_MM:.3f}mm"
+                f"threshold={direct_insert_threshold:.3f}mm, "
+                f"search_skipped={search_skipped}"
             )
 
             if search_skipped:
@@ -791,6 +1195,8 @@ class SolarMotion:
                 "contact_axis_force_delta": float(contact["axis_force_delta"]),
                 "contact_base_z": current_base_z,
                 "search_skipped": bool(search_skipped),
+                "place_distance": place_distance,
+                "safe_reference": "BASE_Z",
             }
             if best is not None:
                 detail.update(
@@ -818,21 +1224,60 @@ class SolarMotion:
             raise PostPlaceError(str(e)) from e
 
     # =========================================================
-    # POST PIN PICK
+    # PIN PICK / PLACE
     # =========================================================
 
-    def pick_post_pin(self, parameters, components, operation_context=None):
-        self.node.get_logger().info("========== POST PIN PICK START ==========")
+    def pick_pin(self, parameters, components, operation_context=None):
+        """PIN-A-*를 지정된 pickup_position에서 집는다.
+
+        pickup_position은 PIN 바로 위의 접근 위치로 사용한다.
+
+        동작 순서:
+            1. pickup_position보다 BASE Z +30mm 높은 위치로 이동
+            2. pickup_position으로 이동
+            3. BASE -Z 방향으로 pick_distance만큼 하강
+            4. Gripper Close
+            5. TOOL -X 방향으로 50mm 이동
+            6. BASE +Z 방향으로 pick_distance만큼 상승
+        """
+        self.node.get_logger().info("========== PIN PICK START ==========")
         self._publish_cycle_event(
-            operation_context, phase="POST_PIN_PICK", status="STARTED"
+            operation_context, phase="PIN_PICK", status="STARTED"
         )
 
         try:
-            settings = self._load_pick_settings(parameters)
-            component, pickup_pose = self._post_pin_pickup_input(components)
+            settings = self._load_pin_pick_settings(parameters)
+            component, pickup_pose = self._pin_pickup_input(components)
+
+            pick_distance = settings["pick_distance"]
+
+            # 1. pickup_position보다 BASE Z +30mm 높은 안전 접근점으로 이동
+            pickup_safe_pose = self.posx([
+                float(pickup_pose[0]),
+                float(pickup_pose[1]),
+                float(pickup_pose[2]) + 30.0,
+                float(pickup_pose[3]),
+                float(pickup_pose[4]),
+                float(pickup_pose[5]),
+            ])
 
             self.node.get_logger().info(
-                f"Post Pin Pick 시작 위치 이동 - {component.get('code')}"
+                f"PIN Pick 안전 접근 위치 이동 - "
+                f"component={component.get('code')}, "
+                f"BASE Z +30.0mm"
+            )
+            self.movel(
+                pickup_safe_pose,
+                vel=settings["speed"],
+                acc=settings["acc"],
+                ref=self.DR_BASE,
+            )
+            self.wait(0.5)
+
+            # 2. DB의 pickup_position으로 이동
+            self.node.get_logger().info(
+                f"PIN Pick 위치 이동 - "
+                f"pick_distance={pick_distance:.1f}mm"
             )
             self.movel(
                 pickup_pose,
@@ -841,47 +1286,100 @@ class SolarMotion:
                 ref=self.DR_BASE,
             )
             self.wait(0.5)
-            self.motion.pick(
-                distance=settings["pick_distance"],
+
+            # 3. PIN 위치까지 수직 하강
+            self.node.get_logger().info(
+                f"PIN Pick 하강 - BASE Z {-pick_distance:.1f}mm"
+            )
+            self.motion.move_z(
+                -pick_distance,
+                ref=self.DR_BASE,
+                velocity=settings["speed"],
+                acc=settings["acc"],
+            )
+            self.wait(0.2)
+
+            # 4. PIN 파지
+            self.node.get_logger().info("PIN Gripper Close")
+            self.motion.grasp()
+            self.wait(0.2)
+
+            # 4. 파지 후 BASE +X 방향으로 50mm 이동
+            self.node.get_logger().info(
+                "PIN Pick 파지 후 이동 - TOOL X -50.0mm"
+            )
+            self.motion.move_x(
+                -50.0,
+                ref=self.DR_TOOL,
+                velocity=settings["speed"],
+                acc=settings["acc"],
+            )
+            self.wait(0.2)
+
+            # 6. Z 방향으로 다시 상승
+            self.node.get_logger().info(
+                f"PIN Pick 상승 - BASE Z +{pick_distance:.1f}mm"
+            )
+            self.motion.move_z(
+                pick_distance,
+                ref=self.DR_BASE,
                 velocity=settings["speed"],
                 acc=settings["acc"],
             )
             self.wait(0.5)
 
-            self.node.get_logger().info("========== POST PIN PICK COMPLETE ==========")
+            self.node.get_logger().info("========== PIN PICK COMPLETE ==========")
             self._publish_cycle_event(
                 operation_context,
-                phase="POST_PIN_PICK",
+                phase="PIN_PICK",
                 status="COMPLETED",
-                detail={"component_code": component.get("code")},
+                detail={
+                    "component_code": component.get("code"),
+                    "pick_distance": pick_distance,
+                },
             )
             return True
 
         except Exception as e:
-            self.node.get_logger().error(f"Post Pin Pick 실패: {e}")
+            self.node.get_logger().error(f"PIN Pick 실패: {e}")
             self._publish_cycle_event(
-                operation_context, phase="POST_PIN_PICK", status="FAILED", error=e
+                operation_context, phase="PIN_PICK", status="FAILED", error=e
             )
-            raise PostPinPickError(str(e)) from e
+            raise PinPickError(str(e)) from e
 
-    # =========================================================
-    # POST PIN PLACE
-    # =========================================================
+    def place_pin(self, parameters, components, operation_context=None):
+        """PIN-A-*를 TOOL +X 방향으로 두 번 밀어 넣는다.
 
-    def place_post_pin(self, parameters, components, operation_context=None):
-        self.node.get_logger().info("========== POST PIN PLACE START ==========")
+        순서:
+            place 위치 이동
+            -> TOOL +X Force Push #1
+            -> 반력 감지
+            -> Gripper Release
+            -> place 위치 복귀
+            -> Gripper Close
+            -> TOOL +X Force Push #2
+            -> 반력 감지
+        """
+        self.node.get_logger().info("========== PIN PLACE START ==========")
         self._publish_cycle_event(
-            operation_context, phase="POST_PIN_PLACE", status="STARTED"
+            operation_context, phase="PIN_PLACE", status="STARTED"
         )
 
         try:
             settings = self._load_pin_place_settings(parameters)
-            component, assembly_pose = self._post_pin_assembly_input(components)
-            direction = self.POST_PIN_INSERT_DIRECTION
-            direction_label = "+X" if direction > 0 else "-X"
+            component, assembly_pose = self._pin_assembly_input(components)
 
             self.node.get_logger().info(
-                f"Post Pin Place 시작 위치 이동 - {component.get('code')}"
+                "PIN Place 설정 - "
+                f"component={component.get('code')}, "
+                f"reference=TOOL, axis=+X, "
+                "1st_force=20.00N, 1st_threshold=10.00N, "
+                "2nd_force=50.00N, 2nd_threshold=40.00N"
+            )
+
+            # 1. place 위치
+            self.node.get_logger().info(
+                f"PIN Place 시작 위치 이동 - {component.get('code')}"
             )
             self.movel(
                 assembly_pose,
@@ -891,46 +1389,847 @@ class SolarMotion:
             )
             self.wait(0.5)
 
+            # 2. 1차 TOOL +X Force Push
             self.node.get_logger().info(
-                "Post Pin TOOL X Force Place 시작 - "
-                f"direction={direction_label}, desired_force="
-                f"{settings['place_force']:.2f}N, "
-                f"delta_threshold={settings['contact_force']:.2f}N"
+                "========== PIN PLACE 1ST PUSH START =========="
             )
-            result = self.motion.place(
-                axis="x",
-                direction=direction,
+
+            first_result = self.motion.place(
+                axis=self.PIN_INSERT_AXIS,
+                direction=self.PIN_INSERT_DIRECTION,
                 force=settings["place_force"],
                 threshold=settings["contact_force"],
+                timeout=settings["timeout"],
+                stiffness={
+                    self.PIN_INSERT_AXIS: settings["stiffness"]
+                },
+                reference=self.PIN_INSERT_REFERENCE,
             )
-            if not result:
+
+            if not first_result:
                 raise RuntimeError(
-                    "Post Pin TOOL X Force Place가 성공을 반환하지 않았습니다."
+                    "PIN 1차 TOOL +X Force Place가 성공을 반환하지 않았습니다."
+                )
+
+            self.wait(0.2)
+
+            # 3. 첫 반력 감지 후 PIN을 놓음
+            self.node.get_logger().info(
+                "PIN 1차 반력 감지 완료 -> Gripper Release"
+            )
+            self.motion.release()
+            self.wait(0.5)
+
+            # 4. 원래 place 위치로 복귀
+            self.node.get_logger().info(
+                "PIN 1차 삽입 완료 -> 원래 Place 위치 복귀"
+            )
+            self.movel(
+                assembly_pose,
+                vel=settings["speed"],
+                acc=settings["acc"],
+                ref=self.DR_BASE,
+            )
+            self.wait(0.5)
+
+            # 5. 빈 Gripper를 닫아 Push 준비
+            self.node.get_logger().info(
+                "PIN 2차 Push 준비 -> Gripper Close"
+            )
+            self.motion.grasp()
+            self.wait(0.5)
+
+            # 6. 2차 TOOL +X Force Push
+            self.node.get_logger().info(
+                "========== PIN PLACE 2ND PUSH START =========="
+            )
+
+            second_result = self.motion.place(
+                axis=self.PIN_INSERT_AXIS,
+                direction=self.PIN_INSERT_DIRECTION,
+                force=settings["place_force"],
+                threshold=settings["contact_force"],
+                timeout=settings["timeout"],
+                stiffness={
+                    self.PIN_INSERT_AXIS: settings["stiffness"]
+                },
+                reference=self.PIN_INSERT_REFERENCE,
+            )
+
+            if not second_result:
+                raise RuntimeError(
+                    "PIN 2차 TOOL +X Force Place가 성공을 반환하지 않았습니다."
                 )
 
             self.wait(0.5)
-            self.node.get_logger().info("========== POST PIN PLACE COMPLETE ==========")
+
+            self.node.get_logger().info(
+                "========== PIN PLACE COMPLETE =========="
+            )
             self._publish_cycle_event(
                 operation_context,
-                phase="POST_PIN_PLACE",
+                phase="PIN_PLACE",
                 status="COMPLETED",
                 detail={
                     "component_code": component.get("code"),
+                    "reference": "TOOL",
                     "axis": "TOOL_X",
-                    "direction": direction,
-                    "place_force": settings["place_force"],
-                    "threshold": settings["contact_force"],
-                    "retreat_distance": settings["retreat_distance"],
+                    "direction": self.PIN_INSERT_DIRECTION,
+                    "push_count": 2,
+                    "first_force": 20.0,
+                    "first_threshold": 10.0,
+                    "second_force": 50.0,
+                    "second_threshold": 40.0,
                 },
             )
-            return settings["retreat_distance"], direction
+            return True
 
         except Exception as e:
-            self.node.get_logger().error(f"Post Pin Place 실패: {e}")
+            self.node.get_logger().error(f"PIN Place 실패: {e}")
             self._publish_cycle_event(
-                operation_context, phase="POST_PIN_PLACE", status="FAILED", error=e
+                operation_context,
+                phase="PIN_PLACE",
+                status="FAILED",
+                error=e,
             )
-            raise PostPinPlaceError(str(e)) from e
+
+            try:
+                self.force.all_off()
+            except Exception:
+                pass
+
+            raise PinPlaceError(str(e)) from e
+
+
+    # =========================================================
+    # FRAME PICK / PLACE
+    # =========================================================
+
+    def pick_frame(self, parameters, components, operation_context=None):
+        """FRAME을 공통 경유점 기반 movec()로 접근해 정확한 위치에서 파지한다.
+
+        pickup_position:
+            실제 Gripper Close가 수행되는 정확한 Pick 좌표.
+
+        frame_pick_distance / pick_distance:
+            pickup_position에서 BASE +Z 방향으로 떨어진 안전 접근 거리.
+
+        순서:
+            Home
+            -> movec(FRAME_MOVEC_VIA -> Safe Pick)
+            -> movel(pickup_position)
+            -> Grasp
+            -> movel(Safe Pick)
+        """
+        self.node.get_logger().info("========== FRAME PICK START ==========")
+        self._publish_cycle_event(
+            operation_context, phase="FRAME_PICK", status="STARTED"
+        )
+
+        try:
+            settings = self._load_frame_settings(parameters)
+            component, pickup_pose = self._frame_pickup_input(components)
+
+            pick_distance = settings["pick_distance"]
+
+            safe_pick_pose = self.posx([
+                float(pickup_pose[0]),
+                float(pickup_pose[1]),
+                float(pickup_pose[2]) + pick_distance,
+                float(pickup_pose[3]),
+                float(pickup_pose[4]),
+                float(pickup_pose[5]),
+            ])
+
+            via_pose = self.posx([
+                float(value)
+                for value in self.FRAME_MOVEC_VIA
+            ])
+
+            # 1. Home
+            self.node.get_logger().info(
+                f"FRAME Pick 준비 -> Home 이동 - {component.get('code')}"
+            )
+            self.motion.move_home()
+            self.wait(0.5)
+
+            # 2. Home -> 공통 경유점 -> Pick 안전 접근점
+            self.node.get_logger().info(
+                "FRAME Pick MOVEC 안전 접근 - "
+                f"via={list(self.FRAME_MOVEC_VIA)}, "
+                f"safe_pick={[float(safe_pick_pose[i]) for i in range(6)]}, "
+                f"BASE Z +{pick_distance:.1f}mm"
+            )
+            self.movec(
+                via_pose,
+                safe_pick_pose,
+                vel=settings["speed"],
+                acc=settings["acc"],
+                ref=self.DR_BASE,
+            )
+            self.wait(0.5)
+
+            # 3. 정확한 Pick 위치로 직선 하강
+            self.node.get_logger().info(
+                "FRAME 정확한 Pick 위치 이동 - "
+                f"BASE Z -{pick_distance:.1f}mm"
+            )
+            self.movel(
+                pickup_pose,
+                vel=settings["speed"],
+                acc=settings["acc"],
+                ref=self.DR_BASE,
+            )
+            self.wait(0.2)
+
+            # 4. Grasp
+            self.node.get_logger().info("FRAME Gripper Close")
+            self.motion.grasp()
+            self.wait(0.2)
+
+            # 5. 같은 Safe Pick으로 복귀
+            self.node.get_logger().info(
+                "FRAME Pick 완료 -> 안전 접근점 복귀 - "
+                f"BASE Z +{pick_distance:.1f}mm"
+            )
+            self.movel(
+                safe_pick_pose,
+                vel=settings["speed"],
+                acc=settings["acc"],
+                ref=self.DR_BASE,
+            )
+            self.wait(0.5)
+
+            self.node.get_logger().info(
+                "========== FRAME PICK COMPLETE =========="
+            )
+            self._publish_cycle_event(
+                operation_context,
+                phase="FRAME_PICK",
+                status="COMPLETED",
+                detail={
+                    "component_code": component.get("code"),
+                    "motion": "MOVEC",
+                    "movec_via": list(self.FRAME_MOVEC_VIA),
+                    "pick_distance": pick_distance,
+                    "safe_reference": "BASE_Z",
+                },
+            )
+            return True
+
+        except Exception as e:
+            self.node.get_logger().error(f"FRAME Pick 실패: {e}")
+            self._publish_cycle_event(
+                operation_context,
+                phase="FRAME_PICK",
+                status="FAILED",
+                error=e,
+            )
+            raise FramePickError(str(e)) from e
+
+    def place_frame(self, parameters, components, operation_context=None):
+        """FRAME을 movec()로 접근한 뒤 Force Place하고 Periodic 후 이탈한다.
+
+        assembly_position:
+            Force Place를 시작하는 정확한 Place 좌표.
+
+        place_retreat_distance:
+            assembly_position에서 BASE +Z 방향의 안전 접근/복귀 거리.
+
+        Force:
+            BASE -Z 방향.
+            frame_place_force       = Desired Force
+            frame_place_force_threshold = 측정 Force 성공 threshold (기본 10N)
+
+        Release 후 Periodic:
+            TOOL X 5mm 1주기 후 TOOL Y 90mm 1주기를 순차 실행한다.
+            두 축 동작 전체를 DB의 반복 횟수만큼 반복한다.
+
+        순서:
+            movec(FRAME_MOVEC_VIA -> Safe Place)
+            -> movel(assembly_position)
+            -> BASE -Z Force Place
+            -> Release
+            -> (TOOL X Periodic -> TOOL Y Periodic) x sequence_repeat
+            -> movel(Safe Place)
+        """
+        self.node.get_logger().info("========== FRAME PLACE START ==========")
+        self._publish_cycle_event(
+            operation_context, phase="FRAME_PLACE", status="STARTED"
+        )
+
+        try:
+            settings = self._load_frame_settings(parameters)
+            component, assembly_pose = self._frame_assembly_input(components)
+
+            place_distance = settings["place_distance"]
+
+            safe_place_pose = self.posx([
+                float(assembly_pose[0]),
+                float(assembly_pose[1]),
+                float(assembly_pose[2]) + place_distance,
+                float(assembly_pose[3]),
+                float(assembly_pose[4]),
+                float(assembly_pose[5]),
+            ])
+
+            via_pose = self.posx([
+                float(value)
+                for value in self.FRAME_MOVEC_VIA
+            ])
+
+            # 1. 현재 Pick 안전점 -> 공통 경유점 -> Place 안전 접근점
+            self.node.get_logger().info(
+                "FRAME Place MOVEC 안전 접근 - "
+                f"via={list(self.FRAME_MOVEC_VIA)}, "
+                f"safe_place={[float(safe_place_pose[i]) for i in range(6)]}, "
+                f"BASE Z +{place_distance:.1f}mm"
+            )
+            self.movec(
+                via_pose,
+                safe_place_pose,
+                vel=settings["speed"],
+                acc=settings["acc"],
+                ref=self.DR_BASE,
+            )
+            self.wait(0.5)
+
+            # 2. 정확한 assembly_position으로 직선 하강
+            self.node.get_logger().info(
+                "FRAME 정확한 Place 위치 이동 - "
+                f"BASE Z -{place_distance:.1f}mm"
+            )
+            self.movel(
+                assembly_pose,
+                vel=settings["speed"],
+                acc=settings["acc"],
+                ref=self.DR_BASE,
+            )
+            self.wait(0.2)
+
+            # 3. BASE -Z Force Place
+            self.node.get_logger().info(
+                "========== FRAME BASE -Z FORCE PLACE START =========="
+            )
+            self.node.get_logger().info(
+                "FRAME Force 설정 - "
+                f"desired_force={settings['place_force']:.2f}N, "
+                f"measured_threshold={settings['contact_force']:.2f}N, "
+                f"stiffness_z={settings['stiffness_z']:.2f}, "
+                f"timeout={settings['force_timeout']:.2f}s"
+            )
+
+            force_result = self.motion.place(
+                axis=self.FRAME_PLACE_FORCE_AXIS,
+                direction=self.FRAME_PLACE_FORCE_DIRECTION,
+                force=settings["place_force"],
+                threshold=settings["contact_force"],
+                timeout=settings["force_timeout"],
+                stiffness={
+                    self.FRAME_PLACE_FORCE_AXIS: settings["stiffness_z"]
+                },
+                reference=self.FRAME_PLACE_FORCE_REFERENCE,
+            )
+
+            if not force_result:
+                raise RuntimeError(
+                    "FRAME BASE -Z Force Place가 성공을 반환하지 않았습니다."
+                )
+
+            self.wait(0.2)
+
+            # 4. Force 종료 후 Frame 놓기
+            self.node.get_logger().info(
+                "FRAME Force Place 완료 -> Gripper Release"
+            )
+            self.motion.release()
+            self.wait(0.2)
+
+            # 5. Gripper Release 후 TOOL X 1주기 -> TOOL Y 1주기를
+            # DB의 frame_periodic_repeat 횟수만큼 순차 반복한다.
+            x_periodic_amp = [
+                settings["periodic_x_amplitude"],
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+            ]
+            y_periodic_amp = [
+                0.0,
+                settings["periodic_y_amplitude"],
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+            ]
+            periodic_period = settings["periodic_period"]
+            sequence_repeat = int(settings["periodic_repeat"])
+
+            if sequence_repeat < 1:
+                raise ValueError("frame_periodic_repeat는 1 이상이어야 합니다.")
+
+            self.node.get_logger().info(
+                "========== FRAME TOOL X -> Y PERIODIC START =========="
+            )
+            self.node.get_logger().info(
+                "FRAME Periodic 순차 설정 - "
+                f"x_amp={x_periodic_amp}, y_amp={y_periodic_amp}, "
+                f"period={periodic_period:.2f}s, "
+                f"atime={settings['periodic_atime']:.2f}s, "
+                f"sequence_repeat={sequence_repeat}, ref=TOOL"
+            )
+
+            for sequence_index in range(sequence_repeat):
+                current_sequence = sequence_index + 1
+                self.node.get_logger().info(
+                    f"FRAME Periodic sequence "
+                    f"{current_sequence}/{sequence_repeat} - TOOL X START"
+                )
+                x_result = self.move_periodic(
+                    amp=x_periodic_amp,
+                    period=periodic_period,
+                    atime=settings["periodic_atime"],
+                    repeat=1.0,
+                    ref=self.DR_TOOL,
+                )
+                if x_result != 0:
+                    raise RuntimeError(
+                        "FRAME TOOL X Periodic 이동 실패 - "
+                        f"sequence={current_sequence}, result={x_result}"
+                    )
+                self.wait(0.2)
+
+                self.node.get_logger().info(
+                    f"FRAME Periodic sequence "
+                    f"{current_sequence}/{sequence_repeat} - TOOL Y START"
+                )
+                y_result = self.move_periodic(
+                    amp=y_periodic_amp,
+                    period=periodic_period,
+                    atime=settings["periodic_atime"],
+                    repeat=1.0,
+                    ref=self.DR_TOOL,
+                )
+                if y_result != 0:
+                    raise RuntimeError(
+                        "FRAME TOOL Y Periodic 이동 실패 - "
+                        f"sequence={current_sequence}, result={y_result}"
+                    )
+                self.wait(0.2)
+
+            self.node.get_logger().info(
+                "FRAME TOOL X -> Y Periodic 순차 반복 완료"
+            )
+
+            # 6. 동일한 Place 안전 접근점으로 상승
+            self.node.get_logger().info(
+                "FRAME Place 완료 -> 안전 접근점 복귀 - "
+                f"BASE Z +{place_distance:.1f}mm"
+            )
+            self.movel(
+                safe_place_pose,
+                vel=settings["speed"],
+                acc=settings["acc"],
+                ref=self.DR_BASE,
+            )
+            self.wait(0.5)
+
+            self.node.get_logger().info(
+                "========== FRAME PLACE COMPLETE =========="
+            )
+            self._publish_cycle_event(
+                operation_context,
+                phase="FRAME_PLACE",
+                status="COMPLETED",
+                detail={
+                    "component_code": component.get("code"),
+                    "motion": "MOVEC",
+                    "movec_via": list(self.FRAME_MOVEC_VIA),
+                    "place_distance": place_distance,
+                    "safe_reference": "BASE_Z",
+                    "force_reference": "BASE",
+                    "force_axis": "BASE_Z",
+                    "force_direction": self.FRAME_PLACE_FORCE_DIRECTION,
+                    "frame_place_force": settings["place_force"],
+                    "frame_place_force_threshold": settings["contact_force"],
+                    "periodic_reference": "TOOL",
+                    "periodic_x_amplitude": x_periodic_amp,
+                    "periodic_y_amplitude": y_periodic_amp,
+                    "periodic_period_sec": periodic_period,
+                    "periodic_atime_sec": settings["periodic_atime"],
+                    "periodic_sequence_repeat": sequence_repeat,
+                    "periodic_axis_repeat": 1,
+                },
+            )
+            return True
+
+        except Exception as e:
+            self.node.get_logger().error(f"FRAME Place 실패: {e}")
+            self._publish_cycle_event(
+                operation_context,
+                phase="FRAME_PLACE",
+                status="FAILED",
+                error=e,
+            )
+            try:
+                self.force.all_off()
+            except Exception:
+                pass
+            raise FramePlaceError(str(e)) from e
+
+    # =========================================================
+    # SNAPFIT PICK / PLACE
+    # =========================================================
+
+    def pick_snapfit(self, parameters, components, operation_context=None):
+        """안전 접근 후 SNAPFIT을 파지하고 공통 전송 기준점까지 Arc 이동한다.
+
+        순서:
+            pickup_position의 BASE +Z snapfit_pick_distance 안전점
+            -> pickup_position
+            -> Grasp
+            -> 현재 TCP에서 SNAPFIT_TRANSFER_POSE까지 move_arc
+        """
+        self.node.get_logger().info("========== SNAPFIT PICK START ==========")
+        self._publish_cycle_event(
+            operation_context, phase="SNAPFIT_PICK", status="STARTED"
+        )
+
+        try:
+            settings = self._load_snapfit_pick_settings(parameters)
+            component, pickup_pose = self._snapfit_pickup_input(components)
+            pick_distance = settings["snapfit_pick_distance"]
+            arc_steps = int(settings["snapfit_arc_steps"])
+            if arc_steps < 2:
+                raise ValueError("snapfit_arc_steps는 2 이상이어야 합니다.")
+
+            safe_pick_pose = self.posx([
+                float(pickup_pose[0]),
+                float(pickup_pose[1]),
+                float(pickup_pose[2]) + pick_distance,
+                float(pickup_pose[3]),
+                float(pickup_pose[4]),
+                float(pickup_pose[5]),
+            ])
+
+            # 1. pickup_position 기준 BASE +Z 안전 접근점
+            self.node.get_logger().info(
+                "SNAPFIT Pick 안전 접근 MOVEL - "
+                f"distance=BASE +Z {pick_distance:.1f}mm, "
+                f"target={list(safe_pick_pose)}"
+            )
+            safe_result = self.movel(
+                safe_pick_pose,
+                vel=settings["speed"],
+                acc=settings["acc"],
+                ref=self.DR_BASE,
+            )
+            if safe_result != 0:
+                raise RuntimeError(
+                    "SNAPFIT Pick 안전 접근 MOVEL 실패 - "
+                    f"result={safe_result}, target={list(safe_pick_pose)}"
+                )
+            self.mwait()
+            self.wait(0.2)
+
+            # 2. 실제 Pick 위치
+            self.node.get_logger().info(
+                "SNAPFIT 정확한 Pick 위치 MOVEL - "
+                f"target={list(pickup_pose)}"
+            )
+            pickup_result = self.movel(
+                pickup_pose,
+                vel=settings["speed"],
+                acc=settings["acc"],
+                ref=self.DR_BASE,
+            )
+            if pickup_result != 0:
+                raise RuntimeError(
+                    "SNAPFIT Pick 위치 MOVEL 실패 - "
+                    f"result={pickup_result}, target={list(pickup_pose)}"
+                )
+            self.mwait()
+            self.wait(0.2)
+
+            # 3. 파지
+            self.node.get_logger().info("SNAPFIT Gripper Close")
+            self.motion.grasp()
+            self.wait(0.2)
+
+            safe_result = self.movel(
+                safe_pick_pose,
+                vel=settings["speed"],
+                acc=settings["acc"],
+                ref=self.DR_BASE,
+            )
+            
+            # 4. Grasp 위치 -> 공통 전송 기준점 Arc 이동
+            arc_start_pose, solution_space = self.motion.get_current_pose(
+                ref=self.DR_BASE
+            )
+            transfer_pose = list(self.SNAPFIT_TRANSFER_POSE)
+            self.node.get_logger().info(
+                "SNAPFIT Grasp 완료 -> 공통 기준점 ARC - "
+                f"start={arc_start_pose}, end={transfer_pose}, "
+                f"height={settings['snapfit_arc_height']:.1f}mm, "
+                f"steps={arc_steps}, speed={settings['speed']:.1f}, "
+                f"acc={settings['acc']:.1f}, solution_space={solution_space}"
+            )
+            self.motion.move_arc(
+                arc_start_pose,
+                transfer_pose,
+                height=settings["snapfit_arc_height"],
+                steps=arc_steps,
+                velocity=settings["speed"],
+                acc=settings["acc"],
+            )
+            self.mwait()
+            self.wait(0.2)
+
+            self.node.get_logger().info(
+                "========== SNAPFIT PICK COMPLETE =========="
+            )
+            self._publish_cycle_event(
+                operation_context,
+                phase="SNAPFIT_PICK",
+                status="COMPLETED",
+                detail={
+                    "component_code": component.get("code"),
+                    "snapfit_pick_distance": pick_distance,
+                    "safe_reference": "BASE_Z",
+                    "arc_start": arc_start_pose,
+                    "arc_target": transfer_pose,
+                    "arc_height_mm": settings["snapfit_arc_height"],
+                    "arc_steps": arc_steps,
+                },
+            )
+            return True
+
+        except Exception as e:
+            self.node.get_logger().error(f"SNAPFIT Pick 실패: {e}")
+            self._publish_cycle_event(
+                operation_context,
+                phase="SNAPFIT_PICK",
+                status="FAILED",
+                error=e,
+            )
+            raise SnapfitPickError(str(e)) from e
+
+    def place_snapfit(self, parameters, components, operation_context=None):
+        """SNAPFIT을 TOOL +Z 방향으로 2단계 Force 삽입한다.
+
+        assembly_position:
+            실제 Place/Force 삽입을 시작하는 정확한 좌표.
+
+        place_distance:
+            assembly_position에서 BASE +Z 방향으로 떨어진 안전 접근/복귀 거리.
+
+        Force 설정:
+            1차: Desired Force 20N / Threshold 10N
+            2차: Desired Force 50N / Threshold 40N
+
+        순서:
+            Safe Place(BASE +Z)
+            -> assembly_position
+            -> 1차 TOOL +Z Force Insert
+            -> Gripper Release
+            -> Safe Place 복귀
+            -> Gripper Close
+            -> assembly_position 재접근
+            -> 2차 TOOL +Z Force Push
+            -> Safe Place 복귀
+        """
+        self.node.get_logger().info("========== SNAPFIT PLACE START ==========")
+        self._publish_cycle_event(
+            operation_context, phase="SNAPFIT_PLACE", status="STARTED"
+        )
+
+        try:
+            settings = self._load_snapfit_place_settings(parameters)
+            component, assembly_pose = self._snapfit_assembly_input(components)
+
+            place_distance = settings["place_distance"]
+
+            # 다른 POST/FRAME과 동일하게 BASE +Z 기준으로 안전점을 직접 계산한다.
+            safe_place_pose = self.posx([
+                float(assembly_pose[0]),
+                float(assembly_pose[1]),
+                float(assembly_pose[2]) + place_distance,
+                float(assembly_pose[3]),
+                float(assembly_pose[4]),
+                float(assembly_pose[5]),
+            ])
+
+            self.node.get_logger().info(
+                "SNAPFIT Place 설정 - "
+                f"component={component.get('code')}, "
+                f"force_axis=TOOL +Z, "
+                f"place_distance={place_distance:.1f}mm, "
+                f"assembly_target={list(assembly_pose)}, "
+                f"safe_target={list(safe_place_pose)}, "
+                f"force={settings['place_force']:.2f}N, "
+                f"threshold={settings['contact_force']:.2f}N"
+            )
+
+            # 1. BASE +Z 안전 접근점
+            self.node.get_logger().info(
+                "SNAPFIT Place 안전 접근 - "
+                f"assembly_position 기준 BASE +Z {place_distance:.1f}mm"
+            )
+            self.movel(
+                safe_place_pose,
+                vel=settings["speed"],
+                acc=settings["acc"],
+                ref=self.DR_BASE,
+            )
+            self.mwait()
+            self.wait(0.2)
+
+            # 2. 실제 Place/Force 시작 좌표
+            self.node.get_logger().info(
+                "SNAPFIT 1차 Force 준비 -> assembly_position 이동"
+            )
+            self.movel(
+                assembly_pose,
+                vel=settings["speed"],
+                acc=settings["acc"],
+                ref=self.DR_BASE,
+            )
+            self.mwait()
+            self.wait(0.2)
+
+            # 3. 1차 TOOL +Z Force 삽입
+            self.node.get_logger().info(
+                "========== SNAPFIT PLACE 1ST FORCE START =========="
+            )
+            first_result = self.motion.place(
+                axis=self.SNAPFIT_INSERT_AXIS,
+                direction=self.SNAPFIT_INSERT_DIRECTION,
+                force=20.0,
+                threshold=10.0,
+                timeout=settings["timeout"],
+                stiffness={
+                    self.SNAPFIT_INSERT_AXIS: settings["stiffness"]
+                },
+                reference=self.SNAPFIT_INSERT_REFERENCE,
+            )
+            if not first_result:
+                raise RuntimeError(
+                    "SNAPFIT 1차 TOOL +Z Force Place가 성공을 반환하지 않았습니다."
+                )
+
+            self.wait(0.2)
+
+            # 4. 1차 삽입 후 부품을 놓음
+            self.node.get_logger().info(
+                "SNAPFIT 1차 Force 완료 -> Gripper Release"
+            )
+            self.motion.release()
+            self.wait(0.5)
+
+            # 5. 동일한 BASE +Z 안전거리로 복귀
+            self.node.get_logger().info(
+                "SNAPFIT 1차 삽입 완료 -> BASE +Z 안전 접근점 복귀"
+            )
+            self.movel(
+                safe_place_pose,
+                vel=settings["speed"],
+                acc=settings["acc"],
+                ref=self.DR_BASE,
+            )
+            self.mwait()
+            self.wait(0.2)
+
+            # 6. 빈 Gripper를 닫아 2차 Push 준비
+            self.node.get_logger().info(
+                "SNAPFIT 2차 Push 준비 -> Gripper Close"
+            )
+            self.motion.grasp()
+            self.wait(0.5)
+
+            # 7. 다시 정확한 Place/Force 시작 좌표로 이동
+            self.node.get_logger().info(
+                "SNAPFIT 2차 Force 준비 -> assembly_position 재접근"
+            )
+            self.movel(
+                assembly_pose,
+                vel=settings["speed"],
+                acc=settings["acc"],
+                ref=self.DR_BASE,
+            )
+            self.mwait()
+            self.wait(0.2)
+
+            # 8. 2차 TOOL +Z Force Push
+            self.node.get_logger().info(
+                "========== SNAPFIT PLACE 2ND FORCE START =========="
+            )
+            second_result = self.motion.place(
+                axis=self.SNAPFIT_INSERT_AXIS,
+                direction=self.SNAPFIT_INSERT_DIRECTION,
+                force=20.0,
+                threshold=10.0,
+                timeout=settings["timeout"],
+                stiffness={
+                    self.SNAPFIT_INSERT_AXIS: settings["stiffness"]
+                },
+                reference=self.SNAPFIT_INSERT_REFERENCE,
+            )
+            if not second_result:
+                raise RuntimeError(
+                    "SNAPFIT 2차 TOOL +Z Force Place가 성공을 반환하지 않았습니다."
+                )
+
+            self.wait(0.2)
+
+            # 9. 2차 Push 완료 후 안전거리로 최종 복귀
+            self.node.get_logger().info(
+                "SNAPFIT 2차 Force 완료 -> BASE +Z 안전 접근점 복귀"
+            )
+            self.movel(
+                safe_place_pose,
+                vel=settings["speed"],
+                acc=settings["acc"],
+                ref=self.DR_BASE,
+            )
+            self.mwait()
+            self.wait(0.2)
+
+            self.node.get_logger().info(
+                "========== SNAPFIT PLACE COMPLETE =========="
+            )
+            self._publish_cycle_event(
+                operation_context,
+                phase="SNAPFIT_PLACE",
+                status="COMPLETED",
+                detail={
+                    "component_code": component.get("code"),
+                    "reference": "TOOL",
+                    "axis": "TOOL_Z",
+                    "direction": self.SNAPFIT_INSERT_DIRECTION,
+                    "place_distance": place_distance,
+                    "safe_reference": "BASE_Z",
+                    "push_count": 2,
+                    "force": settings["place_force"],
+                    "threshold": settings["contact_force"],
+                },
+            )
+            return True
+
+        except Exception as e:
+            self.node.get_logger().error(f"SNAPFIT Place 실패: {e}")
+            self._publish_cycle_event(
+                operation_context,
+                phase="SNAPFIT_PLACE",
+                status="FAILED",
+                error=e,
+            )
+            try:
+                self.force.all_off()
+            except Exception:
+                pass
+            raise SnapfitPlaceError(str(e)) from e
 
     # =========================================================
     # Full Post cycle
@@ -954,43 +2253,43 @@ class SolarMotion:
             self.pick_post(parameters, components, operation_context)
             post_retreat = self.place_post(parameters, components, operation_context)
 
-            self.node.get_logger().info("Post Place 완료 -> Gripper Release")
+            self.node.get_logger().info("Post Place 완료 -> Robot Motion Stop")
+            self.motion.stop_motion()
+            self.force.all_off()
+            self.wait(0.2)
+
+            self.node.get_logger().info("Robot Motion 정지 완료 -> Gripper Release")
             self.motion.release()
             self.wait(0.5)
 
             if post_retreat > 0:
+                # assembly_position을 실제 Place 좌표로 보고,
+                # DB place_retreat_distance만큼 BASE +Z에 있는 동일 Safe Place로 복귀한다.
+                _, post_assembly_pose = self._post_assembly_input(components)
+                post_safe_place_pose = self.posx([
+                    float(post_assembly_pose[0]),
+                    float(post_assembly_pose[1]),
+                    float(post_assembly_pose[2]) + post_retreat,
+                    float(post_assembly_pose[3]),
+                    float(post_assembly_pose[4]),
+                    float(post_assembly_pose[5]),
+                ])
+
                 self.node.get_logger().info(
-                    f"Post Release 완료 -> BASE +Z {post_retreat}mm 이탈"
+                    "Post Release 완료 -> 동일한 Place 안전 접근점 복귀 - "
+                    f"BASE Z +{post_retreat:.1f}mm"
                 )
-                self.motion.move_z(
-                    post_retreat,
+                self.movel(
+                    post_safe_place_pose,
+                    vel=settings["speed"],
+                    acc=settings["acc"],
                     ref=self.DR_BASE,
-                    velocity=settings["speed"],
-                    acc=settings["acc"],
                 )
                 self.wait(0.5)
 
-            self.pick_post_pin(parameters, components, operation_context)
-            pin_retreat, pin_direction = self.place_post_pin(
-                parameters, components, operation_context
-            )
-
-            self.node.get_logger().info("Post Pin Place 완료 -> Gripper Release")
-            self.motion.release()
+            self.node.get_logger().info("Post Release 및 안전 이탈 완료 -> Home 이동")
+            self.motion.move_home()
             self.wait(0.5)
-
-            if pin_retreat > 0:
-                retreat_x = -pin_direction * pin_retreat
-                self.node.get_logger().info(
-                    f"Post Pin Release 완료 -> TOOL X {retreat_x:+.3f}mm 이탈"
-                )
-                self.motion.move_x(
-                    retreat_x,
-                    ref=self.DR_TOOL,
-                    velocity=settings["speed"],
-                    acc=settings["acc"],
-                )
-                self.wait(0.5)
 
             self.node.get_logger().info("========== POST CYCLE COMPLETE ==========")
             self._publish_cycle_event(
