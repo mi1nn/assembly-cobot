@@ -526,13 +526,13 @@ class SolarMotion:
         settings["periodic_x_amplitude"] = self._first_number(
             parameters,
             ("frame_periodic_x_amplitude",),
-            5.0,
+            6.0,
             nonnegative=True,
         )
         settings["periodic_y_amplitude"] = self._first_number(
             parameters,
             ("frame_periodic_y_amplitude",),
-            90.0,
+            75.0,
             nonnegative=True,
         )
         settings["periodic_period"] = self._first_number(
@@ -544,7 +544,7 @@ class SolarMotion:
         settings["periodic_atime"] = self._first_number(
             parameters,
             ("frame_periodic_atime",),
-            0.5,
+            5.0,
             nonnegative=True,
         )
         settings["periodic_repeat"] = self._first_number(
