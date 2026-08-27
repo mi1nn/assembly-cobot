@@ -30,6 +30,10 @@ class FramePlaceError(Exception):
     pass
 
 
+class PanelPickError(Exception):
+    pass
+
+
 class PostCycleError(Exception):
     pass
 
@@ -73,6 +77,7 @@ class SolarMotion:
     PIN_COMPONENT_PREFIX = "PIN-A-"
     SNAPFIT_COMPONENT_PREFIX = "SNAPFIT-A-"
     FRAME_COMPONENT_PREFIX = "CMP-FRAME-"
+    PANEL_COMPONENT_PREFIX = "CMP-PANEL-"
 
     # FRAME Pick/Place 공통 movec 경유점 (BASE 절대좌표)
     FRAME_MOVEC_VIA = (
@@ -83,6 +88,10 @@ class SolarMotion:
         179.17,
         9.5,
     )
+
+    # PANEL Pick도 FRAME에서 검증한 동일 MOVEC 경유점을 재사용한다.
+    PANEL_MOVEC_VIA = FRAME_MOVEC_VIA
+
     # SNAPFIT Pick 후 모든 Place로 이동하기 전 대기하는 공통 BASE 기준점.
     SNAPFIT_TRANSFER_POSE = (
         382.99,
@@ -411,6 +420,21 @@ class SolarMotion:
         )
         return settings
 
+    def _load_panel_pick_settings(self, parameters):
+        """PANEL Pick에 필요한 이동 설정만 읽는다.
+
+        panel_pick_distance가 있으면 우선 사용하고, 현재 DB처럼
+        pick_distance만 있으면 해당 값을 그대로 사용한다.
+        """
+        settings = self._load_travel_settings(parameters)
+        settings["pick_distance"] = self._first_number(
+            parameters,
+            ("panel_pick_distance", "pick_distance"),
+            60.0,
+            positive=True,
+        )
+        return settings
+
     def _load_frame_settings(self, parameters):
         """FRAME(CMP-FRAME-*) Pick/Place 이동/Force/Periodic 설정.
 
@@ -686,6 +710,11 @@ class SolarMotion:
     def _frame_assembly_input(self, components):
         return self._assembly_input(
             components, self.FRAME_COMPONENT_PREFIX, "FRAME"
+        )
+
+    def _panel_pickup_input(self, components):
+        return self._pickup_input(
+            components, self.PANEL_COMPONENT_PREFIX, "PANEL"
         )
 
     # =========================================================
@@ -1500,6 +1529,130 @@ class SolarMotion:
 
             raise PinPlaceError(str(e)) from e
 
+
+    # =========================================================
+    # PANEL PICK
+    # =========================================================
+
+    def pick_panel(self, parameters, components, operation_context=None):
+        """태양광 패널을 기존 FRAME MOVEC 경유점으로 접근해 파지한다.
+
+        현재 테스트 범위는 Pick까지만 수행한다.
+
+        순서:
+            Home
+            -> movec(PANEL_MOVEC_VIA -> Safe Pick)
+            -> movel(pickup_position)
+            -> Grasp
+            -> movel(Safe Pick)
+
+        Safe Pick은 DB pickup_position의 BASE Z에 pick_distance를 더해 만든다.
+        """
+        self.node.get_logger().info("========== PANEL PICK START ==========")
+        self._publish_cycle_event(
+            operation_context, phase="PANEL_PICK", status="STARTED"
+        )
+
+        try:
+            settings = self._load_panel_pick_settings(parameters)
+            component, pickup_pose = self._panel_pickup_input(components)
+
+            pick_distance = settings["pick_distance"]
+
+            safe_pick_pose = self.posx([
+                float(pickup_pose[0]),
+                float(pickup_pose[1]),
+                float(pickup_pose[2]) + pick_distance,
+                float(pickup_pose[3]),
+                float(pickup_pose[4]),
+                float(pickup_pose[5]),
+            ])
+
+            via_pose = self.posx([
+                float(value)
+                for value in self.PANEL_MOVEC_VIA
+            ])
+
+            # 1. 테스트 시작 자세를 Home으로 통일
+            self.node.get_logger().info(
+                f"PANEL Pick 준비 -> Home 이동 - {component.get('code')}"
+            )
+            self.motion.move_home()
+            self.wait(0.5)
+
+            # 2. Home -> 기존 FRAME 경유점 -> Panel Pick 안전점
+            self.node.get_logger().info(
+                "PANEL Pick MOVEC 안전 접근 - "
+                f"via={list(self.PANEL_MOVEC_VIA)}, "
+                f"safe_pick={[float(safe_pick_pose[i]) for i in range(6)]}, "
+                f"BASE Z +{pick_distance:.1f}mm"
+            )
+            self.movec(
+                via_pose,
+                safe_pick_pose,
+                vel=settings["speed"],
+                acc=settings["acc"],
+                ref=self.DR_BASE,
+            )
+            self.wait(0.5)
+
+            # 3. 실제 Panel Pick 좌표로 직선 하강
+            self.node.get_logger().info(
+                "PANEL 정확한 Pick 위치 이동 - "
+                f"BASE Z -{pick_distance:.1f}mm"
+            )
+            self.movel(
+                pickup_pose,
+                vel=settings["speed"],
+                acc=settings["acc"],
+                ref=self.DR_BASE,
+            )
+            self.wait(0.2)
+
+            # 4. 패널 파지
+            self.node.get_logger().info("PANEL Gripper Close")
+            self.motion.grasp()
+            self.wait(0.2)
+
+            # 5. 파지 상태로 같은 Safe Pick 위치까지 복귀
+            self.node.get_logger().info(
+                "PANEL Pick 완료 -> 안전 접근점 복귀 - "
+                f"BASE Z +{pick_distance:.1f}mm"
+            )
+            self.movel(
+                safe_pick_pose,
+                vel=settings["speed"],
+                acc=settings["acc"],
+                ref=self.DR_BASE,
+            )
+            self.wait(0.5)
+
+            self.node.get_logger().info(
+                "========== PANEL PICK COMPLETE =========="
+            )
+            self._publish_cycle_event(
+                operation_context,
+                phase="PANEL_PICK",
+                status="COMPLETED",
+                detail={
+                    "component_code": component.get("code"),
+                    "motion": "MOVEC",
+                    "movec_via": list(self.PANEL_MOVEC_VIA),
+                    "pick_distance": pick_distance,
+                    "safe_reference": "BASE_Z",
+                },
+            )
+            return True
+
+        except Exception as e:
+            self.node.get_logger().error(f"PANEL Pick 실패: {e}")
+            self._publish_cycle_event(
+                operation_context,
+                phase="PANEL_PICK",
+                status="FAILED",
+                error=e,
+            )
+            raise PanelPickError(str(e)) from e
 
     # =========================================================
     # FRAME PICK / PLACE
