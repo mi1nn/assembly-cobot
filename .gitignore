@@ -226,3 +226,5 @@ log/
 install/
 
 graphify-out/
+docs/architecture
+docs/test.md
