@@ -78,9 +78,14 @@ SUPPORTED_OPERATION_CODES = POST_OPERATION_CODES | {
     "POST_PLACE",
     "POST_PIN_PICK",
     "POST_PIN_PLACE",
+    "PIN_PICK",
+    "PIN_PLACE",
     "POST_INSTALL",
     "PANEL_PICK",
     "PANEL_PLACE",
+    "FRAME_PLACE",
+    "SNAPFIT_PICK",
+    "SNAPFIT_PLACE",
     "SOLAR_FULL",
 }
 
@@ -855,15 +860,15 @@ class SolarPanelControllerNode(Node):
                 operation_context=operation_context,
             )
 
-        if operation_code == "POST_PIN_PICK":
-            return self.solar.pick_post_pin(
+        if operation_code in {"POST_PIN_PICK", "PIN_PICK"}:
+            return self.solar.pick_pin(
                 parameters,
                 components,
                 operation_context=operation_context,
             )
 
-        if operation_code == "POST_PIN_PLACE":
-            return self.solar.place_post_pin(
+        if operation_code in {"POST_PIN_PLACE", "PIN_PLACE"}:
+            return self.solar.place_pin(
                 parameters,
                 components,
                 operation_context=operation_context,
@@ -888,6 +893,27 @@ class SolarPanelControllerNode(Node):
 
         if operation_code == "PANEL_PLACE":
             return self.solar.place_panel(
+                parameters,
+                components,
+                operation_context=operation_context,
+            )
+
+        if operation_code == "FRAME_PLACE":
+            return self.solar.place_frame(
+                parameters,
+                components,
+                operation_context=operation_context,
+            )
+
+        if operation_code == "SNAPFIT_PICK":
+            return self.solar.pick_snapfit(
+                parameters,
+                components,
+                operation_context=operation_context,
+            )
+
+        if operation_code == "SNAPFIT_PLACE":
+            return self.solar.place_snapfit(
                 parameters,
                 components,
                 operation_context=operation_context,

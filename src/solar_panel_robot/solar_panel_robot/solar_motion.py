@@ -30,10 +30,6 @@ class FramePlaceError(Exception):
     pass
 
 
-class PanelPickError(Exception):
-    pass
-
-
 class PostCycleError(Exception):
     pass
 
@@ -447,21 +443,6 @@ class SolarMotion:
         )
         return settings
 
-    def _load_panel_pick_settings(self, parameters):
-        """PANEL Pick에 필요한 이동 설정만 읽는다.
-
-        panel_pick_distance가 있으면 우선 사용하고, 현재 DB처럼
-        pick_distance만 있으면 해당 값을 그대로 사용한다.
-        """
-        settings = self._load_travel_settings(parameters)
-        settings["pick_distance"] = self._first_number(
-            parameters,
-            ("panel_pick_distance", "pick_distance"),
-            60.0,
-            positive=True,
-        )
-        return settings
-
     def _load_frame_settings(self, parameters):
         """FRAME(CMP-FRAME-*) Pick/Place 이동/Force/Periodic 설정.
 
@@ -699,13 +680,6 @@ class SolarMotion:
             ),
         })
         return settings
-
-    def _panel_pickup_input(self, components):
-        return self._pickup_input(
-            components,
-            self.PANEL_COMPONENT_PREFIX,
-            "PANEL",
-        )
 
     def _panel_place_input(self, components):
         component, assembly_pose = self._assembly_input(
