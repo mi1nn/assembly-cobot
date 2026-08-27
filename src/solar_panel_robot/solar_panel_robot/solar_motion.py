@@ -674,7 +674,7 @@ class SolarMotion:
                 parameters, ("panel_release_wait",), 1.0, nonnegative=True
             ),
             "release_retreat_distance": self._first_number(
-                parameters, ("panel_release_retreat_distance",), 30.0, positive=True
+                parameters, ("panel_release_retreat_distance",), 50.0, positive=True
             ),
             "periodic_x_amplitude": self._first_number(
                 parameters, ("panel_periodic_x_amplitude",), 5.0, nonnegative=True
@@ -708,7 +708,7 @@ class SolarMotion:
         component, assembly_pose = self._assembly_input(
             components, self.PANEL_COMPONENT_PREFIX, "PANEL"
         )
-        if "assembly_release_position" not in component:
+        if "assembly_release_position" not in component: # 뺄것1
             raise ValueError(
                 f"PANEL({component.get('code')}) assembly_release_position 누락"
             )
@@ -1827,20 +1827,36 @@ class SolarMotion:
                 component, assembly_pose, release_pose, side_poses = (
                     self._panel_place_input(components)
                 )
-                via_pose = self.posx([
-                    float(value) for value in self.PANEL_MOVE_VIA
-                ])
-
+                
                 # 1-1. 현재 TCP 위치 -> Panel 전용 경유점
                 self.node.get_logger().info(
                     "PANEL PLACE 1차 MOVEL - 현재 위치 -> 경유점 - "
-                    f"via={list(self.PANEL_VIA)}"
+                    f"via={list(self.PANEL_MOVE_VIA)}"
                 )
+                # 방향 회전1
+                self.movel(
+                    self.posx([0.0, 0.0, 0.0, 0.0, 0.0, -90.0]),
+                    vel=settings["speed"],
+                    acc=settings["acc"],
+                    ref=self.DR_TOOL,
+                    mod=self.DR_MV_MOD_REL,
+                )
+                self.mwait()
+                rotated_pose, _ = self.motion.get_current_pose(ref=self.DR_BASE)
+
+                via_pose = self.posx([
+                    float(self.PANEL_MOVE_VIA[0]),
+                    float(self.PANEL_MOVE_VIA[1]),
+                    float(self.PANEL_MOVE_VIA[2]),
+                    float(self.PANEL_MOVE_VIA[3]),
+                    float(self.PANEL_MOVE_VIA[4]),
+                    float(rotated_pose[5]),
+                ])
+
                 first_move_result = self.movel(
                     via_pose,
                     vel=settings["speed"],
                     acc=settings["acc"],
-                    radius=30.0,
                     ref=self.DR_BASE,
                 )
                 if (
@@ -1851,6 +1867,16 @@ class SolarMotion:
                         "PANEL 경유점 MOVEL 실행 실패: "
                         f"result={first_move_result}"
                     )
+                # 방향 회전2
+                self.movel(
+                    self.posx([0.0, 0.0, 0.0, 0.0, 0.0, -90.0]),
+                    vel=settings["speed"],
+                    acc=settings["acc"],
+                    ref=self.DR_TOOL,
+                    mod=self.DR_MV_MOD_REL,
+                )
+                self.mwait()
+                rotated_pose, _ = self.motion.get_current_pose(ref=self.DR_BASE)
 
                 # 1-2. Panel 전용 경유점 -> Panel place 지점
                 self.node.get_logger().info(
@@ -1861,7 +1887,6 @@ class SolarMotion:
                     assembly_pose,
                     vel=settings["speed"],
                     acc=settings["acc"],
-                    radius=0.0,
                     ref=self.DR_BASE,
                 )
                 if (
@@ -1876,10 +1901,11 @@ class SolarMotion:
 
                 # 2. 정확한 Release 위치로 직선 이동 후 Gripper Open
                 self.movel(
-                    release_pose,
+                    self.posx([-100.0, 0.0, -40.0, 0.0, -30.0, 0.0]),
                     vel=settings["place_speed"],
                     acc=settings["place_acc"],
                     ref=self.DR_BASE,
+                    mod=self.DR_MV_MOD_REL,
                 )
                 self.mwait()
                 self.motion.release()
