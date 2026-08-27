@@ -53,9 +53,9 @@ INSERT INTO operation (
 (7, 1, 'frameA', '프레임 A 조립', 7, '상부 프레임 결합', TRUE, 900,
  '{"tcp": {"x":0,"y":0,"z":150},"tool":"gripper_frame","force":30,"speed":80,"fixture":"jig_frame", "coordinate_system":"BASE","ucs":{"p1":[448.74,-29.40,52.58,0.0,180.0,0.0],"p2": [548.74,-29.40,52.58,0.0,180.0,0.0],"p3":[448.74,70.60,52.58,0.0,180.0,0.0]}}',
  '[{"code":"CMP-FRAME-A","name":"프레임 A","quantity":1,"pickup_position":{"x":1100,"y":200,"z":300,"frame":"BASE"},"assembly_position":{"x":3000,"y":2500,"z":700,"frame":"BASE"}},{"code":"CMP-BRKT-L","name":"브라켓 L형","quantity":8},{"code":"CMP-BOLT-M16","name":"볼트 M16","quantity":32}]'),
-(8, 1, 'solarpanelA', '태양광 패널 A 설치', 8, '패널 20장 양중 및 체결', TRUE, 1200,
- '{"tcp": {"x":0,"y":0,"z":150},"tool":"suction_cup","force":30,"speed":80,"fixture":"jig_panel","coordinate_system":"BASE","ucs":{"p1":[448.74,-29.40,52.58,0.0,180.0,0.0],"p2": [548.74,-29.40,52.58,0.0,180.0,0.0],"p3":[448.74,70.60,52.58,0.0,180.0,0.0]}}',
- '[{"code":"CMP-PANEL-450W","name":"태양광 패널 450W","quantity":20,"pickup_position":{"x":1250,"y":200,"z":300,"frame":"BASE"},"assembly_position":{"x":1500,"y":2500,"z":900,"frame":"BASE"}},{"code":"CMP-BRKT-PV","name":"마운트 브라켓","quantity":40},{"code":"CMP-BOLT-M8","name":"볼트 M8","quantity":160}]');
+(8, 1, 'solarpanelA', '태양광 패널 A 설치', 8, '패널 배치 및 양측 위치 검사', TRUE, 1200,
+ '{"speed":100,"acceleration":200,"panel_pick_distance":100.0,"panel_pick_speed":30.0,"panel_pick_acceleration":50.0,"panel_grasp_wait":1.0,"panel_movejx_solution":2,"panel_place_distance":50.0,"panel_place_speed":30.0,"panel_place_acceleration":50.0,"panel_release_wait":1.0,"panel_release_retreat_distance":30.0,"panel_periodic_y_amplitude":5.0,"panel_periodic_period":2.0,"panel_periodic_atime":0.5,"panel_periodic_repeat":1.0}',
+ '[{"code":"CMP-PANEL-A","name":"태양광 패널 A","category":"태양광 패널","quantity":1,"pickup_position":{"x":-423.79,"y":-430.08,"z":158.03,"A":163.0,"B":179.65,"C":163.6},"assembly_position":{"x":470.11,"y":80.35,"z":348.06,"A":85.67,"B":-179.41,"C":86.05},"assembly_release_position":{"x":364.82,"y":71.54,"z":311.41,"A":173.77,"B":-138.44,"C":175.81},"assembly_side_positions":[{"x":384.96,"y":304.7,"z":220.0,"A":115.44,"B":-179.59,"C":116.03},{"x":366.34,"y":-138.45,"z":220.0,"A":157.72,"B":179.68,"C":158.07}]}]');
 
 
 INSERT INTO robot (
