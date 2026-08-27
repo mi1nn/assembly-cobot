@@ -1667,7 +1667,7 @@ class SolarMotion:
 
 
     # =========================================================
-    # PANEL PICK
+    # PANEL PICK/PLACE
     # =========================================================
 
     def pick_panel(self, parameters, components, operation_context=None):
@@ -1790,6 +1790,158 @@ class SolarMotion:
             )
             raise PanelPickError(str(e)) from e
 
+    def place_panel(self, parameters, components, operation_context=None):
+            """PANEL 배치 후 TOOL -Z로 이탈하고 양쪽 지점에서 위치를 검사한다."""
+            self.node.get_logger().info("========== PANEL PLACE START ==========")
+            self._publish_cycle_event(
+                operation_context, phase="PANEL_PLACE", status="STARTED"
+            )
+
+            try:
+                settings = self._load_panel_place_settings(parameters)
+                component, assembly_pose, release_pose, side_poses = (
+                    self._panel_place_input(components)
+                )
+                via_pose = self.posx([
+                    float(value) for value in self.PANEL_MOVEC_VIA
+                ])
+
+                # 1. 공통 경유점을 거쳐 assembly_position으로 Arc 접근
+                self.movec(
+                    via_pose,
+                    assembly_pose,
+                    vel=settings["speed"],
+                    acc=settings["acc"],
+                    ref=self.DR_BASE,
+                )
+                self.mwait()
+
+                # 2. 정확한 Release 위치로 직선 이동 후 Gripper Open
+                self.movel(
+                    release_pose,
+                    vel=settings["place_speed"],
+                    acc=settings["place_acc"],
+                    ref=self.DR_BASE,
+                )
+                self.mwait()
+                self.motion.release()
+                self.wait(settings["release_wait"])
+
+                # 3. 놓인 패널과 간섭하지 않도록 TOOL -Z 30mm 상대 이탈
+                retreat_distance = settings["release_retreat_distance"]
+                self.movel(
+                    self.posx([0.0, 0.0, -retreat_distance, 0.0, 0.0, 0.0]),
+                    vel=settings["place_speed"],
+                    acc=settings["place_acc"],
+                    ref=self.DR_TOOL,
+                    mod=self.DR_MV_MOD_REL,
+                )
+                self.mwait()
+                self.wait(0.5)
+
+                # 4. 패널 밖 검사 준비점에서 TOOL 자세 정렬
+                inspection_ready_pose = self.posx([
+                    float(value) for value in self.PANEL_INSPECTION_READY_POSE
+                ])
+                self.movel(
+                    inspection_ready_pose,
+                    vel=settings["speed"],
+                    acc=settings["acc"],
+                    ref=self.DR_BASE,
+                )
+                self.mwait()
+
+                # 5. 각 Side의 BASE +Z 안전점에서 내려가 Periodic 검사
+                periodic_amp = [
+                    0.0,
+                    settings["periodic_y_amplitude"],
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                ]
+                side_approach_distance = settings["place_distance"]
+                for side_index, side_pose in enumerate(side_poses, start=1):
+                    side_safe_pose = self.posx([
+                        float(side_pose[0]),
+                        float(side_pose[1]),
+                        float(side_pose[2]) + side_approach_distance,
+                        float(side_pose[3]),
+                        float(side_pose[4]),
+                        float(side_pose[5]),
+                    ])
+                    self.node.get_logger().info(
+                        f"PANEL Side 검사 {side_index}/2 안전점 이동 - "
+                        f"BASE Z +{side_approach_distance:.1f}mm"
+                    )
+                    self.movel(
+                        side_safe_pose,
+                        vel=settings["speed"],
+                        acc=settings["acc"],
+                        ref=self.DR_BASE,
+                    )
+                    self.mwait()
+                    self.movel(
+                        side_pose,
+                        vel=settings["place_speed"],
+                        acc=settings["place_acc"],
+                        ref=self.DR_BASE,
+                    )
+                    self.mwait()
+                    periodic_result = self.move_periodic(
+                        amp=periodic_amp,
+                        period=settings["periodic_period"],
+                        atime=settings["periodic_atime"],
+                        repeat=settings["periodic_repeat"],
+                        ref=self.DR_TOOL,
+                    )
+                    if periodic_result != 0:
+                        raise RuntimeError(
+                            f"PANEL Side {side_index} Periodic 검사 실패: "
+                            f"result={periodic_result}"
+                        )
+                    self.mwait()
+                    self.movel(
+                        side_safe_pose,
+                        vel=settings["place_speed"],
+                        acc=settings["place_acc"],
+                        ref=self.DR_BASE,
+                    )
+                    self.mwait()
+
+                self._publish_cycle_event(
+                    operation_context,
+                    phase="PANEL_PLACE",
+                    status="COMPLETED",
+                    detail={
+                        "component_code": component.get("code"),
+                        "motion": "MOVEC_TO_ASSEMBLY",
+                        "movec_via": list(self.PANEL_MOVEC_VIA),
+                        "release_retreat_reference": "TOOL",
+                        "release_retreat_axis": "TOOL_Z",
+                        "release_retreat_direction": -1,
+                        "release_retreat_distance": retreat_distance,
+                        "inspection_ready_pose": list(
+                            self.PANEL_INSPECTION_READY_POSE
+                        ),
+                        "side_approach_distance": side_approach_distance,
+                        "side_check_count": len(side_poses),
+                        "periodic_reference": "TOOL",
+                        "periodic_amplitude": periodic_amp,
+                    },
+                )
+                self.node.get_logger().info(
+                    "========== PANEL PLACE COMPLETE =========="
+                )
+                return True
+
+            except Exception as e:
+                self.node.get_logger().error(f"PANEL Place 실패: {e}")
+                self._publish_cycle_event(
+                    operation_context, phase="PANEL_PLACE", status="FAILED", error=e
+                )
+                raise PanelPlaceError(str(e)) from e
+            
     # =========================================================
     # FRAME PICK / PLACE
     # =========================================================
@@ -2397,254 +2549,6 @@ class SolarMotion:
             except Exception:
                 pass
             raise SnapfitPlaceError(str(e)) from e
-
-    # =========================================================
-    # Full Post cycle
-    # =========================================================
-    def pick_panel(self, parameters, components, operation_context=None):
-        self.node.get_logger().info(
-            "========== PANEL PICK START =========="
-        )
-        self._publish_cycle_event(
-            operation_context,
-            phase="PANEL_PICK",
-            status="STARTED",
-        )
-
-        try:
-            settings = self._load_panel_pick_settings(parameters)
-            component, pickup_pose = self._panel_pickup_input(components)
-
-            safe_pick_pose = self.posx([
-                float(pickup_pose[0]),
-                float(pickup_pose[1]),
-                float(pickup_pose[2]) + settings["pick_distance"],
-                float(pickup_pose[3]),
-                float(pickup_pose[4]),
-                float(pickup_pose[5]),
-            ])
-
-            # 파지 전에 그리퍼가 열려 있음을 보장
-            self.motion.release()
-            self.wait(0.5)
-
-            self.motion.move_home()
-            self.wait(0.5)
-
-            # 패널 전용 안전 접근점
-            safe_result = self.movejx(
-                safe_pick_pose,
-                vel=settings["speed"],
-                acc=settings["acc"],
-                sol=settings["movejx_solution"],
-                ref=self.DR_BASE,
-            )
-
-            if safe_result != 0:
-                raise RuntimeError(
-                    "PANEL Pick 안전 접근 MOVEJX 실패 - "
-                    f"result={safe_result}, "
-                    f"solution={settings['movejx_solution']}, "
-                    f"target={list(safe_pick_pose)}"
-                )
-
-            self.mwait()
-            self.wait(0.2)
-
-            # 실제 파지는 저속으로 접근
-            self.movel(
-                pickup_pose,
-                vel=settings["pick_speed"],
-                acc=settings["pick_acc"],
-                ref=self.DR_BASE,
-            )
-            self.mwait()
-
-            self.motion.grasp()
-            self.wait(settings["grasp_wait"])
-
-            # 파지 후 저속 수직 상승
-            self.movel(
-                safe_pick_pose,
-                vel=settings["pick_speed"],
-                acc=settings["pick_acc"],
-                ref=self.DR_BASE,
-            )
-            self.mwait()
-
-            self._publish_cycle_event(
-                operation_context,
-                phase="PANEL_PICK",
-                status="COMPLETED",
-                detail={
-                    "component_code": component.get("code"),
-                    "pick_distance": settings["pick_distance"],
-                    "safe_reference": "BASE_Z",
-                },
-            )
-            return True
-
-        except Exception as e:
-            self.node.get_logger().error(f"PANEL Pick 실패: {e}")
-            self._publish_cycle_event(
-                operation_context,
-                phase="PANEL_PICK",
-                status="FAILED",
-                error=e,
-            )
-            raise PanelPickError(str(e)) from e
-
-    def place_panel(self, parameters, components, operation_context=None):
-        """PANEL 배치 후 TOOL -Z로 이탈하고 양쪽 지점에서 위치를 검사한다."""
-        self.node.get_logger().info("========== PANEL PLACE START ==========")
-        self._publish_cycle_event(
-            operation_context, phase="PANEL_PLACE", status="STARTED"
-        )
-
-        try:
-            settings = self._load_panel_place_settings(parameters)
-            component, assembly_pose, release_pose, side_poses = (
-                self._panel_place_input(components)
-            )
-            via_pose = self.posx([
-                float(value) for value in self.PANEL_MOVEC_VIA
-            ])
-
-            # 1. 공통 경유점을 거쳐 assembly_position으로 Arc 접근
-            self.movec(
-                via_pose,
-                assembly_pose,
-                vel=settings["speed"],
-                acc=settings["acc"],
-                ref=self.DR_BASE,
-            )
-            self.mwait()
-
-            # 2. 정확한 Release 위치로 직선 이동 후 Gripper Open
-            self.movel(
-                release_pose,
-                vel=settings["place_speed"],
-                acc=settings["place_acc"],
-                ref=self.DR_BASE,
-            )
-            self.mwait()
-            self.motion.release()
-            self.wait(settings["release_wait"])
-
-            # 3. 놓인 패널과 간섭하지 않도록 TOOL -Z 30mm 상대 이탈
-            retreat_distance = settings["release_retreat_distance"]
-            self.movel(
-                self.posx([0.0, 0.0, -retreat_distance, 0.0, 0.0, 0.0]),
-                vel=settings["place_speed"],
-                acc=settings["place_acc"],
-                ref=self.DR_TOOL,
-                mod=self.DR_MV_MOD_REL,
-            )
-            self.mwait()
-            self.wait(0.5)
-
-            # 4. 패널 밖 검사 준비점에서 TOOL 자세 정렬
-            inspection_ready_pose = self.posx([
-                float(value) for value in self.PANEL_INSPECTION_READY_POSE
-            ])
-            self.movel(
-                inspection_ready_pose,
-                vel=settings["speed"],
-                acc=settings["acc"],
-                ref=self.DR_BASE,
-            )
-            self.mwait()
-
-            # 5. 각 Side의 BASE +Z 안전점에서 내려가 Periodic 검사
-            periodic_amp = [
-                0.0,
-                settings["periodic_y_amplitude"],
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-            ]
-            side_approach_distance = settings["place_distance"]
-            for side_index, side_pose in enumerate(side_poses, start=1):
-                side_safe_pose = self.posx([
-                    float(side_pose[0]),
-                    float(side_pose[1]),
-                    float(side_pose[2]) + side_approach_distance,
-                    float(side_pose[3]),
-                    float(side_pose[4]),
-                    float(side_pose[5]),
-                ])
-                self.node.get_logger().info(
-                    f"PANEL Side 검사 {side_index}/2 안전점 이동 - "
-                    f"BASE Z +{side_approach_distance:.1f}mm"
-                )
-                self.movel(
-                    side_safe_pose,
-                    vel=settings["speed"],
-                    acc=settings["acc"],
-                    ref=self.DR_BASE,
-                )
-                self.mwait()
-                self.movel(
-                    side_pose,
-                    vel=settings["place_speed"],
-                    acc=settings["place_acc"],
-                    ref=self.DR_BASE,
-                )
-                self.mwait()
-                periodic_result = self.move_periodic(
-                    amp=periodic_amp,
-                    period=settings["periodic_period"],
-                    atime=settings["periodic_atime"],
-                    repeat=settings["periodic_repeat"],
-                    ref=self.DR_TOOL,
-                )
-                if periodic_result != 0:
-                    raise RuntimeError(
-                        f"PANEL Side {side_index} Periodic 검사 실패: "
-                        f"result={periodic_result}"
-                    )
-                self.mwait()
-                self.movel(
-                    side_safe_pose,
-                    vel=settings["place_speed"],
-                    acc=settings["place_acc"],
-                    ref=self.DR_BASE,
-                )
-                self.mwait()
-
-            self._publish_cycle_event(
-                operation_context,
-                phase="PANEL_PLACE",
-                status="COMPLETED",
-                detail={
-                    "component_code": component.get("code"),
-                    "motion": "MOVEC_TO_ASSEMBLY",
-                    "movec_via": list(self.PANEL_MOVEC_VIA),
-                    "release_retreat_reference": "TOOL",
-                    "release_retreat_axis": "TOOL_Z",
-                    "release_retreat_direction": -1,
-                    "release_retreat_distance": retreat_distance,
-                    "inspection_ready_pose": list(
-                        self.PANEL_INSPECTION_READY_POSE
-                    ),
-                    "side_approach_distance": side_approach_distance,
-                    "side_check_count": len(side_poses),
-                    "periodic_reference": "TOOL",
-                    "periodic_amplitude": periodic_amp,
-                },
-            )
-            self.node.get_logger().info(
-                "========== PANEL PLACE COMPLETE =========="
-            )
-            return True
-
-        except Exception as e:
-            self.node.get_logger().error(f"PANEL Place 실패: {e}")
-            self._publish_cycle_event(
-                operation_context, phase="PANEL_PLACE", status="FAILED", error=e
-            )
-            raise PanelPlaceError(str(e)) from e
 
     # =========================================================
     # Full Post cycle
