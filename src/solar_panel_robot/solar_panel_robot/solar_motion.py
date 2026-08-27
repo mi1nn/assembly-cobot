@@ -116,7 +116,7 @@ class SolarMotion:
     )
 
     # PANEL Pick/Place 공통 movec 경유점 (BASE 절대좌표)
-    PANEL_MOVEC_VIA = (
+    PANEL_MOVEL_VIA = (
         -389.65,
         -329.83,
         402.33,
