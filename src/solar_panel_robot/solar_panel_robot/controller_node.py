@@ -63,6 +63,12 @@ ACTION_NAME = "/execute_operation"
 # Controller가 실행 가능한 Operation Code
 # =============================================================
 
+# DB Operation -> Robot Unit Motion mapping
+#
+# 실제 DB operation.code 기준:
+#   Unit 1: post1~post6       -> POST Pick + Place
+#   Unit 2: frameA            -> FRAME Pick + Place + SNAPFIT-A-01~06 Pick + Place
+#   Unit 3: solarpanelA       -> PANEL Pick + Place
 POST_OPERATION_CODES = {
     "post1",
     "post2",
@@ -78,10 +84,46 @@ SUPPORTED_OPERATION_CODES = POST_OPERATION_CODES | {
     "POST_PLACE",
     "POST_PIN_PICK",
     "POST_PIN_PLACE",
+    "PIN_PICK",
+    "PIN_PLACE",
     "POST_INSTALL",
     "PANEL_PICK",
+    "PANEL_PLACE",
+    "FRAME_PICK",
+    "FRAME_PLACE",
+    "SNAPFIT_PICK",
+    "SNAPFIT_PLACE",
     "SOLAR_FULL",
 }
+
+PANEL_OPERATION_CODES = {
+    "solarpanelA",
+}
+
+FRAME_SNAPFIT_A_OPERATION_CODES = {
+    "frameA",
+}
+
+# 아래 대문자 코드는 DB 공정용이 아니라 개별 모션 직접 테스트/호환용.
+SUPPORTED_OPERATION_CODES = (
+    POST_OPERATION_CODES
+    | FRAME_SNAPFIT_A_OPERATION_CODES
+    | PANEL_OPERATION_CODES
+    | {
+        "POST_PICK",
+        "POST_PLACE",
+        "POST_PIN_PICK",
+        "POST_PIN_PLACE",
+        "POST_INSTALL",
+        "FRAME_PICK",
+        "FRAME_PLACE",
+        "SNAPFIT_PICK",
+        "SNAPFIT_PLACE",
+        "PANEL_PICK",
+        "PANEL_PLACE",
+        "SOLAR_FULL",
+    }
+)
 
 
 
@@ -833,7 +875,7 @@ class SolarPanelControllerNode(Node):
         # POST PICK -> POST PLACE -> MOTION STOP -> RELEASE
         # -> SAFE RETREAT -> HOME
         if operation_code in POST_OPERATION_CODES:
-            return self.solar.install_post_cycle(
+            return self.solar.install_post_pick_place_cycle(
                 parameters,
                 components,
                 operation_context=operation_context,
@@ -854,15 +896,15 @@ class SolarPanelControllerNode(Node):
                 operation_context=operation_context,
             )
 
-        if operation_code == "POST_PIN_PICK":
-            return self.solar.pick_post_pin(
+        if operation_code in {"POST_PIN_PICK", "PIN_PICK"}:
+            return self.solar.pick_pin(
                 parameters,
                 components,
                 operation_context=operation_context,
             )
 
-        if operation_code == "POST_PIN_PLACE":
-            return self.solar.place_post_pin(
+        if operation_code in {"POST_PIN_PLACE", "PIN_PLACE"}:
+            return self.solar.place_pin(
                 parameters,
                 components,
                 operation_context=operation_context,
@@ -876,10 +918,89 @@ class SolarPanelControllerNode(Node):
                 operation_context=operation_context,
             )
 
-        # PANEL_PICK은 태양광 패널 Pick 단독 테스트용 Operation Code.
-        # PANEL Pick만 수행하고 Place는 실행하지 않는다.
+        # DB frameA: FRAME Pick/Place + SNAPFIT-A-01~06 Pick/Place
+        if operation_code in FRAME_SNAPFIT_A_OPERATION_CODES:
+            return self.solar.install_frame_snapfit_a_cycle(
+                parameters,
+                components,
+                operation_context=operation_context,
+            )
+
+        # DB solarpanelA: PANEL Pick + Place
+        if operation_code in PANEL_OPERATION_CODES:
+            return self.solar.install_panel_cycle(
+                parameters,
+                components,
+                operation_context=operation_context,
+            )
+
+        # FRAME / SNAPFIT-A 개별 모션 직접 테스트용.
+        if operation_code == "FRAME_PICK":
+            return self.solar.pick_frame(
+                parameters,
+                components,
+                operation_context=operation_context,
+            )
+
+        if operation_code == "FRAME_PLACE":
+            return self.solar.place_frame(
+                parameters,
+                components,
+                operation_context=operation_context,
+            )
+
+        if operation_code == "SNAPFIT_PICK":
+            return self.solar.pick_snapfit(
+                parameters,
+                components,
+                operation_context=operation_context,
+            )
+
+        if operation_code == "SNAPFIT_PLACE":
+            return self.solar.place_snapfit(
+                parameters,
+                components,
+                operation_context=operation_context,
+            )
+
+        # PANEL 개별 모션 직접 테스트용.
         if operation_code == "PANEL_PICK":
             return self.solar.pick_panel(
+                parameters,
+                components,
+                operation_context=operation_context,
+            )
+
+        if operation_code == "PANEL_PLACE":
+            return self.solar.place_panel(
+                parameters,
+                components,
+                operation_context=operation_context,
+            )
+
+        if operation_code == "FRAME_PICK":
+            return self.solar.pick_frame(
+                parameters,
+                components,
+                operation_context=operation_context,
+            )
+
+        if operation_code == "FRAME_PLACE":
+            return self.solar.place_frame(
+                parameters,
+                components,
+                operation_context=operation_context,
+            )
+
+        if operation_code == "SNAPFIT_PICK":
+            return self.solar.pick_snapfit(
+                parameters,
+                components,
+                operation_context=operation_context,
+            )
+
+        if operation_code == "SNAPFIT_PLACE":
+            return self.solar.place_snapfit(
                 parameters,
                 components,
                 operation_context=operation_context,
