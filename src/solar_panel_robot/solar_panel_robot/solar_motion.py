@@ -119,10 +119,10 @@ class SolarMotion:
     )
 
     # PANEL Pick/Place 공통 movec 경유점 (BASE 절대좌표)
-    PANEL_VIA = (
+    PANEL_MOVE_VIA = (
         389.65,
-        -300.00,
-        400.0,
+        -329.83,
+        402.33,
         153.5,
         -176.71,
         161.71,
@@ -1673,14 +1673,14 @@ class SolarMotion:
 
         순서:
             현재 TCP 위치
-            -> movel(PANEL_VIA, radius=20mm)
+            -> movel(PANEL_MOVE_VIA, radius=20mm)
             -> movel(Safe Pick, radius=0mm)
             -> Safe Pick 실제 XYZ 도달 검증
             -> movel(pickup_position)
             -> Grasp
             -> movel(Safe Pick)
 
-        첫 번째 MOVEL은 실행 시점의 현재 TCP 위치에서 PANEL_VIA 방향으로
+        첫 번째 MOVEL은 실행 시점의 현재 TCP 위치에서 PANEL_MOVE_VIA 방향으로
         직선 이동하며 radius=20mm 블렌딩으로 경유점 부근에서 두 번째 MOVEL로
         부드럽게 이어진다. 두 번째 MOVEL은 Safe Pick을 최종 목표로 하며 radius=0mm로
         정확히 도달한다.
@@ -1707,13 +1707,13 @@ class SolarMotion:
 
             via_pose = self.posx([
                 float(value)
-                for value in self.PANEL_VIA
+                for value in self.PANEL_MOVE_VIA
             ])
 
             # 1. 현재 TCP 위치 -> Panel 전용 경유점
             self.node.get_logger().info(
                 "PANEL Pick 1차 MOVEL - 현재 위치 -> 경유점 - "
-                f"via={list(self.PANEL_VIA)}"
+                f"via={list(self.PANEL_MOVE_VIA)}"
             )
             first_move_result = self.movel(
                 via_pose,
@@ -1797,7 +1797,7 @@ class SolarMotion:
                 detail={
                     "component_code": component.get("code"),
                     "motion": "MOVEL_X2_BLEND",
-                    "movel_via": list(self.PANEL_VIA),
+                    "movel_via": list(self.PANEL_MOVE_VIA),
                     "blend_radius_mm": 20.0,
                     "pick_distance": pick_distance,
                     "safe_reference": "BASE_Z",
@@ -1828,7 +1828,7 @@ class SolarMotion:
                     self._panel_place_input(components)
                 )
                 via_pose = self.posx([
-                    float(value) for value in self.PANEL_VIA
+                    float(value) for value in self.PANEL_MOVE_VIA
                 ])
 
                 # 1-1. 현재 TCP 위치 -> Panel 전용 경유점
@@ -1974,7 +1974,7 @@ class SolarMotion:
                     detail={
                         "component_code": component.get("code"),
                         "motion": "MOVEC_TO_ASSEMBLY",
-                        "movec_via": list(self.PANEL_VIA),
+                        "movec_via": list(self.PANEL_MOVE_VIA),
                         "release_retreat_reference": "TOOL",
                         "release_retreat_axis": "TOOL_Z",
                         "release_retreat_direction": -1,

@@ -36,7 +36,7 @@ ON = 1
 # 아래 값은 로봇 공통 기본값과 초기 Home/Gripper 설정에만 사용한다.
 DEFAULT_VELOCITY = 50.0
 DEFAULT_ACC = 50.0
-HOME_POSITION = [0.0, 0.0, 90.0, 0.0, 90.0, 0.0]
+HOME_POSITION = [0.0, 0.0, 60.0, 0.0, 115.0, 0.0]
 GRASP_PORT = 1
 RELEASE_PORT = 2
 GRIPPER_WAIT_TIME = 1.0
