@@ -1,24 +1,28 @@
-# Assembly-Cobot: Collaborative Robot-Based Solar Panel Installation Automation System
-<p align="center">
-  <img alt="Python" src="https://img.shields.io/badge/Python-3.12.3-blue">
-  <img alt="Flask" src="https://img.shields.io/badge/Flask-3.1.3-red">
-  <img alt="SQLAlchemy" src="https://img.shields.io/badge/SQLAlchemy-2.0.51-orange">
-</p>
+# assembly-cobot
 
-  
+> 두산로보틱스 M0609 협동로봇으로 지상형 태양광 패널 구조물의 조립 공정을 자동화하고 MES(Work Order·이력 관리)와 연동하는 프로젝트
+> **F/T 센서 기반 힘 제어 삽입으로 구현한, 비전 없는 협동로봇 조립 자동화 시스템**
+
+**핵심 공정 순서:** 기둥 설치 → 프레임 설치 → 스냅핏 체결 → 패널 설치
+
+> 기둥–주춧돌의 잠금핀(Lock Pin) 체결은 로봇·작업자 협동 작업으로 **작업자가 수행**합니다 (2026-08 범위 조정).
+
 ## 1. 시스템 개요
-<p align="center">
-  <img src="./img/system.png" alt="system" width="800">
-</p>
 
-본 로봇은 현장 관리자가 대시보드를 통해 내린 명령을 수행하며, **기둥 설치 → 프레임 설치 → 잠금핀(Snapfit) 체결 → 패널 설치**의 공정 순서를 갖는다.  
-로봇 제어의 주요 기술은 F/T 센서 기반 힘 제어와 periodic 동작 기반 끼워맞춤, move_arc 함수를 통한 유연한 경로 생성이다.
-  
-**1. F/T 센서 기반 힘 제어:** Post 1차 삽입 후 2차 가압으로 최종 삽입. 1차 삽입 실패 시 25개 좌표(단위: 0.3mm)를 기준으로 최적점을 찾아 2차 삽입 진행  
-**2. Periodic 끼워맞춤:** 프레임과 기둥 끼워맞춤을 위해 xy축 방향으로 진동 발생  
-**3. move_arc 경로 생성:** 2차함수 기반 경로를 생성하여 낮은 자재 위치와 높은 설치 위치 간 접촉없이 이동 가능하도록 설계
-  
-  
+- **F/T 센서 기반 힘 제어 삽입** — 정해진 깊이까지 1차 삽입 → 재파지 → 축 방향 가압으로 최종 삽입. 저항이 임계값을 넘으면 후퇴하거나(스냅핏 체결) 미세하게 위치를 조정(기둥 삽입)합니다. 임계값은 코드에 두지 않고 DB Recipe/Parameter로 관리합니다.
+
+
+```
+현장관리자 ↔ Dashboard(HTML/JS) ↔ Flask Backend ↔ PostgreSQL
+                                       │ HTTP/REST
+                                       ▼
+                                  ROS2 Bridge (별도 프로세스)
+                                       │ ROS2 Action
+                                       ▼
+                              Controller ↔ M0609 Robot + Gripper + F/T Sensor
+```
+
+
 ## 2. 운영체제 환경
 
 - **OS:** Ubuntu 24.04
@@ -26,11 +30,11 @@
 - **로봇 프로그래밍:** DART Platform, DART Studio, DRL (Doosan Robot Language, Python 기반)
 - **로봇:** Doosan M0609 (그리퍼 + 내장 F/T 센서)
 - **Backend:** Python / Flask, SQLAlchemy, PostgreSQL
-- **Language:** Python  
-  
+- **Language:** Python 
+
 ## 3. 저장소 구성
 
-ROS2 colcon 워크스페이스(`src/`)와 Flask 백엔드(`web_app/`)로 구성되며, 세부 항목은 아래와 같다.
+이 저장소는 ROS2 colcon 워크스페이스(`src/`)와 Flask 백엔드(`web_app/`)로 구성됩니다. 
 
 ```
 assembly-cobot/
@@ -58,11 +62,17 @@ assembly-cobot/
 |---|---|
 | `controller_node.py` | 실제 로봇 Controller 노드 (`namespace="dsr01"`이지만 Action은 절대 경로 `/execute_operation`으로 등록, ExecuteOperation Action Server) |
 | `action_server.py` | 실제 장비 없이 통신을 검증하기 위한 Mock Action Server. `ExecuteOperation` Action 외에 `StopOperation`/`RecoverRobot` Service도 함께 구현 |
-| `robot_controller.py` | 로봇 초기 세팅 함수 |
-| `robot_motion.py` | 기본적인 로봇 모션(Pick&Place) |
-| `solar_motion.py` | 작업 단위 로봇 모션(Post, Panel, Frame 등) |
+| `robot_controller.py` / `robot_motion.py` / `solar_motion.py` | 로봇 모션(Pick/Place 등) |
 | `force_control.py` | F/T 센서 기반 힘 제어 삽입 로직 |
-| `launch/solar_robot.launch.py` | `controller` & `ROS bridge` 노드 실행 |
+| `coordinate_manager.py` | *(폐기 예정)* Frame 좌표계(UCS, P1/P2/P3 기반) 생성 유틸. 2026-08 설계 변경으로 Frame 좌표계 측정 자체를 더 이상 사용하지 않기로 확정 — `solar_motion.py` 공정 흐름 연동 계획 없음 |
+| `config_loader.py` | Recipe/Parameter 설정 로딩 |
+| `ros_bridge_node.py` | Controller를 직접 호출하는 별도 Action Client (`setup.py` entry_points에 등록되어 있지 않아 실행되지 않는 미사용 코드) |
+| `config/poses.yaml` | 위치/자세 설정값 |
+| `launch/solar_robot.launch.py` | `controller` 노드 실행 |
+
+> `controller_node.py`의 `resolve_operation_code()`는 DB `operation.code`(`postA`~`postF` 등)를 그대로 검증·실행하도록 구현되어 있어, Action 이름/Operation 코드 체계는 Backend·Bridge와 일치합니다.
+> `StopOperation`/`RecoverRobot` Service는 실제 `controller_node.py`(`stop_operation_callback` / `recover_robot_callback`)와 `action_server.py`(Mock) **양쪽에 구현**되어 있습니다. 다만 실물 로봇을 포함한 강제정지/복구 end-to-end 검증은 아직 Mock 기준입니다.
+> Goal Cancel은 현재 항상 REJECT이며, 정지는 `StopOperation` Service로 처리합니다.
 
 ### src/ros2_bridge (ament_python)
 
@@ -91,10 +101,28 @@ Flask Backend의 HTTP 요청을 큐에 쌓았다가 ROS2 Action Goal/Service 호
 | `database/schema.sql` | PostgreSQL 스키마 (9개 테이블) |
 | `frontend/` | 정적 HTML/CSS/JS 대시보드 — Work Order 생성/조회/실행/강제정지, 로봇 상태/복구, 시스템 로그 UI |
 
+## 3. 🛠️ 사용 장비 목록 (Hardware List)
+
+본 프로젝트에서는 두산로보틱스 M0609 협동로봇과 2지 평행 그리퍼를 이용하여 태양광 패널 구조물의 부품을 파지·이송·삽입하였습니다. 구조물 부품과 고정 지그는 STL 모델을 기반으로 3D 프린팅하여 제작하였습니다.
+
+|    구분    | 장비 및 부품명          |  수량 | 용도                                              |
+| :------: | :---------------- | :-: | :---------------------------------------------- |
+|   로봇 장비  | 두산로보틱스 M0609 협동로봇 |  1대 | 부품의 파지, 이송, 삽입 및 조립 작업 수행                       |
+|   로봇 장비  | 2지 평행 그리퍼         |  1대 | 태양광 패널과 구조물 부품의 파지 및 해제                         |
+|   제어 장비  | 로봇 제어기 및 티칭 펜던트   |  1식 | 로봇 동작 제어, 좌표 설정 및 작업 상태 확인                      |
+|   제어 장비  | 로봇 제어용 PC         |  1대 | Ubuntu 24.04 및 ROS 2 Jazzy 기반 제어 프로그램과 UI 실행    |
+|   제작 장비  | FDM 방식 3D 프린터     |  1대 | 태양광 패널 구조물의 부품 제작                   |
+| 조립 보조 장비 | 기둥 및 스냅핀 고정 지그    |  1식 | 기둥과 스냅핀의 위치 및 자세를 일정하게 유지하여 로봇의 안정적인 파지와 조립을 보조 |
+|   조립 부품  | Solar Panel       |  1식 | 로봇 조립 작업의 대상이 되는 태양광 패널                         |
+|   조립 부품  | Base Stone        |  6개 | 태양광 패널 구조물을 지지하고 고정하는 하부 주춧돌 부품                    |
+|   조립 부품  | Short Column      |  3개 | 태양광 패널 프레임을 지지하는 짧은 기둥                          |
+|   조립 부품  | Long Column      |  3개 | 태양광 패널 프레임을 지지하는 긴 기둥                          |
+|   조립 부품  | Col Frame      |  3개 | 태양광 패널 구조물의 세로 방향 프레임                           |
+|   조립 부품  | Row Frame         |  4개 | 태양광 패널 구조물의 가로 방향 프레임                           |
+|   체결 부품  | Snap Pin   |  6개 | 기둥과 프레임을 고정하는 체결용 잠금 핀                          |
+
 ## 4. DB 구조
-<p align="center">
-  <img src="./img/db.png" alt="system">
-</p>
+![alt text](image.png)
 
 ## 5. 의존성
 
@@ -103,20 +131,62 @@ Flask Backend의 HTTP 요청을 큐에 쌓았다가 ROS2 Action Goal/Service 호
 - Flask, Flask-SQLAlchemy, SQLAlchemy, python-dotenv, psycopg2, requests (`web_app/requirements.txt`)
 - PostgreSQL 16 (로컬 설치)
 
-## 6. 빌드 및 실행
+## 6. 통합 환경 구성 및 실행
 
-전체 구성 요소(DB → Backend/Frontend → ROS2 Bridge/Controller → M0609 Virtual + rviz2) 실행 단계  
+프로젝트 루트의 스크립트 하나로 Python 환경, PostgreSQL DB/기준 데이터,
+ROS2 빌드, 두산 M0609+RG2 bringup, Web, ROS2 bridge, Controller를 구성하고 실행합니다.
 
-### 6.1 PostgreSQL (DB)
+최초 실행 전에 DB 비밀번호를 설정합니다.
+
 ```bash
-cd web_app
-cp .env.example .env             # DB_USER/DB_PASSWORD 등 접속정보를 채운다
+cp web_app/.env.example web_app/.env
+# web_app/.env의 DB_PASSWORD 수정
 
-./database/setup_db.sh --seed    # 스키마 생성 + 데모 시드 데이터 적용
+# 가상 로봇: DB 구축 + 데이터 설정 + 빌드 + 전체 실행
+./scripts/setup_and_start.sh
+
+# 실제 로봇
+./scripts/setup_and_start.sh --mode real --host 192.168.1.100
+
+# 환경/DB 구성 후 빠르게 재실행
+./scripts/setup_and_start.sh --skip-setup --mode real --host 192.168.1.100
+
+# 두산 워크스페이스가 기본 경로와 다른 경우
+DSR_WS=/absolute/path/to/ws_dsr ./scripts/setup_and_start.sh
 ```
-세부사항: `web_app/database/README.md` 참조  
 
-### 6.2 Flask Backend + Frontend
+기본값은 ROS2 Jazzy와 `~/ws_cobot_pjt/ws_dsr`입니다. 모든 프로세스는 하나의
+ROS2 launch가 관리하며 실행 터미널에서 `Ctrl+C`로 함께 종료합니다. Web UI는
+`http://127.0.0.1:5000`에서 확인합니다. 스크립트의 ROS2 빌드 산출물은 기존
+`build/install/log`와 충돌하지 않도록 `.runtime/`에 생성됩니다.
+
+통합 launch만 직접 실행하려면 기반 워크스페이스부터 순서대로 source합니다.
+
+```bash
+source /opt/ros/jazzy/setup.bash
+source ~/ws_cobot_pjt/ws_dsr/install/setup.bash
+source install/setup.bash
+
+ros2 launch solar_panel_robot solar_robot.launch.py \
+  project_root:="$PWD" mode:=virtual host:=127.0.0.1 port:=12345
+```
+
+최상위 launch는 `FindPackageShare('m0609_rg2_bringup')`과
+`IncludeLaunchDescription()`을 사용합니다. 두산 워크스페이스를 source하지
+않으면 `Package 'm0609_rg2_bringup' not found` 오류가 발생합니다.
+
+상태 점검은 별도 터미널에서 실행합니다.
+
+```bash
+./scripts/demo_check.sh
+```
+
+`web_app/database/README.md`에 계정/권한(`grant.sql`) 및 초기화(`reset_db.sh`) 절차가 별도로 정리되어 있습니다.
+
+### 7.2 Flask Backend + Frontend
+
+Backend가 정적 프론트엔드도 같이 서빙하므로 별도 Frontend 서버는 필요 없습니다.
+
 ```bash
 cd web_app
 python3 -m venv .venv
@@ -125,17 +195,21 @@ python3 -m venv .venv
 source .venv/bin/activate
 python run.py                    # http://localhost:5000 (API + Dashboard)
 ```
-세부사항: `web_app/app/README.md`, `web_app/frontend/README.md` 참조  
+
+브라우저에서 `http://localhost:5000`에 접속하면 Work Order 대시보드가 보입니다. 상세 검증 절차는 `web_app/app/README.md`, `web_app/frontend/README.md`를 참조하세요.
 
 ### 6.3 ROS2 워크스페이스 빌드
+
 ```bash
 source /opt/ros/jazzy/setup.bash
 colcon build --symlink-install
 source install/setup.bash
 ```
-  
-### 6.4 M0609 Virtual 로봇 + rviz2
-※ Doosan에서 제공하는 ROS2 package는 해당 저장소에 포함되지 않음
+
+### 7.4 M0609 Virtual 로봇 + rviz2
+
+Doosan이 제공하는 ROS2 패키지(`dsr_bringup2` 등, 이 저장소에는 포함되어 있지 않고 별도 설치가 필요합니다)로 가상 로봇을 띄웁니다. `namespace`/`model`은 `controller_node.py`의 `ROBOT_ID = "dsr01"`, `ROBOT_MODEL = "m0609"`와 반드시 일치해야 합니다.
+
 ```bash
 source /opt/ros/jazzy/setup.bash
 source ~/ws_cobot_pjt/ws_dsr/install/setup.bash   # Doosan Robotics 패키지 워크스페이스
@@ -147,23 +221,40 @@ ros2 launch m0609_rg2_bringup bringup.launch.py \
     host:=127.0.0.1 \
     port:=12345
 ```
-  
-### 6.5 이 프로젝트의 Controller + Bridge
+
+가상 로봇과 함께 rviz2가 자동으로 뜨지 않으면 별도 터미널에서 실행합니다.
+
+```bash
+rviz2
+```
+
+### 7.5 이 프로젝트의 Controller + Bridge
+
+가상 로봇이 떠 있는 상태에서 이 저장소의 `solar_panel_robot`/`ros2_bridge` 노드를 실행합니다.
+
 ```bash
 ros2 launch solar_panel_robot solar_robot.launch.py \
     robot_id:=1 \
     backend_base_url:=http://127.0.0.1:5000
 ```
-  
-### 6.6 로봇 조종 (Dashboard → rviz2)
 
-1. `http://localhost:5000` 대시보드에서 Work Order 생성 후 `READY` 상태로 전환
-2. `robot_id` 지정 후 실행하여 rivz2에서 로봇 동작 확인 (Action Goal 전달 루트: Backend → Bridge → Controller)
-3. 대시보드의 `/<id>/progress` 조회 또는 각 터미널의 ROS2 로그(`[STATUS]`, `[IF-15]` 등)를 통한 진행 사항 확인
+`controller` Action Server(`/dsr01/execute_operation`)와 `ros2_bridge`(Flask HTTP 서버, 포트 8001)가 함께 실행됩니다. `robot_id`는 6.2에서 접속한 DB의 `robot.robot_id`와 일치해야 합니다.
 
+### 7.6 로봇 조종 (Dashboard → rviz2)
 
-## 7. 문서
-상세 요구사항은 `docs/` 디렉토리 참고 (BR 6 → SYS-FR 24 → FR 24 → TC 15 추적 체계).  
+1. `http://localhost:5000` 대시보드에서 Work Order를 생성하고 `READY` 상태로 전환합니다.
+2. `robot_id`를 지정해 실행(`POST /<id>/execute`)하면 Backend → Bridge → Controller 순서로 Action Goal이 전달되고, 가상 로봇이 움직이는 모습을 rviz2에서 확인할 수 있습니다.
+3. 진행 상태는 대시보드의 `/<id>/progress` 조회 또는 각 터미널의 ROS2 로그(`[STATUS]`, `[IF-15]` 등)로 확인합니다.
+
+> ⚠️ **현재 알려진 제약**: Work Order 실행(Action Goal) 흐름은 실제 `controller`로 검증되었습니다. 강제정지/로봇 복구(`StopOperation`/`RecoverRobot`)도 `controller_node.py`에 구현되어 있으나, 실물 로봇을 포함한 end-to-end 검증은 아직 Mock 기준입니다 (§3 각주 참조). Mock으로 전체 흐름을 확인하려면 6.5의 `controller` 대신 Mock Server를 띄우세요.
+>
+> ```bash
+> ros2 run solar_panel_robot action_server
+> ```
+
+## 8. 문서
+
+상세 요구사항은 `docs/` 디렉토리를 참조하세요 (BR 6 → SYS-FR 24 → FR 24 → TC 15 추적 체계).
 
 | 문서 | 내용 |
 |---|---|
@@ -177,9 +268,9 @@ ros2 launch solar_panel_robot solar_robot.launch.py \
 | `docs/08_ops_요구사항.md` | 운영 절차 |
 | `docs/09_maint_요구사항.md` | 유지보수 점검 항목 |
 | `docs/10_최종_시스템_시나리오.md` | 전체 조립 시나리오 (단계별) |
-| `docs/소스코드_역할_정리.md` | 소스 파일별 역할 요약 |  
+| `docs/소스코드_역할_정리.md` | 소스 파일별 역할 요약 |
 
-아키텍처/발표 문서 (`docs/architecture/`):  
+아키텍처/발표 문서 (`docs/architecture/`):
 
 | 문서 | 내용 | 저장소 |
 |---|---|---|
@@ -188,3 +279,5 @@ ros2 launch solar_panel_robot solar_robot.launch.py \
 | `파일별_함수_동작순서.md` | 프로세스 기동 순서 + 작업 지시 1건의 함수 단위 흐름 | 로컬 전용 |
 | `DB_데이터_흐름.md` | 9개 테이블별 데이터 유입·유출 경로 | 로컬 전용 |
 | `기술_발표_스크립트.md` | 발표자료 PDF(01~05) 순서에 맞춘 발표 대본 | 로컬 전용 |
+
+> `docs/architecture/`는 `.gitignore` 대상이라 이후 추가된 문서는 로컬에만 존재합니다(위 표의 "로컬 전용"). 초기 아키텍처 문서 2건은 규칙 추가 전 커밋되어 계속 추적됩니다. `docs/test.md`, `CLAUDE.md`, `graphify-out/`도 `.gitignore` 대상입니다.
