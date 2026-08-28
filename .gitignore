@@ -226,3 +226,5 @@ build/
 log/
 install/
 graphify-out/
+
+.DS_Store
