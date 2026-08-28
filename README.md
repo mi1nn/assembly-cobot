@@ -6,8 +6,8 @@
 </p>  
   
 <p align="center">
-  <img src ="./img/01_post.gif" width="300"> <img src ="./img/02_frame.gif">  
-  <img src ="./img/03_snapfit.gif"> <img src ="./img/04_panel.gif">
+  <img src ="./img/01_post.gif" width="400"> <img src ="./img/02_frame.gif" width="400">  
+  <img src ="./img/03_snapfit.gif" width="400"> <img src ="./img/04_panel.gif" width="400">
 </p>
 
   
