@@ -7,7 +7,7 @@ INSERT INTO installation (
 ) VALUES (
     1, 'PRJ-DLPT8', '대륭 포스트타워 8차 태양광 발전 시설 도입',
     '대륭 포스트타워 8차 옥상', '서울 구로구 디지털로26길 43 옥상',
-    '봉승현', 'IT-SOLAR-A', '태양광 발전 시설 A',
+    '봉승현', 'IT-SOLAXR-A', '태양광 발전 시설 A',
     '옥상형 태양광 발전 시설 (포스트 6 + 프레임 1 + 패널 1)', 'ACTIVE'
 );
 
@@ -51,7 +51,7 @@ INSERT INTO operation (
     {"code": "SNAPFIT-A-05", "name": "중앙 후단 포스트 체결용 핀 A", "category": "스냅핏", "pickup_position": {"x": 491.56, "y": -393.21, "z": 63.28, "A": 53.46, "B": -179.15, "C": -34.61}, "assembly_position": {"x": 282.47, "y": -114.30, "z": 284.28, "A": 0.95, "B": -177.65, "C": -87.88}},
     {"code": "SNAPFIT-A-06", "name": "우측 후단 포스트 체결용 핀 A", "category": "스냅핏", "pickup_position": {"x": 444.16, "y": -391.49, "z": 63.68, "A": 39.39, "B": -179.17, "C": -48.57}, "assembly_position": {"x": 481.73, "y": -118.74, "z": 235.07, "A": 26.15, "B": -177.74, "C": -62.31}}]'),
 (8, 1, 'solarpanelA', '태양광 패널 A 설치', 8, '패널 배치 및 양측 위치 검사', TRUE, 1200,
-'{"speed":50,"acceleration":50,"panel_pick_distance":60.0,"panel_place_distance":50.0,"panel_place_speed":30.0,"panel_place_acceleration":50.0,"panel_release_wait":1.0,"panel_release_retreat_distance":30.0,"panel_periodic_y_amplitude":5.0,"panel_periodic_period":2.0,"panel_periodic_atime":0.5,"panel_periodic_repeat":1.0}',
+'{"speed":50,"acceleration":50,"panel_pick_distance":60.0,"panel_place_distance":50.0,"panel_place_speed":30.0,"panel_place_acceleration":50.0,"panel_release_wait":1.0,"panel_release_retreat_distance":30.0,"panel_periodic_y_amplitude":30.0,"panel_periodic_period":2.0,"panel_periodic_atime":0.5,"panel_periodic_repeat":1.0}',
  '[{"code":"CMP-PANEL-A","name":"태양광 패널 A","category":"태양광 패널","quantity":1,"pickup_position":{"x":-423.79,"y":-430.08,"z":158.03,"A":163.0,"B":179.65,"C":163.6},"assembly_position":{"x":453.00,"y":80.35,"z":365.00,"A":85.67,"B":-179.41,"C":-86.05},"assembly_side_positions":[{"x":384.96,"y":336.7,"z":220.0,"A":115.44,"B":-179.59,"C":116.03},{"x":366.34,"y":-170.0,"z":220.0,"A":157.72,"B":179.68,"C":158.07}]}]');
 
 INSERT INTO robot (robot_id, robot_code, name, manufacturer, model, status, dofs, payload_kg)

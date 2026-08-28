@@ -459,7 +459,7 @@ class SolarMotion:
         settings["periodic_y_amplitude"] = self._first_number(
             parameters,
             ("frame_periodic_y_amplitude",),
-            75.0,
+            150.0,
             nonnegative=True,
         )
         settings["periodic_period"] = self._first_number(
