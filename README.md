@@ -4,7 +4,6 @@
   <img alt="Flask" src="https://img.shields.io/badge/Flask-3.1.3-red">
   <img alt="SQLAlchemy" src="https://img.shields.io/badge/SQLAlchemy-2.0.51-orange">
 </p>
-> 두산로보틱스 M0609 협동로봇으로 지상형 태양광 패널 구조물의 조립 공정을 자동화하는 프로젝트
 
   
 ## 1. 시스템 개요
