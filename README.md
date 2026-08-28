@@ -16,7 +16,7 @@
 - **측정 좌표계 기준 후속 동작** — 생성된 Frame Coordinate 기준으로 Panel 위치·자세 제어
 
 <p align="center">
-  <img src="./src/img/System.png" alt="System" width="600">
+  <img src="./src/img/System.png" alt="system" width="600">
 </p>
 
 ```
@@ -102,7 +102,9 @@ Flask Backend의 HTTP 요청을 큐에 쌓았다가 ROS2 Action Goal/Service 호
 | `frontend/` | 정적 HTML/CSS/JS 대시보드 — Work Order 생성/조회/실행/강제정지, 로봇 상태/복구, 시스템 로그 UI |
 
 ## 4. DB 구조
-![alt text](image.png)
+<p align="center">
+  <img src="./src/img/db.png" alt="system">
+</p>
 
 ## 5. 의존성
 
