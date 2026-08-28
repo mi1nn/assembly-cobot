@@ -111,22 +111,59 @@ Flask Backend의 HTTP 요청을 큐에 쌓았다가 ROS2 Action Goal/Service 호
 - Flask, Flask-SQLAlchemy, SQLAlchemy, python-dotenv, psycopg2, requests (`web_app/requirements.txt`)
 - PostgreSQL 16 (로컬 설치)
 
-## 6. 빌드 및 실행
+## 6. 통합 환경 구성 및 실행
 
-전체 구성 요소(DB → Backend/Frontend → ROS2 Bridge/Controller → M0609 Virtual + rviz2)를 처음부터 띄우는 순서입니다. 터미널을 여러 개 열어 각 단계를 순서대로 실행하세요.
+프로젝트 루트의 스크립트 하나로 Python 환경, PostgreSQL DB/기준 데이터,
+ROS2 빌드, 두산 M0609+RG2 bringup, Web, ROS2 bridge, Controller를 구성하고 실행합니다.
 
-### 6.1 PostgreSQL (DB)
+최초 실행 전에 DB 비밀번호를 설정합니다.
 
 ```bash
-cd web_app
-cp .env.example .env             # DB_USER/DB_PASSWORD 등 접속정보를 채운다
+cp web_app/.env.example web_app/.env
+# web_app/.env의 DB_PASSWORD 수정
 
-./database/setup_db.sh --seed    # 스키마 생성 + 데모 시드 데이터 적용
+# 가상 로봇: DB 구축 + 데이터 설정 + 빌드 + 전체 실행
+./scripts/setup_and_start.sh
+
+# 실제 로봇
+./scripts/setup_and_start.sh --mode real --host 192.168.1.100
+
+# 환경/DB 구성 후 빠르게 재실행
+./scripts/setup_and_start.sh --skip-setup --mode real --host 192.168.1.100
+
+# 두산 워크스페이스가 기본 경로와 다른 경우
+DSR_WS=/absolute/path/to/ws_dsr ./scripts/setup_and_start.sh
+```
+
+기본값은 ROS2 Jazzy와 `~/ws_cobot_pjt/ws_dsr`입니다. 모든 프로세스는 하나의
+ROS2 launch가 관리하며 실행 터미널에서 `Ctrl+C`로 함께 종료합니다. Web UI는
+`http://127.0.0.1:5000`에서 확인합니다. 스크립트의 ROS2 빌드 산출물은 기존
+`build/install/log`와 충돌하지 않도록 `.runtime/`에 생성됩니다.
+
+통합 launch만 직접 실행하려면 기반 워크스페이스부터 순서대로 source합니다.
+
+```bash
+source /opt/ros/jazzy/setup.bash
+source ~/ws_cobot_pjt/ws_dsr/install/setup.bash
+source install/setup.bash
+
+ros2 launch solar_panel_robot solar_robot.launch.py \
+  project_root:="$PWD" mode:=virtual host:=127.0.0.1 port:=12345
+```
+
+최상위 launch는 `FindPackageShare('m0609_rg2_bringup')`과
+`IncludeLaunchDescription()`을 사용합니다. 두산 워크스페이스를 source하지
+않으면 `Package 'm0609_rg2_bringup' not found` 오류가 발생합니다.
+
+상태 점검은 별도 터미널에서 실행합니다.
+
+```bash
+./scripts/demo_check.sh
 ```
 
 `web_app/database/README.md`에 계정/권한(`grant.sql`) 및 초기화(`reset_db.sh`) 절차가 별도로 정리되어 있습니다.
 
-### 6.2 Flask Backend + Frontend
+### 7.2 Flask Backend + Frontend
 
 Backend가 정적 프론트엔드도 같이 서빙하므로 별도 Frontend 서버는 필요 없습니다.
 
@@ -149,7 +186,7 @@ colcon build --symlink-install
 source install/setup.bash
 ```
 
-### 6.4 M0609 Virtual 로봇 + rviz2
+### 7.4 M0609 Virtual 로봇 + rviz2
 
 Doosan이 제공하는 ROS2 패키지(`dsr_bringup2` 등, 이 저장소에는 포함되어 있지 않고 별도 설치가 필요합니다)로 가상 로봇을 띄웁니다. `namespace`/`model`은 `controller_node.py`의 `ROBOT_ID = "dsr01"`, `ROBOT_MODEL = "m0609"`와 반드시 일치해야 합니다.
 
@@ -171,7 +208,7 @@ ros2 launch m0609_rg2_bringup bringup.launch.py \
 rviz2
 ```
 
-### 6.5 이 프로젝트의 Controller + Bridge
+### 7.5 이 프로젝트의 Controller + Bridge
 
 가상 로봇이 떠 있는 상태에서 이 저장소의 `solar_panel_robot`/`ros2_bridge` 노드를 실행합니다.
 
@@ -183,7 +220,7 @@ ros2 launch solar_panel_robot solar_robot.launch.py \
 
 `controller` Action Server(`/dsr01/execute_operation`)와 `ros2_bridge`(Flask HTTP 서버, 포트 8001)가 함께 실행됩니다. `robot_id`는 6.2에서 접속한 DB의 `robot.robot_id`와 일치해야 합니다.
 
-### 6.6 로봇 조종 (Dashboard → rviz2)
+### 7.6 로봇 조종 (Dashboard → rviz2)
 
 1. `http://localhost:5000` 대시보드에서 Work Order를 생성하고 `READY` 상태로 전환합니다.
 2. `robot_id`를 지정해 실행(`POST /<id>/execute`)하면 Backend → Bridge → Controller 순서로 Action Goal이 전달되고, 가상 로봇이 움직이는 모습을 rviz2에서 확인할 수 있습니다.
@@ -195,7 +232,7 @@ ros2 launch solar_panel_robot solar_robot.launch.py \
 > ros2 run solar_panel_robot action_server
 > ```
 
-## 7. 문서
+## 8. 문서
 
 상세 요구사항은 `docs/` 디렉토리를 참조하세요 (BR 6 → SYS-FR 24 → FR 24 → TC 15 추적 체계).
 
