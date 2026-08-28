@@ -6,7 +6,7 @@
 </p>  
   
 <p align="center">
-  <img src ="./img/01_post.gif"> <img src ="./img/02_frame.gif">  
+  <img src ="./img/01_post.gif" width="300"> <img src ="./img/02_frame.gif">  
   <img src ="./img/03_snapfit.gif"> <img src ="./img/04_panel.gif">
 </p>
 
