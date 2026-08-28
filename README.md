@@ -3,6 +3,11 @@
   <img alt="Python" src="https://img.shields.io/badge/Python-3.12.3-blue">
   <img alt="Flask" src="https://img.shields.io/badge/Flask-3.1.3-red">
   <img alt="SQLAlchemy" src="https://img.shields.io/badge/SQLAlchemy-2.0.51-orange">
+</p>  
+  
+<p align="center">
+  <img src ="./img/01_post.gif"> <img src ="./img/02_frame.gif">  
+  <img src ="./img/03_snapfit.gif"> <img src ="./img/04_panel.gif">
 </p>
 
   
@@ -29,7 +34,7 @@
 - **Language:** Python  
   
 ## 3. 사용 장비 목록 (Hardware List)
-두산로보틱스 M0609 협동로봇과 2지 평행 그리퍼를 사용하여 파지·이송·삽입 과정 진행
+두산로보틱스 M0609 협동로봇과 2지 평행 그리퍼를 사용하여 파지·이송·삽입 과정 진행  
 추가 부품 및 지그는 STL 모델을 기반으로 3D 프린팅하여 제작  
 
 |    구분    | 장비 및 부품명          |  수량 | 용도                                              |
@@ -99,23 +104,23 @@ Flask Backend의 HTTP 요청을 큐에 쌓았다가 ROS2 Action Goal/Service 호
 | `database/schema.sql` | PostgreSQL 스키마 (9개 테이블) |
 | `frontend/` | 정적 HTML/CSS/JS 대시보드 — Work Order 생성/조회/실행/강제정지, 로봇 상태/복구, 시스템 로그 UI |
 
-## 4. DB 구조
+## 5. DB 구조
 <p align="center">
   <img src="./img/db.png" alt="system">
 </p>
 
-## 5. 의존성
+## 6. 의존성
 
 - ROS2 Jazzy (`rclpy`)
 - Python 3 (`setuptools`, `pytest` for test)
 - Flask, Flask-SQLAlchemy, SQLAlchemy, python-dotenv, psycopg2, requests (`web_app/requirements.txt`)
 - PostgreSQL 16 (로컬 설치)
 
-## 6. 빌드 및 실행
+## 7. 빌드 및 실행
 
 전체 구성 요소(DB → Backend/Frontend → ROS2 Bridge/Controller → M0609 Virtual + rviz2) 실행 단계  
 
-### 6.1 PostgreSQL (DB)
+### 7.1 PostgreSQL (DB)
 ```bash
 cd web_app
 cp .env.example .env             # DB_USER/DB_PASSWORD 등 접속정보를 채운다
@@ -124,7 +129,7 @@ cp .env.example .env             # DB_USER/DB_PASSWORD 등 접속정보를 채�
 ```
 세부사항: `web_app/database/README.md` 참조  
 
-### 6.2 Flask Backend + Frontend
+### 7.2 Flask Backend + Frontend
 ```bash
 cd web_app
 python3 -m venv .venv
@@ -135,14 +140,14 @@ python run.py                    # http://localhost:5000 (API + Dashboard)
 ```
 세부사항: `web_app/app/README.md`, `web_app/frontend/README.md` 참조  
 
-### 6.3 ROS2 워크스페이스 빌드
+### 7.3 ROS2 워크스페이스 빌드
 ```bash
 source /opt/ros/jazzy/setup.bash
 colcon build --symlink-install
 source install/setup.bash
 ```
   
-### 6.4 M0609 Virtual 로봇 + rviz2
+### 7.4 M0609 Virtual 로봇 + rviz2
 ※ Doosan에서 제공하는 ROS2 package는 해당 저장소에 포함되지 않음
 ```bash
 source /opt/ros/jazzy/setup.bash
@@ -156,21 +161,21 @@ ros2 launch m0609_rg2_bringup bringup.launch.py \
     port:=12345
 ```
   
-### 6.5 이 프로젝트의 Controller + Bridge
+### 7.5 이 프로젝트의 Controller + Bridge
 ```bash
 ros2 launch solar_panel_robot solar_robot.launch.py \
     robot_id:=1 \
     backend_base_url:=http://127.0.0.1:5000
 ```
   
-### 6.6 로봇 조종 (Dashboard → rviz2)
+### 7.6 로봇 조종 (Dashboard → rviz2)
 
 1. `http://localhost:5000` 대시보드에서 Work Order 생성 후 `READY` 상태로 전환
 2. `robot_id` 지정 후 실행하여 rivz2에서 로봇 동작 확인 (Action Goal 전달 루트: Backend → Bridge → Controller)
 3. 대시보드의 `/<id>/progress` 조회 또는 각 터미널의 ROS2 로그(`[STATUS]`, `[IF-15]` 등)를 통한 진행 사항 확인
 
 
-## 7. 문서
+## 8. 문서
 상세 요구사항은 `docs/` 디렉토리 참고 (BR 6 → SYS-FR 24 → FR 24 → TC 15 추적 체계).  
 
 | 문서 | 내용 |
