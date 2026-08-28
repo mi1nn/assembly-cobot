@@ -28,19 +28,27 @@
 - **Backend:** Python / Flask, SQLAlchemy, PostgreSQL
 - **Language:** Python  
   
-## 3. 저장소 구성
+## 3. 사용 장비 목록 (Hardware List)
+두산로보틱스 M0609 협동로봇과 2지 평행 그리퍼를 사용하여 파지·이송·삽입 과정 진행
+추가 부품 및 지그는 STL 모델을 기반으로 3D 프린팅하여 제작  
 
-ROS2 colcon 워크스페이스(`src/`)와 Flask 백엔드(`web_app/`)로 구성되며, 세부 항목은 아래와 같다.
+|    구분    | 장비 및 부품명          |  수량 | 용도                                              |
+| :------: | :---------------- | :-: | :---------------------------------------------- |
+|   로봇 장비  | 두산로보틱스 M0609 협동로봇 |  1대 | 부품의 파지, 이송, 삽입 및 조립 작업 수행                       |
+|   로봇 장비  | 2지 평행 그리퍼         |  1대 | 태양광 패널과 구조물 부품의 파지 및 해제                         |
+|   제어 장비  | 로봇 제어기 및 티칭 펜던트   |  1식 | 로봇 동작 제어, 좌표 설정 및 작업 상태 확인                      |
+|   제어 장비  | 로봇 제어용 PC         |  1대 | Ubuntu 24.04 및 ROS 2 Jazzy 기반 제어 프로그램과 UI 실행    |
+|   제작 장비  | FDM 방식 3D 프린터     |  1대 | 태양광 패널 구조물의 부품 제작                   |
+| 조립 보조 장비 | 기둥 및 스냅핀 고정 지그    |  1식 | 기둥과 스냅핀의 위치 및 자세를 일정하게 유지하여 로봇의 안정적인 파지와 조립을 보조 |
+|   조립 부품  | Solar Panel       |  1식 | 로봇 조립 작업의 대상이 되는 태양광 패널                         |
+|   조립 부품  | Base Stone        |  6개 | 태양광 패널 구조물을 지지하고 고정하는 하부 주춧돌 부품                    |
+|   조립 부품  | Short Column      |  3개 | 태양광 패널 프레임을 지지하는 짧은 기둥                          |
+|   조립 부품  | Long Column      |  3개 | 태양광 패널 프레임을 지지하는 긴 기둥                          |
+|   조립 부품  | Col Frame      |  3개 | 태양광 패널 구조물의 세로 방향 프레임                           |
+|   조립 부품  | Row Frame         |  4개 | 태양광 패널 구조물의 가로 방향 프레임                           |
+|   체결 부품  | Snap Pin   |  6개 | 기둥과 프레임을 고정하는 체결용 잠금 핀                          |
 
-```
-assembly-cobot/
-├── src/                      # ROS2 colcon 워크스페이스
-│   ├── solar_panel_interface # Action/Service/Msg 인터페이스 정의
-│   ├── solar_panel_robot     # 로봇 Controller 노드
-│   └── ros2_bridge           # Flask Backend ↔ ROS2 Action HTTP 브릿지
-├── web_app/                  # Flask Backend + PostgreSQL 스키마 + 정적 프론트엔드
-└── docs/                      # 요구사항 문서 및 아키텍처 문서 
-```
+## 4. 저장소 구성  
 
 ### src/solar_panel_interface (ament_cmake)
 
