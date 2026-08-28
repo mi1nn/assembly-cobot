@@ -4,20 +4,22 @@
   <img alt="Flask" src="https://img.shields.io/badge/Flask-3.1.3-red">
   <img alt="SQLAlchemy" src="https://img.shields.io/badge/SQLAlchemy-2.0.51-orange">
 </p>
-
 > 두산로보틱스 M0609 협동로봇으로 지상형 태양광 패널 구조물의 조립 공정을 자동화하는 프로젝트
 
 **핵심 공정 순서:** 기둥 설치 → 프레임 설치 → 잠금핀 체결 → 패널 설치
   
 ## 1. 시스템 개요
-
-- **F/T 센서 기반 힘 제어 삽입** — Lock Pin 1차 삽입(설정 깊이) 후 재파지/가압으로 최종 삽입, 저항 과다 시 후퇴
-- **실측 기반 좌표계 생성** — Frame 기준점(P1/P2/P3) 실측으로 Frame Coordinate System 생성
-- **측정 좌표계 기준 후속 동작** — 생성된 Frame Coordinate 기준으로 Panel 위치·자세 제어
-
 <p align="center">
-  <img src="./img/system.png" alt="system" width="600">
+  <img src="./img/system.png" alt="system" width="800">
 </p>
+
+본 태양광 패널 조립 로봇은 **기둥 설치 → 프레임 설치 → 잠금핀(Snapfit) 체결 → 패널 설치**의 공정 순서를 가진다.
+주요 기술은 F/T 센서 기반 힘 제어와 periodic 동작 기반 끼워맞춤, move_arc 함수를 통한 유연한 경로 생성이다.
+
+**1. F/T 센서 기반 힘 제어:** Post 1차 삽입 후 2차 가압으로 최종 삽입. 1차 삽입 실패 시 25개 좌표(단위: 0.3mm)를 기준으로 최적점을 찾아 2차 삽입 진행
+**2. Periodic 끼워맞춤:** 프레임과 기둥 끼워맞춤을 위해 xy축 방향으로 진동 발생
+**3. move_arc 경로 생성:** 2차함수 기반 경로를 생성하여 낮은 자재 위치와 높은 설치 위치 간 접촉없이 이동 가능하도록 설계
+
 
 ```
 현장관리자 ↔ UI ↔ ROS2 ↔ M0609 Robot ↔ Controller ↔ Gripper ↔ 조립 대상 구조물
@@ -36,7 +38,7 @@
   
 ## 3. 저장소 구성
 
-이 저장소는 ROS2 colcon 워크스페이스(`src/`)와 Flask 백엔드(`web_app/`)로 구성됩니다. 
+ROS2 colcon 워크스페이스(`src/`)와 Flask 백엔드(`web_app/`)로 구성되며, 세부 항목은 아래와 같다.
 
 ```
 assembly-cobot/
