@@ -53,7 +53,7 @@
 |   조립 부품  | Row Frame         |  4개 | 태양광 패널 구조물의 가로 방향 프레임                           |
 |   체결 부품  | Snap Pin   |  6개 | 기둥과 프레임을 고정하는 체결용 잠금 핀                          |
 
-## 4. 저장소 구성  
+## 4. 패키지 구성  
 
 ### src/solar_panel_interface (ament_cmake)
 
