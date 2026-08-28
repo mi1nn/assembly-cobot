@@ -56,17 +56,54 @@
 - ROS2 Jazzy (`rclpy`)
 - Python 3 (`setuptools`, `pytest` for test)
 
-## 5. 빌드 및 실행
+## 5. 통합 환경 구성 및 실행
+
+프로젝트 루트의 스크립트 하나로 Python 환경, PostgreSQL DB/기준 데이터,
+ROS2 빌드, 두산 M0609+RG2 bringup, Web, ROS2 bridge, Controller를 구성하고 실행합니다.
+
+최초 실행 전에 DB 비밀번호를 설정합니다.
 
 ```bash
-# 워크스페이스 빌드
-colcon build
+cp web_app/.env.example web_app/.env
+# web_app/.env의 DB_PASSWORD 수정
 
-# 환경 설정
+# 가상 로봇: DB 구축 + 데이터 설정 + 빌드 + 전체 실행
+./scripts/setup_and_start.sh
+
+# 실제 로봇
+./scripts/setup_and_start.sh --mode real --host 192.168.1.100
+
+# 환경/DB 구성 후 빠르게 재실행
+./scripts/setup_and_start.sh --skip-setup --mode real --host 192.168.1.100
+
+# 두산 워크스페이스가 기본 경로와 다른 경우
+DSR_WS=/absolute/path/to/ws_dsr ./scripts/setup_and_start.sh
+```
+
+기본값은 ROS2 Jazzy와 `~/ws_cobot_pjt/ws_dsr`입니다. 모든 프로세스는 하나의
+ROS2 launch가 관리하며 실행 터미널에서 `Ctrl+C`로 함께 종료합니다. Web UI는
+`http://127.0.0.1:5000`에서 확인합니다. 스크립트의 ROS2 빌드 산출물은 기존
+`build/install/log`와 충돌하지 않도록 `.runtime/`에 생성됩니다.
+
+통합 launch만 직접 실행하려면 기반 워크스페이스부터 순서대로 source합니다.
+
+```bash
+source /opt/ros/jazzy/setup.bash
+source ~/ws_cobot_pjt/ws_dsr/install/setup.bash
 source install/setup.bash
 
-# 로봇 제어 노드 실행
-ros2 run solar_panel_robot main
+ros2 launch solar_panel_robot solar_robot.launch.py \
+  project_root:="$PWD" mode:=virtual host:=127.0.0.1 port:=12345
+```
+
+최상위 launch는 `FindPackageShare('m0609_rg2_bringup')`과
+`IncludeLaunchDescription()`을 사용합니다. 두산 워크스페이스를 source하지
+않으면 `Package 'm0609_rg2_bringup' not found` 오류가 발생합니다.
+
+상태 점검은 별도 터미널에서 실행합니다.
+
+```bash
+./scripts/demo_check.sh
 ```
 
 ## 6. 문서

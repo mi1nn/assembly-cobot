@@ -1512,6 +1512,18 @@ class SolarMotion:
 
 
             self.node.get_logger().info(
+                "2차 MoveL 경유점 -> 안전 접근점 이동 - "
+                f"BASE Z +{pick_distance:.1f}mm"
+            )
+            self.movel(
+                safe_pick_pose,
+                vel=settings["speed"],
+                acc=settings["acc"],
+                ref=self.DR_BASE,
+            )
+            self.wait(0.5)
+
+            self.node.get_logger().info(
                 "PANEL 정확한 Pick 위치 이동 - "
                 f"BASE Z -{pick_distance:.1f}mm"
             )
