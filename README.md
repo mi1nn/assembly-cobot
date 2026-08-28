@@ -64,10 +64,6 @@ assembly-cobot/
 | `force_control.py` | F/T 센서 기반 힘 제어 삽입 로직 |
 | `launch/solar_robot.launch.py` | `controller` & `ROS bridge` 노드 실행 |
 
-> `controller_node.py`의 `resolve_operation_code()`는 DB `operation.code`(`post1`~`post6` 등)를 그대로 검증·실행하도록 구현되어 있어, Action 이름/Operation 코드 체계는 Backend·Bridge와 일치합니다.
-> `StopOperation`/`RecoverRobot` Service는 실제 `controller_node.py`(`stop_operation_callback` / `recover_robot_callback`)와 `action_server.py`(Mock) **양쪽에 구현**되어 있습니다. 다만 실물 로봇을 포함한 강제정지/복구 end-to-end 검증은 아직 Mock 기준입니다.
-> Goal Cancel은 현재 항상 REJECT이며, 정지는 `StopOperation` Service로 처리합니다.
-
 ### src/ros2_bridge (ament_python)
 
 Flask Backend의 HTTP 요청을 큐에 쌓았다가 ROS2 Action Goal/Service 호출로 변환해 Controller에 전달하는 브릿지 노드입니다. 노드 자체에 Flask HTTP 서버(포트 8001)를 내장합니다.
