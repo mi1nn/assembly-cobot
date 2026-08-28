@@ -3,6 +3,11 @@
   <img alt="Python" src="https://img.shields.io/badge/Python-3.12.3-blue">
   <img alt="Flask" src="https://img.shields.io/badge/Flask-3.1.3-red">
   <img alt="SQLAlchemy" src="https://img.shields.io/badge/SQLAlchemy-2.0.51-orange">
+</p>  
+  
+<p align="center">
+  <img src ="./img/01_post.gif" width="350"> <img src ="./img/02_frame.gif" width="350">    
+  <img src ="./img/03_snapfit.gif" width="350"> <img src ="./img/04_panel.gif" width="350">
 </p>
 
   
@@ -28,9 +33,9 @@
 - **Backend:** Python / Flask, SQLAlchemy, PostgreSQL
 - **Language:** Python  
   
-## 3. 🛠️ 사용 장비 목록 (Hardware List)
-
-본 프로젝트에서는 두산로보틱스 M0609 협동로봇과 2지 평행 그리퍼를 이용하여 태양광 패널 구조물의 부품을 파지·이송·삽입하였습니다. 구조물 부품과 고정 지그는 STL 모델을 기반으로 3D 프린팅하여 제작하였습니다.
+## 3. 사용 장비 목록 (Hardware List)
+두산로보틱스 M0609 협동로봇과 2지 평행 그리퍼를 사용하여 파지·이송·삽입 과정 진행  
+추가 부품 및 지그는 STL 모델을 기반으로 3D 프린팅하여 제작  
 
 |    구분    | 장비 및 부품명          |  수량 | 용도                                              |
 | :------: | :---------------- | :-: | :---------------------------------------------- |
@@ -48,7 +53,7 @@
 |   조립 부품  | Row Frame         |  4개 | 태양광 패널 구조물의 가로 방향 프레임                           |
 |   체결 부품  | Snap Pin   |  6개 | 기둥과 프레임을 고정하는 체결용 잠금 핀                          |
 
-## 4. 패키지 구성
+## 4. 패키지 구성  
 
 ### src/solar_panel_interface (ament_cmake)
 

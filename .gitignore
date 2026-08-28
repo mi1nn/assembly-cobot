@@ -225,7 +225,4 @@ CLAUDE.md
 build/
 log/
 install/
-
 graphify-out/
-docs/architecture
-docs/test.md
