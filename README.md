@@ -105,23 +105,18 @@ Flask Backend의 HTTP 요청을 큐에 쌓았다가 ROS2 Action Goal/Service 호
 
 ## 6. 빌드 및 실행
 
-전체 구성 요소(DB → Backend/Frontend → ROS2 Bridge/Controller → M0609 Virtual + rviz2)를 처음부터 띄우는 순서입니다. 터미널을 여러 개 열어 각 단계를 순서대로 실행하세요.
+전체 구성 요소(DB → Backend/Frontend → ROS2 Bridge/Controller → M0609 Virtual + rviz2) 실행 단계  
 
 ### 6.1 PostgreSQL (DB)
-
 ```bash
 cd web_app
 cp .env.example .env             # DB_USER/DB_PASSWORD 등 접속정보를 채운다
 
 ./database/setup_db.sh --seed    # 스키마 생성 + 데모 시드 데이터 적용
 ```
-
-`web_app/database/README.md`에 계정/권한(`grant.sql`) 및 초기화(`reset_db.sh`) 절차가 별도로 정리되어 있습니다.
+세부사항: `web_app/database/README.md` 참조  
 
 ### 6.2 Flask Backend + Frontend
-
-Backend가 정적 프론트엔드도 같이 서빙하므로 별도 Frontend 서버는 필요 없습니다.
-
 ```bash
 cd web_app
 python3 -m venv .venv
@@ -130,21 +125,17 @@ python3 -m venv .venv
 source .venv/bin/activate
 python run.py                    # http://localhost:5000 (API + Dashboard)
 ```
-
-브라우저에서 `http://localhost:5000`에 접속하면 Work Order 대시보드가 보입니다. 상세 검증 절차는 `web_app/app/README.md`, `web_app/frontend/README.md`를 참조하세요.
+세부사항: `web_app/app/README.md`, `web_app/frontend/README.md` 참조  
 
 ### 6.3 ROS2 워크스페이스 빌드
-
 ```bash
 source /opt/ros/jazzy/setup.bash
 colcon build --symlink-install
 source install/setup.bash
 ```
-
+  
 ### 6.4 M0609 Virtual 로봇 + rviz2
-
-Doosan이 제공하는 ROS2 패키지(`dsr_bringup2` 등, 이 저장소에는 포함되어 있지 않고 별도 설치가 필요합니다)로 가상 로봇을 띄웁니다. `namespace`/`model`은 `controller_node.py`의 `ROBOT_ID = "dsr01"`, `ROBOT_MODEL = "m0609"`와 반드시 일치해야 합니다.
-
+※ Doosan에서 제공하는 ROS2 package는 해당 저장소에 포함되지 않음
 ```bash
 source /opt/ros/jazzy/setup.bash
 source ~/ws_cobot_pjt/ws_dsr/install/setup.bash   # Doosan Robotics 패키지 워크스페이스
@@ -156,40 +147,23 @@ ros2 launch m0609_rg2_bringup bringup.launch.py \
     host:=127.0.0.1 \
     port:=12345
 ```
-
-가상 로봇과 함께 rviz2가 자동으로 뜨지 않으면 별도 터미널에서 실행합니다.
-
-```bash
-rviz2
-```
-
+  
 ### 6.5 이 프로젝트의 Controller + Bridge
-
-가상 로봇이 떠 있는 상태에서 이 저장소의 `solar_panel_robot`/`ros2_bridge` 노드를 실행합니다.
-
 ```bash
 ros2 launch solar_panel_robot solar_robot.launch.py \
     robot_id:=1 \
     backend_base_url:=http://127.0.0.1:5000
 ```
-
-`controller` Action Server(`/dsr01/execute_operation`)와 `ros2_bridge`(Flask HTTP 서버, 포트 8001)가 함께 실행됩니다. `robot_id`는 6.2에서 접속한 DB의 `robot.robot_id`와 일치해야 합니다.
-
+  
 ### 6.6 로봇 조종 (Dashboard → rviz2)
 
-1. `http://localhost:5000` 대시보드에서 Work Order를 생성하고 `READY` 상태로 전환합니다.
-2. `robot_id`를 지정해 실행(`POST /<id>/execute`)하면 Backend → Bridge → Controller 순서로 Action Goal이 전달되고, 가상 로봇이 움직이는 모습을 rviz2에서 확인할 수 있습니다.
-3. 진행 상태는 대시보드의 `/<id>/progress` 조회 또는 각 터미널의 ROS2 로그(`[STATUS]`, `[IF-15]` 등)로 확인합니다.
+1. `http://localhost:5000` 대시보드에서 Work Order 생성 후 `READY` 상태로 전환
+2. `robot_id` 지정 후 실행하여 rivz2에서 로봇 동작 확인 (Action Goal 전달 루트: Backend → Bridge → Controller)
+3. 대시보드의 `/<id>/progress` 조회 또는 각 터미널의 ROS2 로그(`[STATUS]`, `[IF-15]` 등)를 통한 진행 사항 확인
 
-> ⚠️ **현재 알려진 제약**: Work Order 실행(Action Goal) 흐름은 실제 `controller`로 검증되었습니다. 강제정지/로봇 복구(`StopOperation`/`RecoverRobot`)도 `controller_node.py`에 구현되어 있으나, 실물 로봇을 포함한 end-to-end 검증은 아직 Mock 기준입니다 (§3 각주 참조). Mock으로 전체 흐름을 확인하려면 6.5의 `controller` 대신 Mock Server를 띄우세요.
->
-> ```bash
-> ros2 run solar_panel_robot action_server
-> ```
 
 ## 7. 문서
-
-상세 요구사항은 `docs/` 디렉토리를 참조하세요 (BR 6 → SYS-FR 24 → FR 24 → TC 15 추적 체계).
+상세 요구사항은 `docs/` 디렉토리 참고 (BR 6 → SYS-FR 24 → FR 24 → TC 15 추적 체계).  
 
 | 문서 | 내용 |
 |---|---|
@@ -203,9 +177,9 @@ ros2 launch solar_panel_robot solar_robot.launch.py \
 | `docs/08_ops_요구사항.md` | 운영 절차 |
 | `docs/09_maint_요구사항.md` | 유지보수 점검 항목 |
 | `docs/10_최종_시스템_시나리오.md` | 전체 조립 시나리오 (단계별) |
-| `docs/소스코드_역할_정리.md` | 소스 파일별 역할 요약 |
+| `docs/소스코드_역할_정리.md` | 소스 파일별 역할 요약 |  
 
-아키텍처/발표 문서 (`docs/architecture/`):
+아키텍처/발표 문서 (`docs/architecture/`):  
 
 | 문서 | 내용 | 저장소 |
 |---|---|---|
@@ -215,4 +189,3 @@ ros2 launch solar_panel_robot solar_robot.launch.py \
 | `DB_데이터_흐름.md` | 9개 테이블별 데이터 유입·유출 경로 | 로컬 전용 |
 | `기술_발표_스크립트.md` | 발표자료 PDF(01~05) 순서에 맞춘 발표 대본 | 로컬 전용 |
 
-> `docs/architecture/`는 `.gitignore` 대상이라 이후 추가된 문서는 로컬에만 존재합니다(위 표의 "로컬 전용"). 초기 아키텍처 문서 2건은 규칙 추가 전 커밋되어 계속 추적됩니다. `docs/test.md`, `CLAUDE.md`, `graphify-out/`도 `.gitignore` 대상입니다.
