@@ -27,20 +27,28 @@
 - **로봇:** Doosan M0609 (그리퍼 + 내장 F/T 센서)
 - **Backend:** Python / Flask, SQLAlchemy, PostgreSQL
 - **Language:** Python  
+
+## 3. 🛠️ 사용 장비 목록 (Hardware List)
+
+본 프로젝트에서는 두산로보틱스 M0609 협동로봇과 2지 평행 그리퍼를 이용하여 태양광 패널 구조물의 부품을 파지·이송·삽입하였습니다. 구조물 부품과 고정 지그는 STL 모델을 기반으로 3D 프린팅하여 제작하였습니다.
+
+|    구분    | 장비 및 부품명          |  수량 | 용도                                              |
+| :------: | :---------------- | :-: | :---------------------------------------------- |
+|   로봇 장비  | 두산로보틱스 M0609 협동로봇 |  1대 | 부품의 파지, 이송, 삽입 및 조립 작업 수행                       |
+|   로봇 장비  | 2지 평행 그리퍼         |  1대 | 태양광 패널과 구조물 부품의 파지 및 해제                         |
+|   제어 장비  | 로봇 제어기 및 티칭 펜던트   |  1식 | 로봇 동작 제어, 좌표 설정 및 작업 상태 확인                      |
+|   제어 장비  | 로봇 제어용 PC         |  1대 | Ubuntu 24.04 및 ROS 2 Jazzy 기반 제어 프로그램과 UI 실행    |
+|   제작 장비  | FDM 방식 3D 프린터     |  1대 | 태양광 패널 구조물의 부품 제작                   |
+| 조립 보조 장비 | 기둥 및 스냅핀 고정 지그    |  1식 | 기둥과 스냅핀의 위치 및 자세를 일정하게 유지하여 로봇의 안정적인 파지와 조립을 보조 |
+|   조립 부품  | Solar Panel       |  1식 | 로봇 조립 작업의 대상이 되는 태양광 패널                         |
+|   조립 부품  | Base Stone        |  6개 | 태양광 패널 구조물을 지지하고 고정하는 하부 주춧돌 부품                    |
+|   조립 부품  | Short Column      |  3개 | 태양광 패널 프레임을 지지하는 짧은 기둥                          |
+|   조립 부품  | Long Column      |  3개 | 태양광 패널 프레임을 지지하는 긴 기둥                          |
+|   조립 부품  | Col Frame      |  3개 | 태양광 패널 구조물의 세로 방향 프레임                           |
+|   조립 부품  | Row Frame         |  4개 | 태양광 패널 구조물의 가로 방향 프레임                           |
+|   체결 부품  | Snap Pin   |  6개 | 기둥과 프레임을 고정하는 체결용 잠금 핀                          |
   
-## 3. 저장소 구성
-
-ROS2 colcon 워크스페이스(`src/`)와 Flask 백엔드(`web_app/`)로 구성되며, 세부 항목은 아래와 같다.
-
-```
-assembly-cobot/
-├── src/                      # ROS2 colcon 워크스페이스
-│   ├── solar_panel_interface # Action/Service/Msg 인터페이스 정의
-│   ├── solar_panel_robot     # 로봇 Controller 노드
-│   └── ros2_bridge           # Flask Backend ↔ ROS2 Action HTTP 브릿지
-├── web_app/                  # Flask Backend + PostgreSQL 스키마 + 정적 프론트엔드
-└── docs/                      # 요구사항 문서 및 아키텍처 문서 
-```
+## 4. 패키지 구성
 
 ### src/solar_panel_interface (ament_cmake)
 
@@ -91,23 +99,23 @@ Flask Backend의 HTTP 요청을 큐에 쌓았다가 ROS2 Action Goal/Service 호
 | `database/schema.sql` | PostgreSQL 스키마 (9개 테이블) |
 | `frontend/` | 정적 HTML/CSS/JS 대시보드 — Work Order 생성/조회/실행/강제정지, 로봇 상태/복구, 시스템 로그 UI |
 
-## 4. DB 구조
+## 5. DB 구조
 <p align="center">
   <img src="./img/db.png" alt="system">
 </p>
 
-## 5. 의존성
+## 6. 의존성
 
 - ROS2 Jazzy (`rclpy`)
 - Python 3 (`setuptools`, `pytest` for test)
 - Flask, Flask-SQLAlchemy, SQLAlchemy, python-dotenv, psycopg2, requests (`web_app/requirements.txt`)
 - PostgreSQL 16 (로컬 설치)
 
-## 6. 빌드 및 실행
+## 7. 빌드 및 실행
 
 전체 구성 요소(DB → Backend/Frontend → ROS2 Bridge/Controller → M0609 Virtual + rviz2) 실행 단계  
 
-### 6.1 PostgreSQL (DB)
+### 7.1 PostgreSQL (DB)
 ```bash
 cd web_app
 cp .env.example .env             # DB_USER/DB_PASSWORD 등 접속정보를 채운다
@@ -116,7 +124,7 @@ cp .env.example .env             # DB_USER/DB_PASSWORD 등 접속정보를 채�
 ```
 세부사항: `web_app/database/README.md` 참조  
 
-### 6.2 Flask Backend + Frontend
+### 7.2 Flask Backend + Frontend
 ```bash
 cd web_app
 python3 -m venv .venv
@@ -127,14 +135,14 @@ python run.py                    # http://localhost:5000 (API + Dashboard)
 ```
 세부사항: `web_app/app/README.md`, `web_app/frontend/README.md` 참조  
 
-### 6.3 ROS2 워크스페이스 빌드
+### 7.3 ROS2 워크스페이스 빌드
 ```bash
 source /opt/ros/jazzy/setup.bash
 colcon build --symlink-install
 source install/setup.bash
 ```
   
-### 6.4 M0609 Virtual 로봇 + rviz2
+### 7.4 M0609 Virtual 로봇 + rviz2
 ※ Doosan에서 제공하는 ROS2 package는 해당 저장소에 포함되지 않음
 ```bash
 source /opt/ros/jazzy/setup.bash
@@ -148,21 +156,21 @@ ros2 launch m0609_rg2_bringup bringup.launch.py \
     port:=12345
 ```
   
-### 6.5 이 프로젝트의 Controller + Bridge
+### 7.5 이 프로젝트의 Controller + Bridge
 ```bash
 ros2 launch solar_panel_robot solar_robot.launch.py \
     robot_id:=1 \
     backend_base_url:=http://127.0.0.1:5000
 ```
   
-### 6.6 로봇 조종 (Dashboard → rviz2)
+### 7.6 로봇 조종 (Dashboard → rviz2)
 
 1. `http://localhost:5000` 대시보드에서 Work Order 생성 후 `READY` 상태로 전환
 2. `robot_id` 지정 후 실행하여 rivz2에서 로봇 동작 확인 (Action Goal 전달 루트: Backend → Bridge → Controller)
 3. 대시보드의 `/<id>/progress` 조회 또는 각 터미널의 ROS2 로그(`[STATUS]`, `[IF-15]` 등)를 통한 진행 사항 확인
 
 
-## 7. 문서
+## 8. 문서
 상세 요구사항은 `docs/` 디렉토리 참고 (BR 6 → SYS-FR 24 → FR 24 → TC 15 추적 체계).  
 
 | 문서 | 내용 |
