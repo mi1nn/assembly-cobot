@@ -228,3 +228,4 @@ install/
 graphify-out/
 
 .DS_Store
+docs/architecture
